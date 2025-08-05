@@ -1,0 +1,60 @@
+# Development Dockerfile for Dokku Traefik Watcher
+# Features: Debug tools, verbose logging, development optimizations
+
+FROM alpine:3.19
+
+# Add metadata
+LABEL description="Development Dokku Traefik Watcher"
+LABEL maintainer="Citizen Team"
+
+# Install development dependencies
+RUN apk add --no-cache \
+    bash \
+    curl \
+    jq \
+    postgresql-client \
+    docker-cli \
+    nano \
+    htop \
+    netcat-openbsd \
+    bind-tools \
+    coreutils \
+    findutils \
+    grep \
+    sed \
+    gawk
+
+# Create development user
+RUN addgroup -g 1000 watcher && \
+    adduser -u 1000 -G watcher -D -s /bin/bash watcher
+
+# Create working directory and logs
+WORKDIR /app
+RUN mkdir -p /app/logs /app/config /app/scripts && \
+    chmod -R 777 /app
+
+# Copy scripts with proper permissions
+COPY --chown=watcher:watcher scripts/ /app/scripts/
+RUN chmod +x /app/scripts/dokku/*.sh
+RUN chmod +x /app/scripts/traefik/*.sh
+
+# Development environment variables
+ENV ENVIRONMENT=development \
+    DEBUG_MODE=true \
+    LOG_LEVEL=debug \
+    WATCH_INTERVAL=5 \
+    FORCE_REGEN_INTERVAL=60 \
+    HEALTH_CHECK_INTERVAL=30
+
+# Expose any debug ports if needed
+EXPOSE 8080
+
+# Health check for development
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD pgrep -f watcher || exit 1
+
+# Development: Run as root for Docker access (simplified)
+# USER watcher
+
+# Default entrypoint - enhanced for development
+CMD ["/bin/bash", "-c", "echo '🚀 Starting Dokku Traefik Watcher (Development Mode)' && /app/scripts/dokku/dokku-traefik-watcher.sh"] 

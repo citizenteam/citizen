@@ -1,0 +1,166 @@
+services:
+  traefik:
+    image: traefik:v3.4
+    container_name: citizen-traefik-prod
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik Dashboard (temporary, will be closed for security)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/traefik.yml:/etc/traefik/traefik.yml:rw
+      - ./config/dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:rw # Dynamic configuration file (read-write for file watching)
+      - ./data/letsencrypt:/letsencrypt
+      - ./logs:/var/log/traefik
+    networks:
+      - citizen-network-prod
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+      - --certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}
+
+  dokku:
+    image: dokku/dokku:latest
+    container_name: citizen-dokku-prod
+    hostname: dokku
+    privileged: true
+    ports:
+      - "2222:22"  # SSH port
+    volumes:
+      - citizen-dokku-data-prod:/mnt/dokku
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./ssh_keys/id_rsa.pub:/tmp/id_rsa.pub:ro
+    networks:
+      - citizen-network-prod
+    environment:
+      - DOKKU_NETWORK_ATTACH_POST_CREATE=docker_citizen-network-prod
+      - DOKKU_PROXY_TYPE=traefik
+    command: >
+      /bin/bash -c "
+      /sbin/my_init &
+      sleep 10 &&
+      if [ -f /tmp/id_rsa.pub ]; then
+        dokku ssh-keys:add citizen-api /tmp/id_rsa.pub || true
+      fi &&
+      dokku network:set --global attach-post-create docker_citizen-network-prod || true &&
+      wait
+      "
+    labels:
+      - "traefik.enable=false"
+
+  # Standalone API Service (optional, for direct access)
+  api:
+    build:
+      context: ../
+      dockerfile: docker/dockerfiles/Dockerfile
+      target: runtime-alpine
+    container_name: citizen-api-prod
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./ssh_keys:/home/appuser/.ssh:rw
+    networks:
+      - citizen-network-prod
+    # Production security configuration (privileged for SSH key setup)
+    privileged: true  # Required for SSH key permission management
+    read_only: false  # Need write access for SSH key setup and application
+    depends_on:
+      - postgres
+      - redis
+      - dokku
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+        VITE_ALLOWED_REDIRECT_DOMAINS: ${VITE_ALLOWED_REDIRECT_DOMAINS}
+        VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS}
+        VITE_DEFAULT_DOMAINS: ${VITE_DEFAULT_DOMAINS}
+    container_name: citizen-frontend-prod
+    restart: unless-stopped
+    env_file:
+      - .env
+    networks:
+      - citizen-network-prod
+
+  postgres:
+    image: postgres:14-alpine
+    container_name: citizen-postgres-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - citizen-postgres-data-prod:/var/lib/postgresql/data
+    networks:
+      - citizen-network-prod
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: citizen-redis-prod
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    volumes:
+      - citizen-redis-data-prod:/data
+    networks:
+      - citizen-network-prod
+    ports:
+      - "6379:6379"
+
+  # Dokku-Traefik Watcher
+  dokku-traefik-watcher:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.watcher
+    container_name: citizen-dokku-traefik-watcher-prod
+    restart: unless-stopped
+    environment:
+      - ENVIRONMENT=prod
+      - CHECK_INTERVAL=30
+      - DOKKU_CONTAINER=citizen-dokku
+      - TRAEFIK_CONTAINER=citizen-traefik
+      - CONFIG_FILE=/app/config/dynamic_conf.yml
+      - FORCE_REGEN_INTERVAL=300
+      - HEALTH_CHECK_INTERVAL=60
+      - RESTART_CONTAINERS=${RESTART_CONTAINERS:-true}  # 🔧 Make restart optional
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/dynamic_conf.yml:/app/config/dynamic_conf.yml:rw  # 🎯 RW for host-side update
+      - ./.env:/app/.env:ro
+      - ./logs:/app/logs  # 🎯 Log persistence
+    networks:
+      - citizen-network-prod
+    depends_on:
+      - traefik
+      - dokku
+      - postgres
+
+networks:
+  citizen-network-prod:
+    driver: bridge
+    name: docker_citizen-network-prod
+    ipam:
+      config:
+        - subnet: 172.26.0.0/16
+
+volumes:
+  citizen-postgres-data-prod:
+    driver: local
+  citizen-redis-data-prod:
+    driver: local
+  citizen-dokku-data-prod:
+    driver: local

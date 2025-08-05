@@ -1,0 +1,26 @@
+FROM node:22-alpine
+
+# Install necessary packages for compilation
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+
+# Copy npm configuration first
+COPY .npmrc ./
+
+# Copy package.json and package-lock.json
+COPY package*.json ./
+
+# Clean install with environment variables for node-gyp
+RUN rm -rf node_modules package-lock.json && \
+    npm cache clean --force && \
+    npm install --include=optional
+
+# Copy the rest of the app
+COPY . .
+
+# Expose vite port
+EXPOSE 5173
+
+# Run dev server
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"] 

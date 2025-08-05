@@ -1,0 +1,443 @@
+# ============================================
+# ENVIRONMENT & CONFIGURATION FILES
+# ============================================
+.env
+.env.*
+!.env.example
+*.env
+config.env
+.claude
+
+
+# Backend specific environment
+backend/.env
+backend/config.env
+backend/.air.toml
+!backend/.air.toml.example
+
+# Frontend specific environment  
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Docker specific environment
+docker/.env
+docker/.env.*
+!docker/.env.example
+
+# ============================================
+# GO BACKEND SPECIFIC
+# ============================================
+# Binaries for programs and plugins
+backend/*.exe
+backend/*.exe~
+backend/*.dll
+backend/*.so
+backend/*.dylib
+backend/main
+backend/app
+backend/citizen-api
+backend/citizen-backend
+
+# Test binary, built with `go test -c`
+backend/*.test
+
+# Output of the go coverage tool
+backend/*.out
+backend/coverage.html
+backend/coverage.txt
+
+# Dependency directories
+backend/vendor/
+backend/go.work
+backend/go.work.sum
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Build cache
+backend/.cache/
+backend/build/
+backend/dist/
+
+# Development tools cache
+backend/.air/
+backend/.dlv/
+backend/.golangci-lint-cache/
+
+# Temporary directories
+backend/tmp/
+backend/temp/
+backend/.tmp/
+
+# ============================================
+# DOCKER & CONTAINERS
+# ============================================
+# Environment files
+docker/.env
+docker/.env.*
+
+# SSH Keys (security sensitive)
+docker/ssh_keys/
+!docker/ssh_keys/.gitkeep
+
+# Data volumes and persistent storage
+docker/data/
+docker/volumes/
+docker/postgres-data/
+docker/redis-data/
+docker/dokku-data/
+
+# Backups
+docker/backups/
+docker/dumps/
+!docker/backups/.gitkeep
+
+# Logs
+docker/logs/
+docker/*.log
+docker/**/*.log
+
+# SSL Certificates
+docker/ssl/
+docker/certs/
+docker/letsencrypt/
+
+# Admin credentials (security sensitive)
+docker/api_admin_credentials*
+docker/*credentials*
+docker/*password*
+
+# Traefik configuration cache
+docker/config/.route_cache
+docker/config/dynamic_conf.yml
+docker/config/dynamic_conf.yml.bak
+docker/config/*.cache
+
+# Monitoring data
+docker/monitoring/data/
+docker/prometheus/
+docker/grafana/
+
+# Temporary Docker files
+docker/.docker/
+docker/.compose/
+docker/docker-compose.override.yml
+
+# ============================================
+# FRONTEND SPECIFIC
+# ============================================
+# Dependencies
+frontend/node_modules/
+frontend/.pnp
+frontend/.pnp.js
+
+# Production build
+frontend/build/
+frontend/dist/
+frontend/.next/
+frontend/out/
+
+# Development
+frontend/.cache/
+frontend/.parcel-cache/
+frontend/.vite/
+
+# Testing
+frontend/coverage/
+frontend/.nyc_output/
+
+# Environment files
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Logs
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/lerna-debug.log*
+
+# ============================================
+# LOGS & MONITORING
+# ============================================
+# Application logs
+*.log
+logs/
+log/
+*.log.*
+
+# Specific log directories
+backend/logs/
+frontend/logs/
+docker/logs/
+
+# Log archives
+*.log.gz
+*.log.zip
+*.log.tar.gz
+
+# Monitoring and metrics
+metrics/
+traces/
+profiles/
+
+# ============================================
+# DEVELOPMENT TOOLS & IDE
+# ============================================
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json.example
+!.vscode/launch.json.example
+!.vscode/tasks.json.example
+!.vscode/extensions.json.example
+
+# JetBrains IDEs
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Eclipse
+.metadata
+.recommenders/
+*.tmp
+*.bak
+*.swp
+*~.nib
+
+# ============================================
+# OPERATING SYSTEM
+# ============================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============================================
+# SECURITY & SENSITIVE FILES
+# ============================================
+# API Keys and secrets
+*secret*
+*key*
+*keys*
+!public*key*
+*token*
+*password*
+*credential*
+*auth*
+
+# SSL/TLS
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+
+# SSH
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+known_hosts
+authorized_keys
+
+# Database dumps and backups
+*.sql
+*.dump
+*.backup
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================
+# CACHE & TEMPORARY FILES
+# ============================================
+*.tmp
+*.temp
+*.cache
+.cache/
+cache/
+
+# Package manager cache
+.npm/
+.yarn/
+.pnpm-store/
+
+# OS cache
+.fseventsd/
+.Spotlight-V100/
+.TemporaryItems/
+.Trashes/
+
+# ============================================
+# BUILD & DISTRIBUTION
+# ============================================
+# Build outputs
+build/
+dist/
+out/
+target/
+bin/
+obj/
+
+# Archives
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Compiled files
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.so
+
+# ============================================
+# TESTING & COVERAGE
+# ============================================
+# Test results
+*.test
+*.cover
+coverage/
+test-results/
+.nyc_output/
+
+# Benchmark results
+*.bench
+benchmarks/
+
+# ============================================
+# DOCUMENTATION BUILD
+# ============================================
+# Generated docs
+docs/build/
+site/
+_site/
+
+# ============================================
+# MISCELLANEOUS
+# ============================================
+# Lock files (keep these for reproducible builds)
+# package-lock.json  # Keep this
+# yarn.lock         # Keep this
+# go.sum            # Keep this
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# Diagnostic reports
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Runtime configuration files
+.eslintcache
+.stylelintcache
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# ============================================
+# PROJECT SPECIFIC IGNORES
+# ============================================
+# Citizen specific
+citizen-api
+citizen-backend
+citizen-frontend
+
+# Migration files with sensitive data
+*migration*.sql
+*seed*.sql
+
+# Local development overrides
+docker-compose.local.yml
+docker-compose.override.yml
+
+# Performance profiling
+*.prof
+*.pprof
+*.trace
+
+# Memory dumps
+*.hprof
+heapdump*
+
+# ============================================
+# KEEP THESE EXAMPLES & TEMPLATES
+# ============================================
+!.env.example
+!.env.template
+!docker/.env.example
+!backend/.env.example
+!frontend/.env.example
+!config.env.example
+!README*.md
+!CHANGELOG*.md
+!LICENSE*
+!*.example.*
+!*.template.*
+!.gitkeep 

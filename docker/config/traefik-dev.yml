@@ -1,0 +1,33 @@
+# traefik-dev.yml - Development Environment Configuration (v3.4)
+api:
+  dashboard: true
+  insecure: true # For dashboard access via :8080 port
+
+entryPoints:
+  web:
+    address: ":80"
+    # No HTTPS redirect for development
+  websecure:
+    address: ":443"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic_conf.yml
+    watch: true
+    # v3.4 file provider (pollInterval field removed)
+
+# 🎯 v3.4 Core configuration
+core:
+  # Temporary for v2 syntax support
+  defaultRuleSyntax: v2
+
+# No Let's Encrypt for development - use self-signed or no HTTPS
+# certificatesResolvers can be added here if needed for dev HTTPS testing
+
+log:
+  level: DEBUG  # More verbose logging for development
+accessLog: {}
+
+# 🎯 v3.4 Ping endpoint (restricted for security)
+ping:
+  entryPoint: web 

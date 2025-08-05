@@ -1,0 +1,35 @@
+# ===================================================================
+# CITIZEN - DOCKER GITIGNORE
+# ===================================================================
+
+# SSL Certificates and Let's Encrypt files
+data/
+data/letsencrypt/
+*.pem
+*.crt
+*.key
+acme.json
+
+# SSH Keys
+ssh_keys/
+ssh_keys/*
+*.pub
+id_rsa*
+
+# Docker volumes ve cache
+*.log
+docker-compose.override.yml
+
+# Environment files 
+.env*
+!.env.example
+.env.backup.*
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Docker build cache
+.dockerignore.bak 

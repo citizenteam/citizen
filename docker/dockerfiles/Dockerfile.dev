@@ -1,0 +1,93 @@
+# Development-Optimized Dockerfile for Citizen Backend
+# Features: Debug tools, hot reload support, development dependencies
+
+FROM golang:1.23-alpine AS dev-base
+
+# Add metadata
+LABEL stage=dev-base
+LABEL description="Development stage for Citizen Backend"
+LABEL maintainer="Citizen Team"
+
+# Install development dependencies
+RUN apk add --no-cache \
+    git \
+    ca-certificates \
+    tzdata \
+    openssh-client \
+    curl \
+    wget \
+    nano \
+    htop \
+    strace \
+    lsof \
+    netcat-openbsd \
+    bind-tools \
+    bash \
+    build-base \
+    binutils \
+    sqlite
+
+    # Install development tools (golangci-lint excluded due to linker issues)
+RUN go install github.com/air-verse/air@v1.61.1 && \
+    go install github.com/go-delve/delve/cmd/dlv@latest && \
+    go install golang.org/x/tools/cmd/goimports@latest && \
+    go install github.com/swaggo/swag/cmd/swag@latest
+
+# Create development user
+RUN addgroup -g 1000 developer && \
+    adduser -u 1000 -G developer -D -s /bin/bash developer
+
+# Setup workspace
+WORKDIR /app
+
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/logs /app/tmp /app/cache /go/pkg/mod && \
+    chmod -R 777 /app /go/pkg/mod
+
+# Copy and set up Air configuration for hot reload
+COPY --chown=developer:developer .air.toml .air.toml
+
+# Install Go dependencies first for better caching
+COPY --chown=developer:developer go.mod go.sum ./
+RUN go mod download && go mod verify
+
+# Copy source code
+COPY --chown=developer:developer . .
+
+# Ensure go.mod and go.sum are synchronized
+RUN go mod tidy
+
+# Set environment variables for development
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64 \
+    GO111MODULE=on \
+    GOPROXY=https://proxy.golang.org,direct \
+    GOSUMDB=sum.golang.org \
+    # Development specific
+    GIN_MODE=debug \
+    ENVIRONMENT=development \
+    LOG_LEVEL=debug \
+    LOG_FORMAT=text \
+    HOT_RELOAD=true \
+    ENABLE_DEBUG_ENDPOINTS=true \
+    ENABLE_PROFILING=true \
+    # Air configuration
+    AIR_POLL_INTERVAL=1000 \
+    AIR_BUILD_DELAY=100
+
+# Expose ports
+EXPOSE 3000 2345 6060
+
+# Health check for development
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:3000/health || exit 1
+
+# Set timezone
+ENV TZ=UTC
+
+# Switch to development user
+USER developer
+
+# Default command - will be overridden by docker-compose
+CMD ["air", "-c", ".air.toml"] 

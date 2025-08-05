@@ -1,0 +1,351 @@
+# Development-Optimized Docker Compose Configuration
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v3.4
+    container_name: citizen-traefik-dev
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "8080:8080" # Traefik Dashboard - always enabled in dev
+    volumes:
+      - ./config/traefik-dev.yml:/etc/traefik/traefik.yml:ro
+      - ./config/dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:ro
+      - ./logs:/var/log/traefik # Enhanced logging
+    networks:
+      - citizen-network-dev
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+    environment:
+      - TRAEFIK_LOG_LEVEL=DEBUG
+    labels:
+      - "traefik.enable=false"
+
+  dokku:
+    image: dokku/dokku:latest
+    container_name: citizen-dokku-dev
+    hostname: dokku
+    privileged: true
+    ports:
+      - "2223:22"
+    volumes:
+      - citizen-dokku-dev-data:/mnt/dokku
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./ssh_keys/id_rsa.pub:/tmp/id_rsa.pub:ro
+    networks:
+      - citizen-network-dev
+    environment:
+      - DOKKU_NETWORK_ATTACH_POST_CREATE=docker_citizen-network-dev
+      - DOKKU_PROXY_TYPE=traefik
+      - DOKKU_TRACE=1 # Debug mode for development
+    command: >
+      /bin/bash -c "
+      /sbin/my_init &
+      sleep 10 &&
+      if [ -f /tmp/id_rsa.pub ]; then
+        dokku ssh-keys:add citizen-api /tmp/id_rsa.pub || true
+      fi &&
+      dokku network:set --global attach-post-create docker_citizen-network-dev || true &&
+      dokku trace:on || true &&
+      wait
+      "
+    labels:
+      - "traefik.enable=false"
+    # Resource limits for development
+    deploy:
+      resources:
+        limits:
+          memory: 2G # More generous for dev
+        reservations:
+          memory: 512M
+
+  postgres:
+    image: postgres:16-alpine # Latest stable
+    container_name: citizen-postgres-dev
+    restart: always
+    env_file: .env
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
+      # Development optimizations
+      - POSTGRES_SHARED_PRELOAD_LIBRARIES=pg_stat_statements
+      - POSTGRES_LOG_STATEMENT=all # Log all queries in dev
+      - POSTGRES_LOG_MIN_DURATION_STATEMENT=0 # Log slow queries
+    volumes:
+      - citizen-postgres-dev-data:/var/lib/postgresql/data
+      - ./logs/postgres:/var/log/postgresql # Log persistence
+    networks:
+      - citizen-network-dev
+    ports:
+      - "5433:5432" # Different port to avoid conflicts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Development resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  redis:
+    image: redis:7-alpine
+    container_name: citizen-redis-dev
+    restart: always
+    command: >
+      redis-server 
+      --appendonly yes 
+      --appendfsync everysec
+      --save 60 1000
+      --loglevel verbose
+      --logfile /var/log/redis/redis.log
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - citizen-redis-dev-data:/data
+      - ./logs/redis:/var/log/redis # Log persistence
+    networks:
+      - citizen-network-dev
+    ports:
+      - "6380:6379" # Different port to avoid conflicts
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    # Development resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: ../docker/dockerfiles/Dockerfile.dev
+      args:
+        BUILD_VERSION: dev-${BUILD_VERSION:-latest}
+        BUILD_TIME: ${BUILD_TIME}
+        GIT_COMMIT: ${GIT_COMMIT:-dev}
+        COMPRESS_BINARY: "false" # Faster dev builds
+    container_name: citizen-api-dev
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Database
+      - DB_HOST=postgres
+      - REDIS_HOST=redis
+      # SSH Configuration
+      - SSH_HOST=dokku
+      - SSH_USER=dokku
+      - SSH_KEY_PATH=/home/developer/.ssh/id_rsa
+      # CORS - permissive for development
+      - CORS_ALLOWED_ORIGINS=http://localhost,http://localhost:80,http://localhost:5173,http://localhost:3000
+      - FORCE_HTTPS=false
+      - LOGIN_DOMAIN_FOR_COOKIE=localhost
+      # Environment specific
+      - ENVIRONMENT=development
+      - LOG_LEVEL=debug
+      - LOG_FORMAT=text
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      # Development specific
+      - ENABLE_DEBUG_ENDPOINTS=true
+      - ENABLE_PROFILING=true
+      - ENABLE_TRACE_LOGGING=true
+      - GIN_MODE=debug
+      - HOT_RELOAD=true
+      - CGO_ENABLED=0
+    volumes:
+      # Source code mounting for hot reload
+      - ../backend:/app
+      - ../backend/.air.toml:/app/.air.toml
+      - ./ssh_keys:/app/ssh_keys:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./logs/api:/app/logs # Persistent logging
+      # Development tools
+      - citizen-go-cache:/go/pkg/mod # Go module cache
+    ports:
+      - "3001:3000" # Expose API port for direct access
+    networks:
+      - citizen-network-dev
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    # Hot reload entrypoint with development optimizations
+    entrypoint: >
+      /bin/sh -c "
+      echo '🚀 Starting Citizen API in DEVELOPMENT mode...' &&
+      mkdir -p /home/developer/.ssh /app/logs &&
+      if [ -f /app/ssh_keys/id_rsa ]; then
+        cp /app/ssh_keys/id_rsa /home/developer/.ssh/ && 
+        cp /app/ssh_keys/id_rsa.pub /home/developer/.ssh/ && 
+        chmod 600 /home/developer/.ssh/id_rsa && 
+        chmod 644 /home/developer/.ssh/id_rsa.pub && 
+        echo '✅ SSH keys copied successfully'
+      else
+        echo '⚠️  SSH keys not found - continuing without SSH keys'
+      fi &&
+      chmod 700 /home/developer/.ssh &&
+      echo '📡 Starting with Air hot reload...' &&
+      air -c .air.toml
+      "
+    # Development debugging tools
+    cap_add:
+      - SYS_PTRACE # For debugging
+    security_opt:
+      - apparmor:unconfined # More permissive for dev
+    # Development resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile.dev
+      args:
+        NODE_ENV: development
+        VITE_API_URL: /api/v1
+        VITE_ENVIRONMENT: development
+    platform: linux/amd64
+    container_name: citizen-frontend-dev
+    restart: unless-stopped
+    volumes:
+      # Source code mounting for hot reload
+      - ../frontend:/app
+      - /app/node_modules  # Anonymous volume to prevent overwriting
+      - citizen-frontend-dist:/app/dist # Build cache
+    environment:
+      - NODE_ENV=development
+      - VITE_API_URL=/api/v1
+      - VITE_ENVIRONMENT=development
+      - VITE_HOT_RELOAD=true
+      - CHOKIDAR_USEPOLLING=true # Better file watching in Docker
+      - WATCHPACK_POLLING=true
+    ports:
+      - "5174:5173" # Expose Vite dev server port
+    networks:
+      - citizen-network-dev
+    depends_on:
+      - api
+    # Vite dev server with hot reload
+    command: >
+      sh -c "
+      echo '🚀 Starting Citizen Frontend in DEVELOPMENT mode...' &&
+      npm install &&
+      npm run dev -- --host 0.0.0.0 --port 5173
+      "
+    # Development resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # Development Database Admin Tool
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: citizen-pgadmin-dev
+    restart: unless-stopped
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@citizen.dev
+      - PGADMIN_DEFAULT_PASSWORD=admin123
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    ports:
+      - "5050:80"
+    volumes:
+      - citizen-pgadmin-dev-data:/var/lib/pgadmin
+    networks:
+      - citizen-network-dev
+    depends_on:
+      - postgres
+    profiles: # Optional service - start with --profile admin
+      - admin
+
+  # Redis Admin Tool
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: citizen-redis-commander-dev
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    networks:
+      - citizen-network-dev
+    depends_on:
+      - redis
+    profiles: # Optional service - start with --profile admin
+      - admin
+
+  dokku-watcher:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.watcher.dev
+    container_name: citizen-dokku-traefik-watcher-dev
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PROJECT_ROOT=/app
+      - ENVIRONMENT=development
+      - WATCH_INTERVAL=5 # More frequent checks in dev
+      - FORCE_REGEN_INTERVAL=60 # More frequent regen in dev
+      - HEALTH_CHECK_INTERVAL=30 # More frequent health checks
+      - DEBUG_MODE=true
+      - DOKKU_CONTAINER=citizen-dokku-dev
+      - TRAEFIK_CONTAINER=citizen-traefik-dev
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/dynamic_conf.yml:/app/config/dynamic_conf.yml
+      - ./.env:/app/.env:ro
+      - ./logs:/app/logs # Persistent logging
+      # Development: mount source for live changes
+      - ./scripts:/app/scripts:ro
+    networks:
+      - citizen-network-dev
+    depends_on:
+      - traefik
+      - dokku
+    # Development resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+
+networks:
+  citizen-network-dev:
+    driver: bridge
+    name: docker_citizen-network-dev
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
+volumes:
+  citizen-postgres-dev-data:
+    name: citizen-postgres-dev-data
+  citizen-redis-dev-data:
+    name: citizen-redis-dev-data
+  citizen-dokku-dev-data:
+    name: citizen-dokku-dev-data
+  citizen-pgadmin-dev-data:
+    name: citizen-pgadmin-dev-data
+  citizen-frontend-dist:
+    name: citizen-frontend-dist-dev
+  citizen-go-cache:
+    name: citizen-go-cache-dev 

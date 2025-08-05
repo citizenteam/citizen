@@ -1,0 +1,57 @@
+# traefik.yml - Main Configuration v3.4 with HTTP Challenge
+api:
+  dashboard: true
+
+
+entryPoints:
+  web:
+    address: ":80"
+    # Required for HTTP challenge - keeping .well-known/acme-challenge/ path open
+  websecure:
+    address: ":443"
+    # 🎯 v3.4 HTTP/3 support (advertise field removed in v3.4)
+    http3: {}
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic_conf.yml
+    watch: true
+    # 🎯 v3.4 file provider (pollInterval field removed)
+
+# 🎯 v3.4 Core configuration
+core:
+  # Temporary for v2 syntax support
+  defaultRuleSyntax: v2
+
+# Let's Encrypt configuration for HTTP Challenge
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+      # Email will be provided via command line parameter
+      # For staging/testing:
+      # caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+
+# Logging configuration - OUTPUT TO STDOUT for Docker logs visibility
+log:
+  level: DEBUG  # Use DEBUG for troubleshooting
+  # filePath removed - logs will go to stdout (visible in docker logs)
+
+accessLog:
+  # filePath removed - logs will go to stdout (visible in docker logs)
+  filters:
+    statusCodes:
+      - "200-299"
+      - "400-499"
+      - "500-599"
+
+# 🎯 v3.4 Ping endpoint (restricted for security)
+ping:
+  entryPoint: websecure
+
+# Global configuration
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false

@@ -1,0 +1,29 @@
+FROM alpine:3.19
+
+# Install required packages including coreutils for timeout command
+RUN apk add --no-cache \
+    bash \
+    openssh-client \
+    docker-cli \
+    jq \
+    postgresql-client \
+    coreutils \
+    procps  # For ps command
+
+WORKDIR /app
+
+# Copy scripts maintaining directory structure
+COPY scripts/ ./scripts/
+
+# Make scripts executable
+RUN find ./scripts -name "*.sh" -exec chmod +x {} \;
+
+# Create necessary directories
+RUN mkdir -p config logs
+
+# Add health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+  CMD ps aux | grep -v grep | grep -q "dokku-traefik-watcher.sh" || exit 1
+
+# Use exec form to ensure signals are handled properly
+CMD ["bash", "./scripts/dokku/dokku-traefik-watcher.sh"]
