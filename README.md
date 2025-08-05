@@ -13,6 +13,16 @@
 
 ---
 
+## 🚀 **Quick Start**
+
+To get started with Citizen, run the following command in your terminal. This will clone the repository and start the interactive setup process.
+
+```bash
+curl -sSL https://raw.githubusercontent.com/citizenteam/citizen/main/install.sh | bash
+```
+
+---
+
 ## **What is Citizen?**
 
 Citizen is a **modern web-based management interface for Dokku** that transforms the command-line PaaS experience into an intuitive, feature-rich web application. It provides a complete dashboard for managing your Dokku applications with advanced features like GitHub integration, automated deployments, and comprehensive monitoring.
