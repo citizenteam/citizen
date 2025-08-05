@@ -260,14 +260,6 @@ $RECYCLE.BIN/
 # ============================================
 # SECURITY & SENSITIVE FILES
 # ============================================
-# API Keys and secrets
-*secret*
-*key*
-*keys*
-!public*key*
-*token*
-*password*
-*credential*
 
 # SSL/TLS
 *.pem
