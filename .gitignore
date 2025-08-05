@@ -278,7 +278,6 @@ known_hosts
 authorized_keys
 
 # Database dumps and backups
-*.sql
 *.dump
 *.backup
 *.db
@@ -401,7 +400,6 @@ citizen-backend
 citizen-frontend
 
 # Migration files with sensitive data
-*migration*.sql
 *seed*.sql
 
 # Local development overrides
