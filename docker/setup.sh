@@ -142,7 +142,7 @@ select_environment_and_domain() {
     echo ""
     
     while true; do
-        read -p "Select environment [1-2]: " env_choice
+        read -p "Select environment [1-2]: " env_choice < /dev/tty
         case $env_choice in
             1)
                 ENVIRONMENT="dev"
@@ -166,7 +166,7 @@ select_environment_and_domain() {
                 
                 # Get production domain
                 while true; do
-                    read -p "Enter your production domain (e.g., example.com or citizen.example.com): " MAIN_DOMAIN
+                    read -p "Enter your production domain (e.g., example.com or citizen.example.com): " MAIN_DOMAIN < /dev/tty
                     if [[ -n "$MAIN_DOMAIN" ]] && [[ "$MAIN_DOMAIN" != "localhost" ]]; then
                         # Validate domain format
                         if validate_domain_format "$MAIN_DOMAIN"; then
@@ -187,7 +187,7 @@ select_environment_and_domain() {
                 echo -e "${CYAN}📍 Domain: ${MAIN_DOMAIN}${NC}"
                 echo -e "${CYAN}📍 Base domain for email: ${base_domain}${NC}"
                 while true; do
-                    read -p "Enter email for SSL certificate [${default_ssl_email}]: " LETSENCRYPT_EMAIL
+                    read -p "Enter email for SSL certificate [${default_ssl_email}]: " LETSENCRYPT_EMAIL < /dev/tty
                     # Use default if empty
                     if [[ -z "$LETSENCRYPT_EMAIL" ]]; then
                         LETSENCRYPT_EMAIL="$default_ssl_email"
@@ -202,7 +202,7 @@ select_environment_and_domain() {
                 # Get admin user credentials for production
                 echo -e "${BLUE}🔐 Production Admin User Setup${NC}"
                 while true; do
-                    read -p "Enter admin username: " ADMIN_USERNAME
+                    read -p "Enter admin username: " ADMIN_USERNAME < /dev/tty
                     if [[ -n "$ADMIN_USERNAME" ]] && [[ ${#ADMIN_USERNAME} -ge 3 ]]; then
                         break
                     else
@@ -211,10 +211,10 @@ select_environment_and_domain() {
                 done
                 
                 while true; do
-                    read -s -p "Enter admin password: " ADMIN_PASSWORD
+                    read -s -p "Enter admin password: " ADMIN_PASSWORD < /dev/tty
                     echo
                     if [[ -n "$ADMIN_PASSWORD" ]] && [[ ${#ADMIN_PASSWORD} -ge 6 ]]; then
-                        read -s -p "Confirm admin password: " ADMIN_PASSWORD_CONFIRM
+                        read -s -p "Confirm admin password: " ADMIN_PASSWORD_CONFIRM < /dev/tty
                         echo
                         if [[ "$ADMIN_PASSWORD" == "$ADMIN_PASSWORD_CONFIRM" ]]; then
                             break
@@ -228,7 +228,7 @@ select_environment_and_domain() {
                 
                 local default_admin_email="admin@${base_domain}"
                 while true; do
-                    read -p "Enter admin email [${default_admin_email}]: " ADMIN_EMAIL
+                    read -p "Enter admin email [${default_admin_email}]: " ADMIN_EMAIL < /dev/tty
                     # Use default if empty
                     if [[ -z "$ADMIN_EMAIL" ]]; then
                         ADMIN_EMAIL="$default_admin_email"
@@ -944,7 +944,7 @@ clean_old_volumes() {
         echo ""
         
         while true; do
-            read -p "Do you want to clean these volumes for a fresh start? [y/N]: " clean_choice
+            read -p "Do you want to clean these volumes for a fresh start? [y/N]: " clean_choice < /dev/tty
             case $clean_choice in
                 [Yy]* )
                     echo -e "${BLUE}🗑️  Removing existing volumes...${NC}"

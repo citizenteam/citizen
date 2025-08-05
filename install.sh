@@ -70,7 +70,7 @@ chmod +x setup.sh
 # 5. Execute the setup script
 info "Starting the Citizen setup script..."
 echo "----------------------------------------------------"
-./setup.sh < /dev/tty
+./setup.sh
 echo "----------------------------------------------------"
 
 success "Citizen setup process has been initiated."
