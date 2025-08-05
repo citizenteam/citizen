@@ -268,7 +268,6 @@ $RECYCLE.BIN/
 *token*
 *password*
 *credential*
-*auth*
 
 # SSL/TLS
 *.pem
