@@ -12,7 +12,7 @@ config.env
 # Backend specific environment
 backend/.env
 backend/config.env
-backend/.air.toml
+
 !backend/.air.toml.example
 
 # Frontend specific environment  
