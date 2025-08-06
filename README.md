@@ -9,13 +9,15 @@
 [![Traefik](https://img.shields.io/badge/Traefik-3.4+-24A1C1?style=for-the-badge&logo=traefikproxy&logoColor=white)](https://traefik.io/)
 [![License](https://img.shields.io/badge/License-BSL%201.1-blue?style=for-the-badge)](LICENSE)
 
-> **A comprehensive web-based management platform for Dokku PaaS with modern UI, automated SSL, GitHub/Docker integration, and enterprise-grade security.**
+Citizen is a comprehensive, web-based management platform for modern application infrastructure. It provides an intuitive user interface to streamline application deployment, management, and monitoring, transforming command-line-driven workflows into a seamless graphical experience.
+
+With robust features such as automated SSL, GitHub and Docker Hub integration, and enterprise-grade security, Citizen empowers developers and teams to manage their infrastructure with greater efficiency and control. It is architected as a complete dashboard for the modern application lifecycle.
 
 ---
 
-## 🚀 **Quick Start**
+## Quick Start
 
-To get started with Citizen, run the following command in your terminal. This will clone the repository and start the interactive setup process.
+To get started with Citizen, run the following command in your terminal. This will download and start the interactive setup process.
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/citizenteam/citizen/main/install.sh | bash
@@ -23,19 +25,19 @@ curl -sSL https://raw.githubusercontent.com/citizenteam/citizen/main/install.sh 
 
 ---
 
-## **What is Citizen?**
+## Overview
 
-Citizen is a **modern web-based management interface for Dokku** that transforms the command-line PaaS experience into an intuitive, feature-rich web application. It provides a complete dashboard for managing your Dokku applications with advanced features like GitHub integration, automated deployments, and comprehensive monitoring.
+Citizen offers a feature-rich, web-based interface that replaces complex command-line operations with a powerful and intuitive web application. It delivers a comprehensive dashboard for overseeing your applications, complete with advanced functionalities like GitHub integration for automated deployments and extensive real-time monitoring.
 
-### **Core Value Proposition**
+### Core Features
 
-- **Modern Web Interface** - Beautiful, responsive UI replacing complex CLI commands
-- **Enterprise Authentication** - JWT-based SSO with secure session management
-- **GitHub Integration** - OAuth-based repository connections with automated deployments
-- **Docker Hub Support** - Private registry authentication and management
-- **Automated SSL Management** - Let's Encrypt integration with Traefik reverse proxy
-- **Real-time Monitoring** - Live logs, health checks, and system metrics
-- **Security-First Design** - CSRF protection, security headers, and hardened containers
+- **Modern Web Interface**: A clean, responsive user interface that simplifies complex workflows.
+- **Enterprise Authentication**: JWT-based SSO with secure session management
+- **GitHub Integration**: OAuth-based repository connections with automated deployments
+- **Docker Hub Support**: Private registry authentication and management
+- **Automated SSL Management**: Let's Encrypt integration with Traefik reverse proxy
+- **Real-time Monitoring**: Live logs, health checks, and system metrics
+- **Security-First Design**: CSRF protection, security headers, and hardened containers
 
 ## 🏗️ **System Architecture**
 
@@ -130,16 +132,17 @@ citizen/
 - **4GB RAM** minimum (8GB recommended for production)
 - **20GB disk space** (SSD recommended)
 - **Domain name** (for production SSL)
-- **Dokku Server** with SSH access configured
+- **A Dokku-based server** with SSH access configured
 
 ### **One-Command Deployment**
 
+For manual installation, clone the repository and execute the setup script. This will guide you through an intelligent configuration process for either development or production environments.
+
 ```bash
-# 1. Clone the repository
 git clone https://github.com/citizenteam/citizen.git
 cd citizen
 
-# 2. Run the intelligent setup script
+# Run the intelligent setup script
 cd docker && chmod +x setup.sh && ./setup.sh
 ```
 
@@ -150,10 +153,10 @@ After successful deployment, you **MUST** configure DNS records to make your dom
 #### **Required DNS Records**
 
 ```bash
-# 1. Main domain A record (replace YOUR_SERVER_IP with actual IP address)
+# 1. Main Domain (A Record)
 yourdomain.com      A     YOUR_SERVER_IP
 
-# 2. Wildcard subdomain A record (for all Dokku apps)
+# 2. Wildcard Subdomain (A Record)
 *.yourdomain.com    A     YOUR_SERVER_IP
 ```
 
@@ -244,72 +247,71 @@ After deployment, access your services:
 | 💾 **Database Admin** | http://localhost:5050 | Internal only |
 | ⚡ **Redis Admin** | http://localhost:8081 | Internal only |
 
-## **Core Features**
+## **Key Functionality**
 
 ### **Application Lifecycle Management**
 
-- **📱 App Creation & Deletion** - Create and manage Dokku applications through web interface
-- **🚀 Manual Deployment** - Deploy from Git repositories with real-time log streaming
-- **🔄 Auto Deployment** - GitHub webhook-based automatic deployments (coming soon)
-- **🔧 Environment Variables** - Secure config management with PORT auto-detection
-- **🌐 Domain Management** - Add/remove domains with automatic SSL certificate generation
-- **📦 Buildpack Management** - Support for Herokuish, Cloud Native Buildpacks, and Dockerfile
-- **🔄 App Restart & Control** - Start, stop, and restart applications
+- **App Creation & Deletion**: Manage your applications directly through the web interface.
+- **Manual & Automated Deployments**: Deploy from Git repositories with real-time log streaming or set up automated deployments via GitHub webhooks.
+- **Environment Configuration**: Securely manage environment variables with automatic PORT detection.
+- **Domain Management**: Add and remove custom domains with automated SSL certificate generation.
+- **Buildpack Support**: Compatible with Cloud Native Buildpacks and Dockerfile-based deployments.
+- **Application Control**: Start, stop, and restart applications with a single click.
 
-### **External Integrations**
+### **Integrations**
 
 #### **GitHub Integration**
-- **OAuth Authentication** - Secure GitHub App integration
-- **Repository Connection** - Connect GitHub repos to Dokku apps
-- **Private Repository Support** - Access private repositories with user tokens
-- **Branch Selection** - Deploy from specific branches
-- **Webhook Management** - Automated deployment triggers (in development)
+- **OAuth Authentication**: Secure GitHub App integration
+- **Repository Connection**: Connect GitHub repos to Dokku apps
+- **Private Repository Support**: Access private repositories with user tokens
+- **Branch Selection**: Deploy from specific branches
+- **Webhook Management**: Automated deployment triggers (in development)
 
 #### **Docker Hub Integration**
-- **Registry Authentication** - Secure Docker Hub login management
-- **Private Registry Support** - Access private Docker images
-- **Connection Testing** - Verify Docker Hub connectivity
-- **Credential Management** - Secure token storage and management
+- **Registry Authentication**: Secure Docker Hub login management
+- **Private Registry Support**: Access private Docker images
+- **Connection Testing**: Verify Docker Hub connectivity
+- **Credential Management**: Secure token storage and management
 
 ### **Security & Authentication**
 
-- **JWT-based Authentication** - Secure token-based user authentication
-- **SSO Session Management** - Cross-domain single sign-on support
-- **CSRF Protection** - State parameter validation with crypto-secure random generation
-- **Security Headers** - HSTS, CSP, X-Frame-Options, XSS protection
-- **Container Security** - Distroless images, capability dropping, read-only filesystems
-- **SSH Key Management** - Environment-specific SSH key configuration
-- **Audit Logging** - Complete activity tracking and audit trails
+- **JWT-based Authentication**: Secure token-based user authentication
+- **SSO Session Management**: Cross-domain single sign-on support
+- **CSRF Protection**: State parameter validation with crypto-secure random generation
+- **Security Headers**: HSTS, CSP, X-Frame-Options, XSS protection
+- **Container Security**: Distroless images, capability dropping, read-only filesystems
+- **SSH Key Management**: Environment-specific SSH key configuration
+- **Audit Logging**: Complete activity tracking and audit trails
 
 ### **Monitoring & Observability**
 
 #### **Health Endpoints**
-- **`/health`** - Overall system health status
-- **`/health/detailed`** - Comprehensive system information
-- **`/health/ready`** - Kubernetes-style readiness probe
-- **`/health/live`** - Kubernetes-style liveness probe
+- **`/health`**: Overall system health status
+- **`/health/detailed`**: Comprehensive system information
+- **`/health/ready`**: Kubernetes-style readiness probe
+- **`/health/live`**: Kubernetes-style liveness probe
 
 #### **System Metrics**
-- **Memory Usage** - Heap allocation, system memory, GC statistics
-- **Runtime Metrics** - Goroutine count, GC runs, uptime tracking
-- **Database Monitoring** - Connection pooling stats, query performance
-- **Redis Monitoring** - Cache hit rates, connection status
-- **Component Health** - Database, Redis, SSH connectivity status
+- **Memory Usage**: Heap allocation, system memory, GC statistics
+- **Runtime Metrics**: Goroutine count, GC runs, uptime tracking
+- **Database Monitoring**: Connection pooling stats, query performance
+- **Redis Monitoring**: Cache hit rates, connection status
+- **Component Health**: Database, Redis, SSH connectivity status
 
 #### **Live Monitoring**
-- **Real-time Log Streaming** - Live application logs with filtering
-- **Deployment Tracking** - Real-time deployment progress and logs
-- **Activity Timeline** - User actions, deployments, and system events
-- **Build Log Access** - Detailed build process logs and error tracking
+- **Real-time Log Streaming**: Live application logs with filtering
+- **Deployment Tracking**: Real-time deployment progress and logs
+- **Activity Timeline**: User actions, deployments, and system events
+- **Build Log Access**: Detailed build process logs and error tracking
 
 ### **User Interface Features**
 
-- **Responsive Design** - Mobile-friendly interface with Tailwind CSS
-- **Dark/Light Mode** - Adaptive theme support
-- **Real-time Updates** - Live data refresh without page reloads
-- **Interactive Dashboards** - App status, deployment history, metrics
-- **Form Validation** - Client-side and server-side input validation
-- **Error Handling** - User-friendly error messages and recovery suggestions
+- **Responsive Design**: Mobile-friendly interface with Tailwind CSS
+- **Dark/Light Mode**: Adaptive theme support
+- **Real-time Updates**: Live data refresh without page reloads
+- **Interactive Dashboards**: App status, deployment history, metrics
+- **Form Validation**: Client-side and server-side input validation
+- **Error Handling**: User-friendly error messages and recovery suggestions
 
 ## **Setup Requirements**
 
@@ -398,28 +400,6 @@ curl -X POST http://localhost:3000/api/v1/auth/login \
 - **[Docker](https://www.docker.com/)** - Containerization platform
 - **[Traefik v3.4](https://traefik.io/)** - Modern reverse proxy with automatic HTTPS
 - **[Let's Encrypt](https://letsencrypt.org/)** - Free SSL certificate authority
-
-## **Database Schema**
-
-### **Core Tables**
-
-```sql
--- User management
-users (id, username, email, password, github_id, github_access_token, created_at)
-
--- Application deployments  
-app_deployments (id, app_name, domain, port, git_url, git_branch, status, last_deploy)
-
--- GitHub integration
-github_repositories (id, user_id, app_name, github_id, full_name, auto_deploy_enabled)
-
--- Activity tracking
-activities (id, app_name, activity_type, status, message, user_id, created_at)
-
--- App settings
-app_custom_domains (id, app_name, domain, is_active, created_at)
-app_public_settings (id, app_name, is_public, created_at)
-```
 
 ## **Production Deployment**
 
@@ -527,6 +507,6 @@ See the [LICENSE](LICENSE) file for details.
 
 **Made with ❤️ by the Citizen Team**
 
-[⬆ Back to Top](#-citizen)
+[⬆ Back to Top](#citizen)
 
 </div> 
