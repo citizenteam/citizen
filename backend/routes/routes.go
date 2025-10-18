@@ -78,6 +78,16 @@ func SetupRoutes(app *fiber.App) {
 	citizen.Post("/apps/:app_name/public-setting", handlers.SetPublicApp)
 	citizen.Get("/apps/:app_name/public-setting", handlers.GetPublicAppSetting)
 
+	// API Token management
+	citizen.Post("/api-tokens", handlers.CreateAPIToken)
+	citizen.Get("/api-tokens", handlers.ListAPITokens)
+	citizen.Delete("/api-tokens/:token_id", handlers.DeleteAPIToken)
+
+	// App API Access management
+	citizen.Get("/apps/:app_name/api-access", handlers.GetAppAPIAccess)
+	citizen.Post("/apps/:app_name/api-access", handlers.SetAppAPIAccess)
+	citizen.Get("/api-operations", handlers.GetAvailableOperations)
+
 	// Docker Hub connection endpoints
 	citizen.Post("/docker/connection", handlers.CreateDockerConnection)
 	citizen.Get("/docker/connection", handlers.GetDockerConnection)

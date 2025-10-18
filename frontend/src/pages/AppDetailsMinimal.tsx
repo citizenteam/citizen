@@ -6,6 +6,8 @@ import { errorLog, componentDebugLog, warnLog } from '../utils/debug';
 import LogViewer from '../components/LogViewer';
 import CustomSelect from '../components/CustomSelect';
 import GitHubRepositorySelector from '../components/GitHubRepositorySelector';
+import { APITokenManagement } from '../components/APITokenManagement';
+import { AppAPIAccess } from '../components/AppAPIAccess';
 
 interface GitHubRepository {
   id: number;
@@ -56,7 +58,7 @@ export default function AppDetailsMinimal() {
   const [manualDeployEnabled, setManualDeployEnabled] = useState(true);
   const [activities, setActivities] = useState<any[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
-  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
   
   // Form states
   const [newDomain, setNewDomain] = useState('');
@@ -1716,116 +1718,140 @@ export default function AppDetailsMinimal() {
 
                     {/* Access Control */}
                     {activeSettingsTab === 'access' && (
-                      <div className="p-5 lg:p-6 rounded-xl lg:rounded-2xl"
-                        style={{
-                          backgroundColor: 'rgba(255, 255, 255, 0.7)',
-                          border: '1px solid rgba(0, 0, 0, 0.06)',
-                          minHeight: '400px'
-                        }}
-                      >
-                        <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#0f172a', marginBottom: '16px' }}>
-                          Access Control
-                        </h3>
-                        
-                        <div className="mb-6">
-                          <h4 style={{ fontSize: '14px', fontWeight: '600', color: '#64748b', marginBottom: '8px' }}>
-                            Public Access
-                          </h4>
-                          <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '16px' }}>
-                            Control whether this app requires authentication to access. Public apps can be accessed by anyone without logging in.
-                          </p>
-                          
-                          <div className="flex items-center gap-4">
-                            <label className="flex items-center gap-3 cursor-pointer">
-                              <input
-                                type="radio"
-                                name="publicAccess"
-                                checked={!isPublic}
-                                onChange={() => handleUpdatePublicSetting(false)}
-                                disabled={updatePublicLoading}
-                                className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500"
-                              />
-                              <div>
-                                <span className="text-sm font-medium text-gray-900">Private</span>
-                                <span className="block text-xs text-gray-500">Requires authentication</span>
-                              </div>
-                            </label>
-                            
-                            <label className="flex items-center gap-3 cursor-pointer">
-                              <input
-                                type="radio"
-                                name="publicAccess"
-                                checked={isPublic}
-                                onChange={() => handleUpdatePublicSetting(true)}
-                                disabled={updatePublicLoading}
-                                className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500"
-                              />
-                              <div>
-                                <span className="text-sm font-medium text-gray-900">Public</span>
-                                <span className="block text-xs text-gray-500">No authentication required</span>
-                              </div>
-                            </label>
-                          </div>
-                          
-                          {updatePublicLoading && (
-                            <div className="mt-4 flex items-center gap-2">
-                              <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                              <span className="text-sm text-gray-600">Updating access settings...</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Current Status */}
-                        <div 
-                          className="p-4 rounded-lg"
+                      <div className="space-y-6">
+                        {/* Public Access Section */}
+                        <div className="p-5 lg:p-6 rounded-xl lg:rounded-2xl"
                           style={{
-                            backgroundColor: isPublic ? 'rgba(34, 197, 94, 0.05)' : 'rgba(59, 130, 246, 0.05)',
-                            border: `1px solid ${isPublic ? 'rgba(34, 197, 94, 0.2)' : 'rgba(59, 130, 246, 0.2)'}`
+                            backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                            border: '1px solid rgba(0, 0, 0, 0.06)',
                           }}
                         >
-                          <div className="flex items-center gap-3">
-                            <div 
-                              className="w-3 h-3 rounded-full"
-                              style={{
-                                backgroundColor: isPublic ? '#22c55e' : '#3b82f6'
-                              }}
-                            ></div>
-                            <div>
-                              <h5 className="text-sm font-medium text-gray-900">
-                                {isPublic ? 'Public Access Enabled' : 'Private Access (Default)'}
-                              </h5>
-                              <p className="text-xs text-gray-600">
-                                {isPublic 
-                                  ? 'Anyone can access this app without logging in'
-                                  : 'Users must authenticate to access this app'
-                                }
-                              </p>
+                          <h3 style={{ fontSize: '18px', fontWeight: '600', color: '#0f172a', marginBottom: '16px' }}>
+                            Public Access
+                          </h3>
+                          
+                          <div className="mb-6">
+                            <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '16px' }}>
+                              Control whether this app requires authentication to access. Public apps can be accessed by anyone without logging in.
+                            </p>
+                            
+                            <div className="flex items-center gap-4">
+                              <label className="flex items-center gap-3 cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name="publicAccess"
+                                  checked={!isPublic}
+                                  onChange={() => handleUpdatePublicSetting(false)}
+                                  disabled={updatePublicLoading}
+                                  className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                                />
+                                <div>
+                                  <span className="text-sm font-medium text-gray-900">Private</span>
+                                  <span className="block text-xs text-gray-500">Requires authentication</span>
+                                </div>
+                              </label>
+                              
+                              <label className="flex items-center gap-3 cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name="publicAccess"
+                                  checked={isPublic}
+                                  onChange={() => handleUpdatePublicSetting(true)}
+                                  disabled={updatePublicLoading}
+                                  className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                                />
+                                <div>
+                                  <span className="text-sm font-medium text-gray-900">Public</span>
+                                  <span className="block text-xs text-gray-500">No authentication required</span>
+                                </div>
+                              </label>
                             </div>
+                            
+                            {updatePublicLoading && (
+                              <div className="mt-4 flex items-center gap-2">
+                                <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                                <span className="text-sm text-gray-600">Updating access settings...</span>
+                              </div>
+                            )}
                           </div>
-                        </div>
 
-                        {/* Warning for Public Apps */}
-                        {isPublic && (
+                          {/* Current Status */}
                           <div 
-                            className="p-4 rounded-lg mt-4"
+                            className="p-4 rounded-lg"
                             style={{
-                              backgroundColor: 'rgba(245, 158, 11, 0.05)',
-                              border: '1px solid rgba(245, 158, 11, 0.2)'
+                              backgroundColor: isPublic ? 'rgba(34, 197, 94, 0.05)' : 'rgba(59, 130, 246, 0.05)',
+                              border: `1px solid ${isPublic ? 'rgba(34, 197, 94, 0.2)' : 'rgba(59, 130, 246, 0.2)'}`
                             }}
                           >
-                            <div className="flex items-start gap-3">
-                              <svg className="w-5 h-5 text-amber-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                              </svg>
+                            <div className="flex items-center gap-3">
+                              <div 
+                                className="w-3 h-3 rounded-full"
+                                style={{
+                                  backgroundColor: isPublic ? '#22c55e' : '#3b82f6'
+                                }}
+                              ></div>
                               <div>
-                                <h6 className="text-sm font-medium text-amber-800">Security Notice</h6>
-                                <p className="text-xs text-amber-700 mt-1">
-                                  Public apps are accessible to anyone on the internet. Make sure your app doesn't contain sensitive data or functionality that should be protected.
+                                <h5 className="text-sm font-medium text-gray-900">
+                                  {isPublic ? 'Public Access Enabled' : 'Private Access (Default)'}
+                                </h5>
+                                <p className="text-xs text-gray-600">
+                                  {isPublic 
+                                    ? 'Anyone can access this app without logging in'
+                                    : 'Users must authenticate to access this app'
+                                  }
                                 </p>
                               </div>
                             </div>
                           </div>
-                        )}
+
+                          {/* Warning for Public Apps */}
+                          {isPublic && (
+                            <div 
+                              className="p-4 rounded-lg mt-4"
+                              style={{
+                                backgroundColor: 'rgba(245, 158, 11, 0.05)',
+                                border: '1px solid rgba(245, 158, 11, 0.2)'
+                              }}
+                            >
+                              <div className="flex items-start gap-3">
+                                <svg className="w-5 h-5 text-amber-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                                </svg>
+                                <div>
+                                  <h6 className="text-sm font-medium text-amber-800">Security Notice</h6>
+                                  <p className="text-xs text-amber-700 mt-1">
+                                    Public apps are accessible to anyone on the internet. Make sure your app doesn't contain sensitive data or functionality that should be protected.
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* App API Access Section */}
+                        <div className="p-5 lg:p-6 rounded-xl lg:rounded-2xl"
+                          style={{
+                            backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                            border: '1px solid rgba(0, 0, 0, 0.06)',
+                          }}
+                        >
+                          <AppAPIAccess 
+                            appName={appName} 
+                            onMessage={(msg) => setMessage(msg)} 
+                          />
+                        </div>
+
+                        {/* API Token Management Section */}
+                        <div className="p-5 lg:p-6 rounded-xl lg:rounded-2xl"
+                          style={{
+                            backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                            border: '1px solid rgba(0, 0, 0, 0.06)',
+                          }}
+                        >
+                          <APITokenManagement 
+                            onMessage={(msg) => setMessage(msg)} 
+                          />
+                        </div>
                       </div>
                     )}
 

@@ -4,7 +4,9 @@ import (
 	"backend/database"
 	"backend/database/api"
 	"backend/models"
+	"backend/tokens"
 	"backend/utils"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -677,11 +679,41 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	}
 
-	// Validate SSO session
+	// Try API Token authentication first (if app has API access enabled)
+	if appName != "" {
+		authHeader := c.Get("X-Forwarded-Authorization") // Traefik forwards Authorization header as this
+		if authHeader == "" {
+			authHeader = c.Get("Authorization") // Fallback to direct Authorization header
+		}
+		queryToken := c.Query("token")
+		
+		if token := tokens.ExtractAPIToken(authHeader, queryToken); token != "" {
+			// Check if app has API access enabled (simple on/off check)
+			hasAccess, err := api.AppAPIAccess.IsAppAPIAccessEnabled(c.Context(), appName)
+			
+			if err == nil && hasAccess {
+				// Validate API token
+				user, err := api.APITokens.ValidateAPIToken(c.Context(), token)
+				if err == nil && user != nil {
+					utils.AuthDebugLog("API token validation successful for app: %s, User: %d", appName, user.ID)
+
+					// Update token usage asynchronously
+					go func() {
+						api.APITokens.UpdateTokenUsage(context.Background(), token, c.IP())
+					}()
+
+					return c.SendStatus(fiber.StatusOK)
+				}
+				utils.AuthDebugLog("API token validation failed: %v", err)
+			}
+		}
+	}
+
+	// Fallback to SSO session validation
 	session, _ := validateAndGetSSOSession(c, forwardedUri)
 	
 	if session == nil {
-		utils.AuthDebugLog("No valid SSO session found for host: %s", forwardedHost)
+		utils.AuthDebugLog("No valid authentication found for host: %s", forwardedHost)
 		
 		originalURL := c.Get("X-Forwarded-Proto") + "://" + forwardedHost + forwardedUri
 		
@@ -697,8 +729,7 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 		return redirectToLogin(c, originalURL)
 	}
 	
-	// Session validated from secure cookie only
-
+	// SSO session validated
 	utils.AuthDebugLog("SSO session validation successful for host: %s, User: %d", forwardedHost, session.UserID)
 	return c.SendStatus(fiber.StatusOK)
 }

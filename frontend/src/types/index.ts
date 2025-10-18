@@ -61,4 +61,48 @@ export interface DockerConnectionResponse {
 export interface DockerConnectionRequest {
   username: string;
   access_token: string;
+}
+
+// API Token Types
+export interface APIToken {
+  id: number;
+  token_prefix: string;
+  name: string;
+  description?: string;
+  expires_at?: string;
+  last_used_at?: string;
+  usage_count: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface APITokenResponse extends APIToken {
+  token: string; // Only included during creation
+}
+
+export interface APITokenRequest {
+  name: string;
+  description?: string;
+  expires_at?: string;
+}
+
+// App API Access Types
+export interface AppAPIAccess {
+  app_name: string;
+  api_access_enabled: boolean;
+  allowed_operations: string[];
+  rate_limit_per_minute: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AppAPIAccessRequest {
+  api_access_enabled: boolean;
+  rate_limit_per_minute?: number;
+}
+
+export interface OperationInfo {
+  operations: string[];
+  descriptions: Record<string, string>;
 } 
