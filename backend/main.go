@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,7 +10,9 @@ import (
 
 	"backend/database"
 	"backend/handlers"
+	"backend/middleware"
 	"backend/routes"
+	"backend/services"
 	"backend/utils"
 
 	"github.com/gofiber/fiber/v2"
@@ -77,6 +80,28 @@ func main() {
 		// Start Redis connection
 		utils.StartupLog("Connecting to Redis...")
 		database.InitRedis()
+		
+		// Initialize JWT validator for CitizenAuth integration (after Redis)
+		utils.StartupLog("🔑 Initializing JWT validator...")
+		if err := middleware.InitJWTValidator(); err != nil {
+			utils.WarnLog("JWT validator initialization failed: %v", err)
+			utils.WarnLog("CitizenAuth JWT authentication will not be available")
+		} else {
+			utils.StartupLog("✅ JWT validator initialized successfully")
+		}
+		
+		// Start permission change subscriber (Redis Pub/Sub) - after Redis init
+		utils.StartupLog("📡 Starting permission change subscriber...")
+		go func() {
+			time.Sleep(2 * time.Second) // Wait for Redis to be fully ready
+			permService := services.NewPermissionService()
+			subscriber := services.NewPermissionSubscriber(permService)
+			
+			ctx := context.Background()
+			if err := subscriber.Start(ctx); err != nil {
+				utils.ErrorLog("Permission subscriber error: %v", err)
+			}
+		}()
 		
 		// Load GitHub config from database
 		utils.StartupLog("Loading GitHub configuration...")
@@ -226,7 +251,14 @@ func setupCORS(app *fiber.App, isProduction bool) {
 		if mainDomain == "" {
 			mainDomain = "localhost" // Fallback for testing
 		}
-		corsOrigins = fmt.Sprintf("https://%s,https://*.%s", mainDomain, mainDomain)
+		
+		// Get CitizenAuth URL for CORS
+		citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
+		if citizenAuthURL == "" {
+			citizenAuthURL = "https://ustun.tech"
+		}
+		
+		corsOrigins = fmt.Sprintf("https://%s,https://*.%s,%s", mainDomain, mainDomain, citizenAuthURL)
 		allowedMethods = "GET,POST,PUT,DELETE,OPTIONS"
 		allowedHeaders = "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie"
 	} else {

@@ -10,8 +10,11 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/jackc/pgx/v5 v5.7.5
 	github.com/joho/godotenv v1.5.1
+	github.com/lib/pq v1.10.9
+	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/redis/go-redis/v9 v9.7.0
 	golang.org/x/crypto v0.39.0
+	gorm.io/gorm v1.30.0
 )
 
 require (
@@ -42,7 +45,6 @@ require (
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
-	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
@@ -58,6 +60,5 @@ require (
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
-	gorm.io/gorm v1.30.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )

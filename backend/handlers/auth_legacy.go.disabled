@@ -1,0 +1,9 @@
+// DISABLED - Legacy auth system (replaced by CitizenAuth integration)
+// This file contains the old SSO session management code
+// Kept for reference only - not compiled
+
+package handlers_legacy
+
+// All legacy SSO session code moved here
+// Not actively used - CitizenAuth handles all authentication now
+

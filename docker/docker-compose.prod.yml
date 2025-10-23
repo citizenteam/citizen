@@ -5,10 +5,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
     ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080"  # Traefik Dashboard (temporary, will be closed for security)
+      - "8089:80"   # HTTP on port 8089
+      - "8443:443"  # HTTPS on port 8443
+      - "8081:8080"  # Traefik Dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config/traefik.yml:/etc/traefik/traefik.yml:rw
@@ -50,33 +52,46 @@ services:
     labels:
       - "traefik.enable=false"
 
-  # Standalone API Service (optional, for direct access)
+  # Standalone API Service - Air hot reload for development
   api:
-    build:
-      context: ../
-      dockerfile: docker/dockerfiles/Dockerfile
-      target: runtime-alpine
+    image: golang:1.23-alpine
     container_name: citizen-api-prod
     restart: unless-stopped
+    working_dir: /app
     env_file:
       - .env
+    environment:
+      - CGO_ENABLED=0
+      - GOOS=linux
+      - GOARCH=amd64
+    ports:
+      - "3001:3000"  # Expose for direct access during development
     volumes:
-      - ./ssh_keys:/home/appuser/.ssh:rw
+      - ../backend:/app
+      - ../backend/.air.toml:/app/.air.toml
+      - ./ssh_keys:/home/developer/.ssh:ro
+      - ./logs/api:/app/logs
+      - citizen-go-cache-prod:/go/pkg/mod
     networks:
       - citizen-network-prod
-    # Production security configuration (privileged for SSH key setup)
-    privileged: true  # Required for SSH key permission management
-    read_only: false  # Need write access for SSH key setup and application
     depends_on:
       - postgres
       - redis
       - dokku
+    command: >
+      sh -c "
+      apk add --no-cache git wget bash openssh-client &&
+      go install github.com/air-verse/air@v1.61.1 &&
+      echo '✅ Air v1.61.1 installed' &&
+      echo '🔥 Starting with Air hot reload...' &&
+      air -c .air.toml
+      "
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
 
   frontend:
     build:
@@ -107,7 +122,7 @@ services:
     networks:
       - citizen-network-prod
     ports:
-      - "5432:5432"
+      - "5433:5432"  # External port changed to avoid conflict
 
   redis:
     image: redis:7-alpine
@@ -119,7 +134,7 @@ services:
     networks:
       - citizen-network-prod
     ports:
-      - "6379:6379"
+      - "6380:6379"
 
   # Dokku-Traefik Watcher
   dokku-traefik-watcher:
@@ -163,4 +178,6 @@ volumes:
   citizen-redis-data-prod:
     driver: local
   citizen-dokku-data-prod:
+    driver: local
+  citizen-go-cache-prod:
     driver: local

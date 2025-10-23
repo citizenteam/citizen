@@ -3,17 +3,47 @@ package routes
 import (
 	"backend/handlers"
 	"backend/middleware"
+	"fmt"
 
 	"github.com/gofiber/fiber/v2"
 )
 
 // SetupRoutes, API routes
 func SetupRoutes(app *fiber.App) {
+	
+	// Global OPTIONS handler for CORS preflight requests
+	app.Options("/*", func(c *fiber.Ctx) error {
+		// CORS headers are already set by the CORS middleware in main.go
+		return c.SendStatus(fiber.StatusNoContent)
+	})
 
-	app.Get("/sso/check", handlers.SSOCheck)
-	app.Get("/sso/init", handlers.SSOInit)
+	// Root route - show simple landing page (or app list)
+	app.Get("/", func(c *fiber.Ctx) error {
+		// Check for SSO session
+		ssoSessionID := c.Cookies("sso_session")
+		if ssoSessionID != "" {
+			// Validate session
+			session, err := handlers.GetSSOSession(ssoSessionID)
+			if err == nil && session != nil {
+				// Logged in - show welcome message
+				return c.SendString("✅ Citizen - App Management Platform. You are logged in! (User ID: " + fmt.Sprintf("%d", session.UserID) + ")")
+			}
+		}
+		
+		// Not logged in - redirect to CitizenAuth
+		return handlers.RedirectToCitizenAuth(c)
+	})
 
-	// Health check endpoints
+	// SSO endpoints
+	sso := app.Group("/sso")
+	{
+		// SSO init - redirect to CitizenAuth
+		sso.Get("/init", handlers.RedirectToCitizenAuth)
+		// SSO callback - set cookie for this domain
+		sso.Get("/callback", handlers.SSOCallback)
+	}
+
+	// Health check endpoints (public)
 	app.Get("/health", handlers.HealthCheck)
 	app.Get("/redis-status", handlers.RedisStatus)
 	app.Post("/clear-test-data", handlers.ClearRedisTestData)
@@ -23,20 +53,21 @@ func SetupRoutes(app *fiber.App) {
 
 	// Open routes (no auth required)
 	auth := api.Group("/auth")
-	// auth.Post("/register", handlers.Register)
-	auth.Post("/login", handlers.Login)
-	auth.Post("/logout", handlers.Logout)
-	auth.Get("/token-validate", handlers.ValidateSessionEndpoint)  // kept path for compatibility
-	auth.Post("/validate-token", handlers.ValidateSessionEndpoint) // kept path for compatibility
-	// auth.Get("/check-session", handlers.CheckSession) // Old session check, to be removed or updated
-
-	// Traefik forward auth endpoint
+	
+	// Redirect to CitizenAuth for login/logout
+	auth.Get("/login", handlers.RedirectToCitizenAuth)
+	auth.Post("/login", handlers.RedirectToCitizenAuth)
+	auth.Post("/logout", handlers.RedirectToCitizenAuth)
+	
+	// Traefik forward auth endpoint (validates SSO session - eski sistem)
 	auth.Get("/validate", handlers.ValidateForTraefik)
 
 	// Cross-domain cookie endpoints (removed - not needed)
 
-	// Protected routes (auth required)
-	citizen := api.Group("/citizen", middleware.Protected())
+	// Protected routes (SSO session OR JWT required)
+	citizen := api.Group("/citizen")
+	citizen.Use(middleware.JWTAuth())   // Try JWT first (CitizenAuth)
+	citizen.Use(middleware.Protected()) // Fallback to SSO session
 
 	// User profile
 	citizen.Get("/profile", handlers.GetProfile)
@@ -124,21 +155,51 @@ func SetupRoutes(app *fiber.App) {
 	// GitHub integration endpoints
 	github := api.Group("/github")
 	
-	// GitHub config endpoints (admin only)
-	github.Post("/config", middleware.Protected(), handlers.SetupGitHubConfig)
-	github.Get("/config", middleware.Protected(), handlers.GetGitHubConfig)
-	github.Delete("/config", middleware.Protected(), handlers.DeleteGitHubConfig)
-	
-	// GitHub OAuth endpoints
-	github.Get("/auth/init", middleware.Protected(), handlers.GitHubAuthInit)
-	github.Get("/auth/callback", middleware.Protected(), handlers.GitHubAuthCallback)
-	github.Get("/status", middleware.Protected(), handlers.GetGitHubStatus)
-	github.Get("/repositories", middleware.Protected(), handlers.ListGitHubRepositories)
-	github.Get("/connections", middleware.Protected(), handlers.GetRepositoryConnections)
-	github.Post("/connect", middleware.Protected(), handlers.ConnectRepository)
-	github.Delete("/apps/:app_name/disconnect", middleware.Protected(), handlers.DisconnectRepository)
-	github.Put("/apps/:app_name/auto-deploy", middleware.Protected(), handlers.ToggleAutoDeploy)
+	// GitHub endpoints (SSO session required)
+	githubProtected := github.Group("")
+	githubProtected.Use(middleware.Protected())
+	{
+		// GitHub config endpoints (admin only)
+		githubProtected.Post("/config", handlers.SetupGitHubConfig)
+		githubProtected.Get("/config", handlers.GetGitHubConfig)
+		githubProtected.Delete("/config", handlers.DeleteGitHubConfig)
+		
+		// GitHub OAuth endpoints
+		githubProtected.Get("/auth/init", handlers.GitHubAuthInit)
+		githubProtected.Get("/auth/callback", handlers.GitHubAuthCallback)
+		githubProtected.Get("/status", handlers.GetGitHubStatus)
+		githubProtected.Get("/repositories", handlers.ListGitHubRepositories)
+		githubProtected.Get("/connections", handlers.GetRepositoryConnections)
+		githubProtected.Post("/connect", handlers.ConnectRepository)
+		githubProtected.Delete("/apps/:app_name/disconnect", handlers.DisconnectRepository)
+		githubProtected.Put("/apps/:app_name/auto-deploy", handlers.ToggleAutoDeploy)
+	}
 	
 	// GitHub webhook endpoint (public - no auth required)
 	github.Post("/webhook", handlers.GitHubWebhookHandler)
+
+	// ===== CITIZENAUTH INTEGRATION ENDPOINTS =====
+	
+	// Service endpoints (API key authentication)
+	service := api.Group("/service")
+	{
+		// Webhooks (CitizenAuth → Citizen)
+		webhooks := service.Group("/webhooks")
+		webhooks.Use(middleware.APIKeyAuth())
+		webhooks.Use(middleware.RequireServiceAuth())
+		webhooks.Use(middleware.RequireScope("webhooks"))
+		{
+			webhooks.Post("/permission-update", handlers.WebhookPermissionUpdate)
+			webhooks.Post("/session-update", handlers.WebhookSessionUpdate) // Login/Logout events
+		}
+		
+		// Permission API (CitizenAuth reads permissions for UI)
+		permissions := service.Group("/permissions")
+		permissions.Use(middleware.APIKeyAuth())
+		permissions.Use(middleware.RequireServiceAuth())
+		permissions.Use(middleware.RequireScope("permissions:read"))
+		{
+			permissions.Get("/", handlers.GetPermissionsForCitizenAuth)
+		}
+	}
 }

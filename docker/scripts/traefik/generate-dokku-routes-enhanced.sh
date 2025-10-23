@@ -174,9 +174,9 @@ EOF
     if [ "$ENABLE_HTTPS" = "true" ]; then
         cat << EOF
     # 🔐 Main routes (HTTP for challenge + redirect)
-    main-frontend-http:
+    main-http:
       rule: "Host(\`${LOGIN_HOST}\`)"
-      service: main-frontend-service
+      service: api-service
       entryPoints: ["web"]
       middlewares: ["redirect-to-https"]
       priority: 90
@@ -201,7 +201,17 @@ EOF
         certResolver: letsencrypt
       priority: 120
 
-    # 🛡️ Protected API routes (with auth) - Priority 110
+    # 🔗 Service API routes (webhooks, NO ForwardAuth) - Priority 115
+    service-api-https:
+      rule: "Host(\`${LOGIN_HOST}\`) && PathPrefix(\`/api/v1/service\`)"
+      service: api-service
+      entryPoints: ["websecure"]
+      middlewares: ["no-cache", "security-headers"]
+      tls:
+        certResolver: letsencrypt
+      priority: 115
+
+    # 🛡️ Protected API routes (WITH ForwardAuth - CitizenAuth validates) - Priority 110
     protected-api-https:
       rule: "Host(\`${LOGIN_HOST}\`) && PathPrefix(\`/api\`)"
       service: api-service
@@ -211,10 +221,10 @@ EOF
         certResolver: letsencrypt
       priority: 110
 
-    # 🏠 Main frontend route - Priority 100
-    main-frontend-https:
+    # 🏠 Main root route (WITH ForwardAuth - validates SSO session) - Priority 100
+    main-root-https:
       rule: "Host(\`${LOGIN_HOST}\`)"
-      service: main-frontend-service
+      service: api-service
       entryPoints: ["websecure"]
       middlewares: ["auth-api", "no-cache", "security-headers"]
       tls:
@@ -407,11 +417,11 @@ generate_services() {
         servers:
           - url: "http://${API_CONTAINER}:3000"
 
-    main-frontend-service:
-      loadBalancer:
-        servers:
-          - url: "http://${FRONTEND_CONTAINER}:${FRONTEND_PORT}"
-        
+    # Frontend service disabled - all routes go to API
+    # main-frontend-service:
+    #   loadBalancer:
+    #     servers:
+    #       - url: "http://${FRONTEND_CONTAINER}:${FRONTEND_PORT}"
 
     # 🔀 Redirect Service (for custom domain redirects)
     redirect-service:
@@ -455,13 +465,16 @@ generate_middlewares() {
         scheme: https
         permanent: true
 
-    # 🔐 Authentication middleware
+    # 🔐 Authentication middleware - Use Citizen's own SSO system
     auth-api:
       forwardAuth:
         address: "http://${API_CONTAINER}:3000/api/v1/auth/validate"
+        trustForwardHeader: true
         authResponseHeaders:
-          - "X-User"
-          - "X-User-ID"
+          - "X-Auth-User-ID"
+          - "X-Auth-Email"
+          - "X-Auth-Name"
+        authResponseHeadersRegex: "^X-"
 
     # 🚫 Cache control
     no-cache:

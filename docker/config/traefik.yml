@@ -23,13 +23,17 @@ core:
   # Temporary for v2 syntax support
   defaultRuleSyntax: v2
 
-# Let's Encrypt configuration for HTTP Challenge
+# Let's Encrypt configuration for DNS Challenge (Cloudflare)
 certificatesResolvers:
   letsencrypt:
     acme:
       storage: /letsencrypt/acme.json
-      httpChallenge:
-        entryPoint: web
+      dnsChallenge:
+        provider: cloudflare
+        delayBeforeCheck: 30
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
       # Email will be provided via command line parameter
       # For staging/testing:
       # caServer: https://acme-staging-v02.api.letsencrypt.org/directory

@@ -1,11 +1,6 @@
 package handlers
 
 import (
-	"backend/database"
-	"backend/database/api"
-	"backend/models"
-	"backend/tokens"
-	"backend/utils"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -18,12 +13,22 @@ import (
 	"sync"
 	"time"
 
+	"backend/database"
+	"backend/database/api"
+	"backend/models"
+	"backend/tokens"
+	"backend/utils"
+
 	"github.com/gofiber/fiber/v2"
 )
 
-// Removed JWT token denylist - system uses SSO sessions instead
+// ============================================================================
+// LEGACY AUTH SYSTEM - Kept for backward compatibility
+// Primary authentication now handled by CitizenAuth
+// Legacy SSO sessions still supported for gradual migration
+// ============================================================================
 
-// SSO sessions - for cross-domain authentication
+// SSO sessions - for cross-domain authentication (legacy)
 var (
 	ssoSessions = make(map[string]*SSOSession)
 	ssoMutex    = &sync.RWMutex{}
@@ -394,12 +399,55 @@ func clearUserSSOSessions(userID int) {
 	ssoMutex.Lock()
 	defer ssoMutex.Unlock()
 	
+	deletedCount := 0
+	
+	// 1. Clear from memory map
 	for sessionID, session := range ssoSessions {
 		if session.UserID == userID {
 			delete(ssoSessions, sessionID)
-			database.Delete("sso_session:" + sessionID)
+			deletedCount++
 		}
 	}
+	
+	// 2. Clear from Redis (scan all sso_session:* keys)
+	if database.RedisClient != nil {
+		ctx := context.Background()
+		
+		// Scan all sso_session keys
+		iter := database.RedisClient.Scan(ctx, 0, "sso_session:*", 100).Iterator()
+		for iter.Next(ctx) {
+			key := iter.Val()
+			
+			// Get session data from Redis
+			sessionData, err := database.RedisClient.Get(ctx, key).Result()
+			if err != nil {
+				continue
+			}
+			
+			// Parse session to check UserID
+			var session SSOSession
+			if err := json.Unmarshal([]byte(sessionData), &session); err != nil {
+				continue
+			}
+			
+			// If this session belongs to the user, delete it
+			if session.UserID == userID {
+				err := database.RedisClient.Del(ctx, key).Err()
+				if err != nil {
+					log.Printf("❌ [SSO] Failed to delete session from Redis: %v", err)
+				} else {
+					deletedCount++
+					log.Printf("🗑️  [SSO] Deleted session from Redis: %s", key)
+				}
+			}
+		}
+		
+		if err := iter.Err(); err != nil {
+			log.Printf("❌ [SSO] Redis scan error: %v", err)
+		}
+	}
+	
+	log.Printf("✅ [SSO] Cleared %d sessions for user %d", deletedCount, userID)
 }
 
 // ==================== HTTP Handlers ====================
@@ -657,11 +705,46 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 	c.Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 	c.Set("Pragma", "no-cache")
 	c.Set("Expires", "0")
+	
+	// Handle OPTIONS preflight requests - always allow
+	if c.Method() == "OPTIONS" || c.Get("X-Forwarded-Method") == "OPTIONS" {
+		origin := c.Get("Origin")
+		if origin != "" {
+			c.Set("Access-Control-Allow-Origin", origin)
+			c.Set("Access-Control-Allow-Credentials", "true")
+			c.Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			c.Set("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie")
+			c.Set("Access-Control-Max-Age", "86400")
+		}
+		return c.SendStatus(fiber.StatusOK)
+	}
 
 	// Get forwarded headers
 	forwardedHost := c.Get("X-Forwarded-Host")
 	forwardedUri := c.Get("X-Forwarded-Uri")
-	utils.RequestDebugLog("VALIDATE", forwardedUri, "Host: %s, IP: %s", forwardedHost, c.IP())
+	
+	// Get Authorization header (Traefik forwards it)
+	authHeader := c.Get("Authorization")
+	
+	if authHeader == "" {
+		authHeader = c.Get("X-Forwarded-Authorization")
+	}
+	
+	// Log all headers for debugging
+	log.Printf("🔍 [VALIDATE] URI: %s, Authorization: %v, Cookie: %v", 
+		forwardedUri, 
+		authHeader != "", 
+		c.Get("Cookie") != "")
+	
+	if authHeader != "" {
+		headerPreview := authHeader
+		if len(authHeader) > 30 {
+			headerPreview = authHeader[:30] + "..."
+		}
+		log.Printf("🔑 [VALIDATE] Auth header: %s", headerPreview)
+	}
+	
+	utils.RequestDebugLog("VALIDATE", forwardedUri, "Host: %s, Auth: %v", forwardedHost, authHeader != "")
 
 	// Check public paths
 	if isPublicPath(forwardedUri) ||
@@ -679,15 +762,26 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	}
 
-	// Try API Token authentication first (if app has API access enabled)
-	if appName != "" {
-		authHeader := c.Get("X-Forwarded-Authorization") // Traefik forwards Authorization header as this
-		if authHeader == "" {
-			authHeader = c.Get("Authorization") // Fallback to direct Authorization header
+	// Get Authorization header (already extracted above)
+	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+		// This is a JWT token from CitizenAuth - validate it directly
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		
+		// Try JWT validation first
+		if jwtValidator := getJWTValidator(); jwtValidator != nil {
+			claims, err := jwtValidator.ValidateToken(token)
+			if err == nil {
+				utils.AuthDebugLog("JWT validated via ForwardAuth: %s", claims.Email)
+				return c.SendStatus(fiber.StatusOK)
+			}
 		}
+	}
+	
+	// Try API Token authentication (if app has API access enabled)
+	if appName != "" {
 		queryToken := c.Query("token")
 		
-		if token := tokens.ExtractAPIToken(authHeader, queryToken); token != "" {
+		if token := tokens.ExtractAPIToken(authHeader, queryToken); token != "" && appName != "" {
 			// Check if app has API access enabled (simple on/off check)
 			hasAccess, err := api.AppAPIAccess.IsAppAPIAccessEnabled(c.Context(), appName)
 			
@@ -717,15 +811,7 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 		
 		originalURL := c.Get("X-Forwarded-Proto") + "://" + forwardedHost + forwardedUri
 		
-		// Check if we need SSO init
-		domainType := getDomainType(forwardedHost)
-		if domainType == DomainTypeSubdomain || (domainType == DomainTypeCustom && appName != "") {
-			ssoInitURL := buildSSOInitURL(originalURL)
-			utils.AuthDebugLog("Redirecting to SSO init: %s", ssoInitURL)
-			return c.Redirect(ssoInitURL, fiber.StatusTemporaryRedirect)
-		}
-		
-		// Direct login redirect
+		// Always redirect to CitizenAuth SSO Init
 		return redirectToLogin(c, originalURL)
 	}
 	
@@ -1088,9 +1174,24 @@ func isAllowedOrigin(origin string) bool {
 }
 
 func redirectToLogin(c *fiber.Ctx, originalURL string) error {
-	redirectURL := buildLoginURL(originalURL)
-	log.Printf("[AUTH] Redirecting to login: %s", redirectURL)
-	c.Set("Location", redirectURL)
+	// Redirect to CitizenAuth SSO Init instead of local login
+	citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
+	if citizenAuthURL == "" {
+		citizenAuthURL = "https://ustun.tech"
+	}
+	
+	// Add CORS headers for redirect response
+	origin := c.Get("Origin")
+	if origin != "" {
+		c.Set("Access-Control-Allow-Origin", origin)
+		c.Set("Access-Control-Allow-Credentials", "true")
+		c.Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+		c.Set("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie")
+	}
+	
+	ssoInitURL := fmt.Sprintf("%s/sso/init?redirect=%s", citizenAuthURL, url.QueryEscape(originalURL))
+	log.Printf("[AUTH] Redirecting to SSO Init: %s", ssoInitURL)
+	c.Set("Location", ssoInitURL)
 	return c.SendStatus(fiber.StatusTemporaryRedirect)
 }
 
