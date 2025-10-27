@@ -468,10 +468,15 @@ func SSOInit(c *fiber.Ctx) error {
 		return c.Redirect(targetURL, fiber.StatusTemporaryRedirect)
 	}
 	
-	// No valid authentication, redirect to login
-	loginURL := buildLoginURL(targetURL)
-	utils.AuthDebugLog("No authentication found, redirecting to login: %s", loginURL)
-	return c.Redirect(loginURL, fiber.StatusTemporaryRedirect)
+	// No valid authentication, redirect to CitizenAuth SSO Init
+	citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
+	if citizenAuthURL == "" {
+		citizenAuthURL = "https://ustun.tech"
+	}
+	
+	ssoInitURL := fmt.Sprintf("%s/sso/init?redirect=%s", citizenAuthURL, url.QueryEscape(targetURL))
+	utils.AuthDebugLog("No authentication found, redirecting to SSO Init: %s", ssoInitURL)
+	return c.Redirect(ssoInitURL, fiber.StatusTemporaryRedirect)
 }
 
 // SSOSetCookie endpoint removed - custom domains now use Traefik redirect instead of iframe cookies

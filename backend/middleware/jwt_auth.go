@@ -62,6 +62,7 @@ func JWTAuth() fiber.Handler {
 		// Store user info in context
 		c.Locals("auth_type", "jwt")
 		c.Locals("user_id", claims.UserID)
+		c.Locals("citizenauth_user_id", claims.UserID)
 		c.Locals("email", claims.Email)
 		c.Locals("name", claims.Name)
 		c.Locals("session_id", claims.SessionID)
@@ -95,4 +96,3 @@ func RequireJWTAuth() fiber.Handler {
 		return c.Next()
 	}
 }
-

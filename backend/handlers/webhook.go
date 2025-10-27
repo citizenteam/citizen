@@ -76,15 +76,47 @@ func WebhookSessionUpdate(c *fiber.Ctx) error {
 	// 3. Process webhook event
 	switch payload.Event {
 	case "session.created":
-		// Login event - create local SSO session
-		// TODO: Map CitizenAuth UUID to local user ID (for now use dummy)
-		localUserID := 1
-		
+		// Login event - ensure CitizenAuth user is mapped to a local user
+		assigned, assignErr := permissionService.IsUserAssignedToInstance(c.Context(), payload.UserID)
+		if assignErr != nil {
+			log.Printf("❌ [WEBHOOK-SESSION] Failed to verify assignment for %s: %v", payload.UserID, assignErr)
+			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+				false,
+				"Failed to verify user assignment",
+				nil,
+			))
+		}
+		if !assigned {
+			log.Printf("🚫 [WEBHOOK-SESSION] Ignoring login for %s - user not assigned to this instance", payload.UserID)
+			return c.JSON(utils.NewCitizenResponse(
+				true,
+				"User not assigned to this instance",
+				fiber.Map{
+					"user_id": payload.UserID,
+				},
+			))
+		}
+
+		var localUserID int
+		mapQuery := `SELECT get_or_create_local_user($1, $2, $3)`
+		err := database.DB.QueryRow(c.Context(), mapQuery, payload.UserID, payload.Email, payload.Name).Scan(&localUserID)
+		if err != nil {
+			log.Printf("❌ [WEBHOOK-SESSION] Failed to map CitizenAuth user %s: %v", payload.UserID, err)
+			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+				false,
+				"Failed to map user from CitizenAuth",
+				nil,
+			))
+		}
+
 		deviceID := "CitizenAuth-SSO"
+		if payload.SessionID != "" {
+			deviceID = fmt.Sprintf("CitizenAuth-%s", payload.SessionID)
+		}
 		ssoSessionID := createOrUpdateSSOSession(localUserID, c.Hostname(), deviceID)
-		
-		log.Printf("✅ [WEBHOOK-SESSION] Session created: user=%s, local_session=%s", 
-			payload.Email, ssoSessionID)
+
+		log.Printf("✅ [WEBHOOK-SESSION] Session created: citizenAuthUser=%s localUser=%d session=%s",
+			payload.UserID, localUserID, ssoSessionID)
 	
 	case "session.destroyed":
 		// Logout event - clear local SSO sessions

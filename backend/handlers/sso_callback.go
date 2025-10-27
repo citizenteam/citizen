@@ -1,12 +1,12 @@
 package handlers
 
 import (
-
+	"backend/database"
 	"backend/services"
 	"backend/utils"
 	"log"
 	"os"
-	"backend/database"
+
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -47,6 +47,17 @@ func SSOCallback(c *fiber.Ctx) error {
 	
 	log.Printf("✅ [SSO-CALLBACK] JWT validated: %s (%s)", claims.UserID, claims.Email)
 	
+	permissionSvc := services.NewPermissionService()
+	assigned, err := permissionSvc.IsUserAssignedToInstance(c.Context(), claims.UserID)
+	if err != nil {
+		log.Printf("❌ [SSO-CALLBACK] Failed to verify instance assignment: %v", err)
+		return c.Status(fiber.StatusInternalServerError).SendString("Failed to verify access")
+	}
+	if !assigned {
+		log.Printf("🚫 [SSO-CALLBACK] Access denied for user %s (not assigned to this instance)", claims.UserID)
+		return c.Status(fiber.StatusForbidden).SendString("You do not have access to this Citizen instance.")
+	}
+	
 	// Get or create local user (map CitizenAuth UUID to local user)
 	var localUserID int
 	query := `SELECT get_or_create_local_user($1, $2, $3)`
@@ -85,4 +96,3 @@ func isSecure() bool {
 	forceHTTPS := os.Getenv("FORCE_HTTPS")
 	return forceHTTPS == "true"
 }
-

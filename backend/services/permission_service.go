@@ -132,3 +132,14 @@ type Permission struct {
 	GrantedAt time.Time `json:"granted_at"`
 }
 
+// IsUserAssignedToInstance checks whether a CitizenAuth user has any permissions on this instance.
+func (ps *PermissionService) IsUserAssignedToInstance(ctx context.Context, userID string) (bool, error) {
+	query := `SELECT EXISTS (SELECT 1 FROM app_permissions WHERE user_id = $1)`
+
+	var assigned bool
+	if err := database.DB.QueryRow(ctx, query, userID).Scan(&assigned); err != nil {
+		return false, fmt.Errorf("failed to check instance assignment: %w", err)
+	}
+
+	return assigned, nil
+}
