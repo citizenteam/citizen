@@ -24,7 +24,7 @@ import (
 func main() {
 	// Start startup process
 	utils.StartupLog("🚀 Starting Citizen Backend...")
-	
+
 	// Environment information
 	utils.LogEnvironmentInfo()
 
@@ -35,7 +35,7 @@ func main() {
 	} else {
 		utils.StartupLog("Loaded config.env file")
 	}
-	
+
 	// Load local development .env file
 	err = godotenv.Load(".env")
 	if err != nil {
@@ -63,7 +63,7 @@ func main() {
 		utils.StartupLog("Connecting to database...")
 		database.ConnectDB()
 		defer database.CloseDB()
-		
+
 		// Run migrations
 		utils.StartupLog("Running database migrations...")
 		if err := database.RunMigrations(); err != nil {
@@ -71,16 +71,16 @@ func main() {
 			log.Fatalf("Migration failed: %v", err)
 		}
 		utils.StartupLog("Database migrations completed")
-		
+
 		// Create admin user (if environment variables are set)
 		if err := database.CreateAdminUserFromEnv(); err != nil {
 			utils.WarnLog("Failed to create admin user: %v", err)
 		}
-		
+
 		// Start Redis connection
 		utils.StartupLog("Connecting to Redis...")
 		database.InitRedis()
-		
+
 		// Initialize JWT validator for CitizenAuth integration (after Redis)
 		utils.StartupLog("🔑 Initializing JWT validator...")
 		if err := middleware.InitJWTValidator(); err != nil {
@@ -89,27 +89,27 @@ func main() {
 		} else {
 			utils.StartupLog("✅ JWT validator initialized successfully")
 		}
-		
+
 		// Start permission change subscriber (Redis Pub/Sub) - after Redis init
 		utils.StartupLog("📡 Starting permission change subscriber...")
 		go func() {
 			time.Sleep(2 * time.Second) // Wait for Redis to be fully ready
 			permService := services.NewPermissionService()
 			subscriber := services.NewPermissionSubscriber(permService)
-			
+
 			ctx := context.Background()
 			if err := subscriber.Start(ctx); err != nil {
 				utils.ErrorLog("Permission subscriber error: %v", err)
 			}
 		}()
-		
+
 		// Load GitHub config from database
 		utils.StartupLog("Loading GitHub configuration...")
 		loadGitHubConfigFromDB()
 	} else {
 		utils.WarnLog("SKIP_DB_PING=true - Database connection skipped")
 	}
-	
+
 	// Test SSH connection (non-blocking)
 	go func() {
 		utils.StartupLog("Testing SSH connection...")
@@ -127,9 +127,9 @@ func main() {
 	app := fiber.New(fiber.Config{
 		AppName:      "Citizen API",
 		BodyLimit:    10 * 1024 * 1024, // 10MB max request body
-		ReadTimeout:  30 * time.Second,  // 30 second read timeout
-		WriteTimeout: 30 * time.Second,  // 30 second write timeout
-		ServerHeader: "",                // Hide server info
+		ReadTimeout:  30 * time.Second, // 30 second read timeout
+		WriteTimeout: 30 * time.Second, // 30 second write timeout
+		ServerHeader: "",               // Hide server info
 		ErrorHandler: customErrorHandler,
 	})
 
@@ -139,10 +139,10 @@ func main() {
 	// Main route
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
-			"message": "Citizen API is running",
-			"version": "1.0.0",
+			"message":     "Citizen API is running",
+			"version":     "1.0.0",
 			"environment": os.Getenv("ENVIRONMENT"),
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"timestamp":   time.Now().UTC().Format(time.RFC3339),
 		})
 	})
 
@@ -161,7 +161,7 @@ func main() {
 
 	utils.StartupLog("🎯 Server starting on port %s", port)
 	utils.StartupLog("✅ Citizen Backend ready!")
-	
+
 	log.Fatal(app.Listen(":" + port))
 }
 
@@ -170,21 +170,21 @@ func setupMiddleware(app *fiber.App) {
 	// Enhanced logger middleware
 	if utils.IsDevelopmentEnvironment() {
 		app.Use(logger.New(logger.Config{
-			Format: "[${time}] ${status} - ${method} ${path} - ${latency}\n",
+			Format:     "[${time}] ${status} - ${method} ${path} - ${latency}\n",
 			TimeFormat: "15:04:05",
 		}))
 	} else {
 		// Minimal logging in production
 		app.Use(logger.New(logger.Config{
-			Format: "${time} ${status} ${method} ${path} ${latency}\n",
+			Format:     "${time} ${status} ${method} ${path} ${latency}\n",
 			TimeFormat: time.RFC3339,
 		}))
 	}
-	
+
 	// Environment configuration - used by multiple middleware
 	environment := strings.ToLower(os.Getenv("ENVIRONMENT"))
 	isProduction := environment == "prod" || environment == "production"
-	
+
 	// Security Headers Middleware
 	app.Use(func(c *fiber.Ctx) error {
 		// Basic security headers
@@ -193,12 +193,12 @@ func setupMiddleware(app *fiber.App) {
 		c.Set("X-XSS-Protection", "1; mode=block")
 		c.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Set("Permissions-Policy", "geolocation=(), camera=(), microphone=(), payment=(), usb=(), magnetometer=(), gyroscope=(), speaker=()")
-		
+
 		// Environment-specific security headers
 		if isProduction {
 			// HSTS only in production with HTTPS
 			c.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
-			
+
 			// Strict CSP for production
 			csp := "default-src 'self'; " +
 				"script-src 'self' 'unsafe-inline'; " +
@@ -231,10 +231,10 @@ func setupMiddleware(app *fiber.App) {
 				"form-action 'self'"
 			c.Set("Content-Security-Policy", csp)
 		}
-		
+
 		return c.Next()
 	})
-	
+
 	// Enhanced CORS configuration
 	setupCORS(app, isProduction)
 }
@@ -244,20 +244,20 @@ func setupCORS(app *fiber.App, isProduction bool) {
 	var corsOrigins string
 	var allowedMethods string
 	var allowedHeaders string
-	
+
 	if isProduction {
 		// Production: Subdomain support
 		mainDomain := os.Getenv("MAIN_DOMAIN")
 		if mainDomain == "" {
 			mainDomain = "localhost" // Fallback for testing
 		}
-		
+
 		// Get CitizenAuth URL for CORS
 		citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
 		if citizenAuthURL == "" {
 			citizenAuthURL = "https://ustun.tech"
 		}
-		
+
 		corsOrigins = fmt.Sprintf("https://%s,https://*.%s,%s", mainDomain, mainDomain, citizenAuthURL)
 		allowedMethods = "GET,POST,PUT,DELETE,OPTIONS"
 		allowedHeaders = "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie"
@@ -267,38 +267,16 @@ func setupCORS(app *fiber.App, isProduction bool) {
 		allowedMethods = "GET,POST,PUT,DELETE,OPTIONS,PATCH,HEAD"
 		allowedHeaders = "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie,X-Forwarded-For,X-Real-IP,User-Agent,Referer"
 	}
-	
+
 	utils.StartupLog("CORS Origins: %s", corsOrigins)
-	
-	if isProduction {
-		// Production: Use strict CORS
-		app.Use(cors.New(cors.Config{
-			AllowOrigins:     corsOrigins,
-			AllowCredentials: true,
-			AllowMethods:     allowedMethods,
-			AllowHeaders:     allowedHeaders,
-			ExposeHeaders:    "Set-Cookie",
-		}))
-	} else {
-		// Development: Dynamic CORS for localhost subdomains
-		app.Use(cors.New(cors.Config{
-			AllowOriginsFunc: func(origin string) bool {
-				// Allow localhost and any *.localhost subdomain
-				if strings.Contains(origin, "localhost") {
-					return true
-				}
-				// Allow common dev ports
-				if strings.Contains(origin, "127.0.0.1") {
-					return true
-				}
-				return false
-			},
-			AllowCredentials: true,
-			AllowMethods:     allowedMethods,
-			AllowHeaders:     allowedHeaders,
-			ExposeHeaders:    "Set-Cookie",
-		}))
-	}
+
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     corsOrigins,
+		AllowCredentials: true,
+		AllowMethods:     allowedMethods,
+		AllowHeaders:     allowedHeaders,
+		ExposeHeaders:    "Set-Cookie",
+	}))
 }
 
 // customErrorHandler handles errors in a structured way
@@ -314,9 +292,9 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 	utils.ErrorLog("HTTP Error %d: %s - Path: %s", code, message, c.Path())
 
 	return c.Status(code).JSON(fiber.Map{
-		"error": true,
-		"message": message,
-		"code": code,
+		"error":     true,
+		"message":   message,
+		"code":      code,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -325,9 +303,9 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 func startBackgroundTasks() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	
+
 	utils.StartupLog("Background cleanup tasks started")
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -341,20 +319,20 @@ func startBackgroundTasks() {
 // loadGitHubConfigFromDB loads GitHub configuration from database on startup
 func loadGitHubConfigFromDB() {
 	utils.DatabaseDebugLog("Loading GitHub config from database...")
-	
+
 	// Try to load config from database
 	clientID, clientSecret, redirectURI, webhookSecret, err := handlers.LoadGitHubConfigFromDB()
 	if err != nil {
 		utils.DatabaseDebugLog("No GitHub config found in database: %v", err)
 		return
 	}
-	
+
 	// Setup GitHub OAuth in memory
 	err = utils.SetupGitHubOAuth(clientID, clientSecret, redirectURI, webhookSecret)
 	if err != nil {
 		utils.ErrorLog("Failed to setup GitHub OAuth from database: %v", err)
 		return
 	}
-	
+
 	utils.StartupLog("GitHub configuration loaded from database")
 }

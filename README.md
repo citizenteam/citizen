@@ -273,6 +273,22 @@ After deployment, access your services:
 - **Connection Testing**: Verify Docker Hub connectivity
 - **Credential Management**: Secure token storage and management
 
+### **CitizenAuth Instance Pairing**
+
+New Citizen instances must pair with CitizenAuth before they can process SSO traffic. The flow is:
+
+1. In the CitizenAuth dashboard, open **Servers → Add server** and register the instance. The UI will display a one-time bootstrap command.
+2. On your Citizen server, navigate to the project root (the folder that contains `backend/`) and run the provided command, for example:
+
+   ```bash
+   curl -sSL https://citizenauth.example.com/api/v1/servers/<instance_id>/bootstrap.sh?token=<token> | bash
+   ```
+
+   > The script stores the bundle in `backend/tmp`, detects whether Go is installed, and otherwise executes the import via the `citizen-api` Docker container.
+
+3. When the script finishes, the API container restarts with updated secrets and the instance is paired with CitizenAuth.
+4. Repeat the import whenever you rotate the API key/webhook secret or register additional Citizen deployments.
+
 ### **Security & Authentication**
 
 - **JWT-based Authentication**: Secure token-based user authentication

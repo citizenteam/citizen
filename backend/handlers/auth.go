@@ -36,13 +36,14 @@ var (
 
 // SSOSession structure
 type SSOSession struct {
-	SessionID    string
-	UserID       int
-	MainDomain   string
-	DeviceID     string
-	CreatedAt    time.Time
-	LastActivity time.Time
-	ExpiresAt    time.Time
+    SessionID      string     `json:"session_id"`
+    UserID         int        `json:"user_id"`
+    MainDomain     string     `json:"main_domain"`
+    DeviceID       string     `json:"device_id"`
+    OrganizationID *string    `json:"organization_id,omitempty"`
+    CreatedAt      time.Time  `json:"created_at"`
+    LastActivity   time.Time  `json:"last_activity"`
+    ExpiresAt      time.Time  `json:"expires_at"`
 }
 
 // Domain types
@@ -327,18 +328,19 @@ func generateSecureID() string {
 }
 
 // Create or update SSO session
-func createOrUpdateSSOSession(userID int, mainDomain string, deviceID string) string {
-	sessionID := generateSecureID()
-	
-	session := &SSOSession{
-		SessionID:    sessionID,
-		UserID:       userID,
-		MainDomain:   mainDomain,
-		DeviceID:     deviceID,
-		CreatedAt:    time.Now(),
-		LastActivity: time.Now(),
-		ExpiresAt:    time.Now().Add(24 * time.Hour),
-	}
+func createOrUpdateSSOSession(userID int, mainDomain string, deviceID string, organizationID *string) string {
+    sessionID := generateSecureID()
+
+    session := &SSOSession{
+        SessionID:    sessionID,
+        UserID:       userID,
+        MainDomain:   mainDomain,
+        DeviceID:     deviceID,
+        OrganizationID: organizationID,
+        CreatedAt:    time.Now(),
+        LastActivity: time.Now(),
+        ExpiresAt:    time.Now().Add(24 * time.Hour),
+    }
 	
 	// Store in memory
 	ssoMutex.Lock()
@@ -606,7 +608,11 @@ func Login(c *fiber.Ctx) error {
 	// Create SSO session directly (no JWT needed)
 	userID := int(user.ID)
 	deviceID := c.Get("User-Agent")
-	ssoSessionID := createOrUpdateSSOSession(userID, c.Hostname(), deviceID)
+	var organizationPtr *string
+	if org, ok := c.Locals("organization_id").(string); ok && org != "" {
+		organizationPtr = &org
+	}
+	ssoSessionID := createOrUpdateSSOSession(userID, c.Hostname(), deviceID, organizationPtr)
 
 	currentHost := c.Hostname()
 	loginHost := getLoginHost()

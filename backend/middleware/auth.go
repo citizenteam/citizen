@@ -30,11 +30,20 @@ func Protected() fiber.Handler {
 				))
 			}
 
-			if err := enforceAccessControls(c, citizenAuthUserID); err != nil {
+			organizationID, _ := c.Locals("organization_id").(string)
+			if organizationID == "" {
+				return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
+					false,
+					"Organization context missing",
+					nil,
+				))
+			}
+
+			if err := enforceAccessControls(c, citizenAuthUserID, organizationID); err != nil {
 				return err
 			}
 
-			localUserID, user, err := ensureLocalUserFromJWT(c)
+			localUserID, user, err := ensureLocalUserFromJWT(c, organizationID)
 			if err != nil {
 				return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
 					false,
@@ -48,10 +57,10 @@ func Protected() fiber.Handler {
 			c.Locals("user", user)
 			return c.Next()
 		}
-		
+
 		// Fallback to SSO session
 		ssoSessionID := c.Cookies("sso_session")
-		
+
 		// If SSO session is not found, return unauthorized
 		if ssoSessionID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
@@ -60,7 +69,7 @@ func Protected() fiber.Handler {
 				nil,
 			))
 		}
-		
+
 		// Validate SSO session
 		session, err := handlers.GetSSOSession(ssoSessionID)
 		if err != nil || session == nil {
@@ -70,7 +79,11 @@ func Protected() fiber.Handler {
 				nil,
 			))
 		}
-		
+
+		if session.OrganizationID != nil && *session.OrganizationID != "" {
+			c.Locals("organization_id", *session.OrganizationID)
+		}
+
 		// Check user
 		var user models.User
 		err = database.DB.QueryRow(c.Context(),
@@ -83,12 +96,12 @@ func Protected() fiber.Handler {
 				nil,
 			))
 		}
-		
+
 		// Save user ID to locals
 		c.Locals("user_id", session.UserID)
 		c.Locals("user", user)
 
-		citizenAuthUserID, err := getCitizenAuthUserIDForLocalUser(c.Context(), session.UserID)
+		citizenAuthUserID, organizationID, err := getCitizenauthMappingForLocalUser(c.Context(), session.UserID)
 		if err != nil {
 			return c.Status(fiber.StatusForbidden).JSON(utils.NewCitizenResponse(
 				false,
@@ -97,18 +110,33 @@ func Protected() fiber.Handler {
 			))
 		}
 		c.Locals("citizenauth_user_id", citizenAuthUserID)
+		if organizationID != "" {
+			c.Locals("organization_id", organizationID)
+		}
+		if organizationID == "" {
+			if orgCtx, ok := c.Locals("organization_id").(string); ok {
+				organizationID = orgCtx
+			}
+		}
+		if organizationID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
+				false,
+				"Organization context missing",
+				nil,
+			))
+		}
 
-		if err := enforceAccessControls(c, citizenAuthUserID); err != nil {
+		if err := enforceAccessControls(c, citizenAuthUserID, organizationID); err != nil {
 			return err
 		}
-		
+
 		return c.Next()
 	}
 }
 
 // ensureLocalUserFromJWT maps a CitizenAuth user UUID from JWT claims to a local Citizen user record.
 // It creates the local user when needed and returns both the local user ID and hydrated user model.
-func ensureLocalUserFromJWT(c *fiber.Ctx) (int, models.User, error) {
+func ensureLocalUserFromJWT(c *fiber.Ctx, organizationID string) (int, models.User, error) {
 	citizenAuthUserID, _ := c.Locals("citizenauth_user_id").(string)
 	if citizenAuthUserID == "" {
 		if fromLegacy, ok := c.Locals("user_id").(string); ok {
@@ -123,9 +151,13 @@ func ensureLocalUserFromJWT(c *fiber.Ctx) (int, models.User, error) {
 	email, _ := c.Locals("email").(string)
 	name, _ := c.Locals("name").(string)
 
+	if organizationID == "" {
+		return 0, models.User{}, fmt.Errorf("organization id missing in context")
+	}
+
 	var localUserID int
-	mapQuery := `SELECT get_or_create_local_user($1, $2, $3)`
-	if err := database.DB.QueryRow(c.Context(), mapQuery, citizenAuthUserID, email, name).Scan(&localUserID); err != nil {
+	mapQuery := `SELECT get_or_create_local_user($1, $2, $3, $4)`
+	if err := database.DB.QueryRow(c.Context(), mapQuery, citizenAuthUserID, email, name, organizationID).Scan(&localUserID); err != nil {
 		return 0, models.User{}, fmt.Errorf("map citizenauth user: %w", err)
 	}
 
@@ -141,8 +173,8 @@ func ensureLocalUserFromJWT(c *fiber.Ctx) (int, models.User, error) {
 }
 
 // enforceAccessControls ensures the CitizenAuth user is assigned to this instance and has required app permissions.
-func enforceAccessControls(c *fiber.Ctx, citizenAuthUserID string) error {
-	assigned, err := permissionSvc.IsUserAssignedToInstance(c.Context(), citizenAuthUserID)
+func enforceAccessControls(c *fiber.Ctx, citizenAuthUserID, organizationID string) error {
+	assigned, err := permissionSvc.IsUserAssignedToInstance(c.Context(), citizenAuthUserID, organizationID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -158,7 +190,7 @@ func enforceAccessControls(c *fiber.Ctx, citizenAuthUserID string) error {
 		))
 	}
 
-	permissions, err := permissionSvc.GetUserPermissions(c.Context(), citizenAuthUserID)
+	permissions, err := permissionSvc.GetUserPermissions(c.Context(), citizenAuthUserID, organizationID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -171,7 +203,7 @@ func enforceAccessControls(c *fiber.Ctx, citizenAuthUserID string) error {
 	appID := c.Params("app_name")
 	if appID != "" {
 		requiredRole := determineRequiredRole(c.Method())
-		hasPermission, err := permissionSvc.CheckAppPermission(c.Context(), citizenAuthUserID, appID, requiredRole)
+		hasPermission, err := permissionSvc.CheckAppPermission(c.Context(), citizenAuthUserID, organizationID, appID, requiredRole)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 				false,
@@ -202,18 +234,19 @@ func determineRequiredRole(method string) string {
 	}
 }
 
-func getCitizenAuthUserIDForLocalUser(ctx context.Context, localUserID int) (string, error) {
-	var citizenAuthUserID string
+func getCitizenauthMappingForLocalUser(ctx context.Context, localUserID int) (string, string, error) {
+	var citizenAuthUserID sql.NullString
+	var organizationID sql.NullString
 	err := database.DB.QueryRow(ctx,
-		"SELECT citizenauth_user_id FROM citizenauth_user_mapping WHERE local_user_id = $1",
+		"SELECT citizenauth_user_id, organization_id FROM citizenauth_user_mapping WHERE local_user_id = $1",
 		localUserID,
-	).Scan(&citizenAuthUserID)
+	).Scan(&citizenAuthUserID, &organizationID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", sql.ErrNoRows
+			return "", "", sql.ErrNoRows
 		}
-		return "", err
+		return "", "", err
 	}
 
-	return citizenAuthUserID, nil
+	return citizenAuthUserID.String, organizationID.String, nil
 }

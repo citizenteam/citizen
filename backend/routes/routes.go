@@ -10,7 +10,7 @@ import (
 
 // SetupRoutes, API routes
 func SetupRoutes(app *fiber.App) {
-	
+
 	// Global OPTIONS handler for CORS preflight requests
 	app.Options("/*", func(c *fiber.Ctx) error {
 		// CORS headers are already set by the CORS middleware in main.go
@@ -29,7 +29,7 @@ func SetupRoutes(app *fiber.App) {
 				return c.SendString("✅ Citizen - App Management Platform. You are logged in! (User ID: " + fmt.Sprintf("%d", session.UserID) + ")")
 			}
 		}
-		
+
 		// Not logged in - redirect to CitizenAuth
 		return handlers.RedirectToCitizenAuth(c)
 	})
@@ -53,12 +53,12 @@ func SetupRoutes(app *fiber.App) {
 
 	// Open routes (no auth required)
 	auth := api.Group("/auth")
-	
+
 	// Redirect to CitizenAuth for login/logout
 	auth.Get("/login", handlers.RedirectToCitizenAuth)
 	auth.Post("/login", handlers.RedirectToCitizenAuth)
 	auth.Post("/logout", handlers.RedirectToCitizenAuth)
-	
+
 	// Traefik forward auth endpoint (validates SSO session - eski sistem)
 	auth.Get("/validate", handlers.ValidateForTraefik)
 
@@ -154,7 +154,7 @@ func SetupRoutes(app *fiber.App) {
 
 	// GitHub integration endpoints
 	github := api.Group("/github")
-	
+
 	// GitHub endpoints (SSO session required)
 	githubProtected := github.Group("")
 	githubProtected.Use(middleware.Protected())
@@ -163,7 +163,7 @@ func SetupRoutes(app *fiber.App) {
 		githubProtected.Post("/config", handlers.SetupGitHubConfig)
 		githubProtected.Get("/config", handlers.GetGitHubConfig)
 		githubProtected.Delete("/config", handlers.DeleteGitHubConfig)
-		
+
 		// GitHub OAuth endpoints
 		githubProtected.Get("/auth/init", handlers.GitHubAuthInit)
 		githubProtected.Get("/auth/callback", handlers.GitHubAuthCallback)
@@ -174,12 +174,12 @@ func SetupRoutes(app *fiber.App) {
 		githubProtected.Delete("/apps/:app_name/disconnect", handlers.DisconnectRepository)
 		githubProtected.Put("/apps/:app_name/auto-deploy", handlers.ToggleAutoDeploy)
 	}
-	
+
 	// GitHub webhook endpoint (public - no auth required)
 	github.Post("/webhook", handlers.GitHubWebhookHandler)
 
 	// ===== CITIZENAUTH INTEGRATION ENDPOINTS =====
-	
+
 	// Service endpoints (API key authentication)
 	service := api.Group("/service")
 	{
@@ -191,8 +191,9 @@ func SetupRoutes(app *fiber.App) {
 		{
 			webhooks.Post("/permission-update", handlers.WebhookPermissionUpdate)
 			webhooks.Post("/session-update", handlers.WebhookSessionUpdate) // Login/Logout events
+			webhooks.Post("/instance-lifecycle", handlers.WebhookInstanceLifecycle)
 		}
-		
+
 		// Permission API (CitizenAuth reads permissions for UI)
 		permissions := service.Group("/permissions")
 		permissions.Use(middleware.APIKeyAuth())
@@ -201,5 +202,13 @@ func SetupRoutes(app *fiber.App) {
 		{
 			permissions.Get("/", handlers.GetPermissionsForCitizenAuth)
 		}
+
+		service.Post(
+			"/instances/handshake",
+			middleware.APIKeyAuth(),
+			middleware.RequireServiceAuth(),
+			middleware.RequireScope("instance:import"),
+			handlers.InstanceHandshake,
+		)
 	}
 }

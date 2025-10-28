@@ -45,10 +45,16 @@ func SSOCallback(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).SendString("Invalid token")
 	}
 	
-	log.Printf("✅ [SSO-CALLBACK] JWT validated: %s (%s)", claims.UserID, claims.Email)
-	
-	permissionSvc := services.NewPermissionService()
-	assigned, err := permissionSvc.IsUserAssignedToInstance(c.Context(), claims.UserID)
+log.Printf("✅ [SSO-CALLBACK] JWT validated: %s (%s)", claims.UserID, claims.Email)
+
+if claims.OrganizationID == nil || *claims.OrganizationID == "" {
+    log.Println("❌ [SSO-CALLBACK] Missing organization ID in token")
+    return c.Status(fiber.StatusUnauthorized).SendString("Missing organization scope")
+}
+
+organizationID := *claims.OrganizationID
+permissionSvc := services.NewPermissionService()
+assigned, err := permissionSvc.IsUserAssignedToInstance(c.Context(), claims.UserID, organizationID)
 	if err != nil {
 		log.Printf("❌ [SSO-CALLBACK] Failed to verify instance assignment: %v", err)
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to verify access")
@@ -58,14 +64,15 @@ func SSOCallback(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusForbidden).SendString("You do not have access to this Citizen instance.")
 	}
 	
-	// Get or create local user (map CitizenAuth UUID to local user)
-	var localUserID int
-	query := `SELECT get_or_create_local_user($1, $2, $3)`
-	err = database.DB.QueryRow(c.Context(), query, 
-		claims.UserID, 
-		claims.Email, 
-		claims.Name,
-	).Scan(&localUserID)
+// Get or create local user (map CitizenAuth UUID to local user)
+var localUserID int
+query := `SELECT get_or_create_local_user($1, $2, $3, $4)`
+err = database.DB.QueryRow(c.Context(), query, 
+    claims.UserID, 
+    claims.Email, 
+    claims.Name,
+    organizationID,
+).Scan(&localUserID)
 	
 	if err != nil {
 		log.Printf("❌ [SSO-CALLBACK] Failed to get/create local user: %v", err)
@@ -74,9 +81,12 @@ func SSOCallback(c *fiber.Ctx) error {
 	
 	log.Printf("🔗 [SSO-CALLBACK] Mapped CitizenAuth user %s to local user %d", claims.UserID, localUserID)
 	
-	// Create Citizen SSO session (local Redis)
-	deviceID := c.Get("User-Agent")
-	ssoSessionID := createOrUpdateSSOSession(localUserID, c.Hostname(), deviceID)
+// Create Citizen SSO session (local Redis)
+deviceID := c.Get("User-Agent")
+ssoSessionID := createOrUpdateSSOSession(localUserID, c.Hostname(), deviceID, &organizationID)
+
+// Persist organization context for downstream handlers
+c.Locals("organization_id", organizationID)
 	
 	log.Printf("🔄 [SSO-CALLBACK] Created local SSO session: %s for user %d", ssoSessionID, localUserID)
 	
