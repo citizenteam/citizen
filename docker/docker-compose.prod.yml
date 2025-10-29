@@ -55,8 +55,7 @@ services:
   api:
     build:
       context: ../backend
-      dockerfile: Dockerfile.release
-    image: citizen-api:bootstrap
+      dockerfile: dockerfiles/Dockerfile.watcher
     container_name: citizen-api-prod
     restart: unless-stopped
     env_file:
