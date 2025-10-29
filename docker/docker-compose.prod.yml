@@ -55,7 +55,7 @@ services:
   api:
     build:
       context: ..
-      dockerfile: dockerfiles/Dockerfile
+      dockerfile: docker/dockerfiles/Dockerfile
     container_name: citizen-api-prod
     restart: unless-stopped
     env_file:
