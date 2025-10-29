@@ -4,6 +4,7 @@ import { useApi } from '../hooks/useApi';
 import MinimalLayout from '../components/layout/MinimalLayout';
 import type { App, AppInfo } from '../types';
 import { errorLog } from '../utils/debug';
+import { useAuth } from '../context/AuthContext';
 
 export default function Home() {
   const [, setLocation] = useLocation();
@@ -12,10 +13,14 @@ export default function Home() {
   const [showContent, setShowContent] = useState(false);
   const { data: rawApps, error, loading, request: fetchApps } = useApi<string[]>();
   const { request: fetchAppInfo } = useApi<AppInfo>();
+  const { isLoading: authLoading } = useAuth();
   
   useEffect(() => {
+    if (authLoading) {
+      return;
+    }
     fetchApps({ url: '/citizen/apps' });
-  }, []);
+  }, [fetchApps, authLoading]);
 
   // Transform string array to App object array
   useEffect(() => {
@@ -63,7 +68,7 @@ export default function Home() {
       
       fetchAllAppsInfo();
     }
-  }, [apps]);
+  }, [apps, fetchAppInfo]);
 
   const handleCreateApp = () => {
     setLocation('/apps/new');

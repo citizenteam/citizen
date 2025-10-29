@@ -34,15 +34,22 @@ func JWTAuth() fiber.Handler {
 			return c.Next()
 		}
 
-		// Extract token from cookie or Authorization header
-		token := c.Cookies("sso_session")
-		if token == "" {
-			authHeader := c.Get("Authorization")
-			token = strings.TrimPrefix(authHeader, "Bearer ")
+		// Extract token from Authorization header (Bearer <token>)
+		authHeader := strings.TrimSpace(c.Get("Authorization"))
+		if authHeader == "" {
+			utils.AuthDebugLog("No Authorization header found, skipping JWT auth")
+			return c.Next()
 		}
 
+		fields := strings.Fields(authHeader)
+		if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+			utils.AuthDebugLog("Authorization header present but not Bearer format")
+			return c.Next()
+		}
+
+		token := strings.TrimSpace(fields[1])
 		if token == "" {
-			utils.AuthDebugLog("No JWT token found in request")
+			utils.AuthDebugLog("Bearer token is empty, skipping JWT auth")
 			return c.Next() // Allow other auth methods to try
 		}
 
@@ -84,7 +91,7 @@ func JWTAuth() fiber.Handler {
 func RequireJWTAuth() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authType := c.Locals("auth_type")
-		
+
 		if authType != "jwt" {
 			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
 				false,

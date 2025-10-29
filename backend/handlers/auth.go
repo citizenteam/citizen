@@ -36,14 +36,14 @@ var (
 
 // SSOSession structure
 type SSOSession struct {
-    SessionID      string     `json:"session_id"`
-    UserID         int        `json:"user_id"`
-    MainDomain     string     `json:"main_domain"`
-    DeviceID       string     `json:"device_id"`
-    OrganizationID *string    `json:"organization_id,omitempty"`
-    CreatedAt      time.Time  `json:"created_at"`
-    LastActivity   time.Time  `json:"last_activity"`
-    ExpiresAt      time.Time  `json:"expires_at"`
+	SessionID      string    `json:"session_id"`
+	UserID         int       `json:"user_id"`
+	MainDomain     string    `json:"main_domain"`
+	DeviceID       string    `json:"device_id"`
+	OrganizationID *string   `json:"organization_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastActivity   time.Time `json:"last_activity"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 
 // Domain types
@@ -102,15 +102,15 @@ func getLoginHost() string {
 // getDomainType determines the type of domain
 func getDomainType(host string) DomainType {
 	loginHost := getLoginHost()
-	
+
 	if host == loginHost || host == "www."+loginHost {
 		return DomainTypeLogin
 	}
-	
+
 	if strings.HasSuffix(host, "."+loginHost) {
 		return DomainTypeSubdomain
 	}
-	
+
 	return DomainTypeCustom
 }
 
@@ -119,7 +119,7 @@ func getCookieConfig(host string, forwardedProto string) CookieConfig {
 	domainType := getDomainType(host)
 	config := CookieConfig{}
 	loginHost := getLoginHost()
-	
+
 	// Determine domain
 	switch domainType {
 	case DomainTypeCustom:
@@ -131,10 +131,10 @@ func getCookieConfig(host string, forwardedProto string) CookieConfig {
 			config.Domain = "." + loginHost
 		}
 	}
-	
+
 	// Determine SameSite and Secure
 	isHTTPS := isHttpsRequired()
-	
+
 	if strings.Contains(host, "localhost") {
 		config.SameSite = "Lax"
 		config.Secure = false
@@ -156,15 +156,15 @@ func getCookieConfig(host string, forwardedProto string) CookieConfig {
 			config.Secure = false
 		}
 	}
-	
+
 	// Override secure if protocol indicates HTTPS
 	if strings.HasPrefix(forwardedProto, "https") {
 		config.Secure = true
 	}
-	
-	utils.AuthDebugLog("getCookieConfig('%s') = domain:'%s', sameSite:'%s', secure:%v", 
+
+	utils.AuthDebugLog("getCookieConfig('%s') = domain:'%s', sameSite:'%s', secure:%v",
 		host, config.Domain, config.SameSite, config.Secure)
-	
+
 	return config
 }
 
@@ -173,7 +173,7 @@ func getCookieConfig(host string, forwardedProto string) CookieConfig {
 func getCookieConfigForLoginHost(forwardedProto string) CookieConfig {
 	loginHost := getLoginHost()
 	config := CookieConfig{}
-	
+
 	if strings.Contains(loginHost, "localhost") {
 		config.Domain = ""
 		config.SameSite = "Lax"
@@ -183,22 +183,22 @@ func getCookieConfigForLoginHost(forwardedProto string) CookieConfig {
 		config.SameSite = "None" // Always None for login host for cross-domain SSO
 		config.Secure = isHttpsRequired()
 	}
-	
+
 	// Override secure if protocol indicates HTTPS
 	if strings.HasPrefix(forwardedProto, "https") {
 		config.Secure = true
 	}
-	
-	utils.AuthDebugLog("getCookieConfigForLoginHost() = domain:'%s', sameSite:'%s', secure:%v", 
+
+	utils.AuthDebugLog("getCookieConfigForLoginHost() = domain:'%s', sameSite:'%s', secure:%v",
 		config.Domain, config.SameSite, config.Secure)
-	
+
 	return config
 }
 
 // setSSOCookie sets the SSO session cookie with appropriate configuration
 func setSSOCookie(c *fiber.Ctx, sessionID string, host string) {
 	config := getCookieConfig(host, c.Get("X-Forwarded-Proto"))
-	
+
 	c.Cookie(&fiber.Cookie{
 		Name:     "sso_session",
 		Value:    sessionID,
@@ -209,14 +209,14 @@ func setSSOCookie(c *fiber.Ctx, sessionID string, host string) {
 		SameSite: config.SameSite,
 		Secure:   config.Secure,
 	})
-	
+
 	utils.AuthDebugLog("Set SSO cookie for host %s", host)
 }
 
 // clearSSOCookie clears the SSO session cookie
 func clearSSOCookie(c *fiber.Ctx, host string) {
 	config := getCookieConfig(host, c.Get("X-Forwarded-Proto"))
-	
+
 	c.Cookie(&fiber.Cookie{
 		Name:     "sso_session",
 		Value:    "",
@@ -227,7 +227,7 @@ func clearSSOCookie(c *fiber.Ctx, host string) {
 		SameSite: config.SameSite,
 		Secure:   config.Secure,
 	})
-	
+
 	utils.AuthDebugLog("Cleared SSO cookie for host %s", host)
 }
 
@@ -239,7 +239,7 @@ func buildSSOInitURL(targetURL string) string {
 	if isHttpsRequired() {
 		protocol = "https://"
 	}
-	
+
 	loginHost := getLoginHost()
 	return fmt.Sprintf("%s%s/sso/init?target=%s", protocol, loginHost, url.QueryEscape(targetURL))
 }
@@ -250,14 +250,14 @@ func buildLoginURL(targetURL string) string {
 	if isHttpsRequired() {
 		protocol = "https://"
 	}
-	
+
 	loginHost := getLoginHost()
 	cleanedURL := cleanViteParams(targetURL)
-	
+
 	if isHttpsRequired() && strings.HasPrefix(cleanedURL, "http://") {
 		cleanedURL = strings.Replace(cleanedURL, "http://", "https://", 1)
 	}
-	
+
 	return fmt.Sprintf("%s%s/login?redirect=%s", protocol, loginHost, url.QueryEscape(cleanedURL))
 }
 
@@ -266,7 +266,7 @@ func validateAndGetSSOSession(c *fiber.Ctx, forwardedUri string) (*SSOSession, s
 	// Debug: Log all cookies
 	allCookies := c.Get("Cookie")
 	utils.AuthDebugLog("All cookies received: '%s'", allCookies)
-	
+
 	// Use cookie only for security - no URL parameters that can leak
 	if sessionID := c.Cookies("sso_session"); sessionID != "" {
 		utils.AuthDebugLog("SSO session cookie found: '%s'", sessionID)
@@ -279,7 +279,7 @@ func validateAndGetSSOSession(c *fiber.Ctx, forwardedUri string) (*SSOSession, s
 	} else {
 		utils.AuthDebugLog("No sso_session cookie found")
 	}
-	
+
 	return nil, ""
 }
 
@@ -287,11 +287,11 @@ func validateAndGetSSOSession(c *fiber.Ctx, forwardedUri string) (*SSOSession, s
 func getPublicPaths() []string {
 	paths := make([]string, len(basePublicPaths))
 	copy(paths, basePublicPaths)
-	
+
 	if utils.IsDevelopmentEnvironment() {
 		paths = append(paths, developmentPaths...)
 	}
-	
+
 	return paths
 }
 
@@ -301,14 +301,14 @@ func isPublicPath(uri string) bool {
 	if queryIndex := strings.Index(uri, "?"); queryIndex != -1 {
 		cleanURI = uri[:queryIndex]
 	}
-	
+
 	publicPaths := getPublicPaths()
-	
+
 	for _, path := range publicPaths {
 		if strings.HasPrefix(uri, path) {
 			return true
 		}
-		
+
 		if strings.HasPrefix(path, ".") && strings.HasSuffix(cleanURI, path) {
 			return true
 		}
@@ -329,36 +329,36 @@ func generateSecureID() string {
 
 // Create or update SSO session
 func createOrUpdateSSOSession(userID int, mainDomain string, deviceID string, organizationID *string) string {
-    sessionID := generateSecureID()
+	sessionID := generateSecureID()
 
-    session := &SSOSession{
-        SessionID:    sessionID,
-        UserID:       userID,
-        MainDomain:   mainDomain,
-        DeviceID:     deviceID,
-        OrganizationID: organizationID,
-        CreatedAt:    time.Now(),
-        LastActivity: time.Now(),
-        ExpiresAt:    time.Now().Add(24 * time.Hour),
-    }
-	
+	session := &SSOSession{
+		SessionID:      sessionID,
+		UserID:         userID,
+		MainDomain:     mainDomain,
+		DeviceID:       deviceID,
+		OrganizationID: organizationID,
+		CreatedAt:      time.Now(),
+		LastActivity:   time.Now(),
+		ExpiresAt:      time.Now().Add(24 * time.Hour),
+	}
+
 	// Store in memory
 	ssoMutex.Lock()
 	ssoSessions[sessionID] = session
 	ssoMutex.Unlock()
-	
+
 	// Store in Redis if available
 	if data, err := json.Marshal(session); err == nil {
 		database.SetWithTTL("sso_session:"+sessionID, string(data), 24*time.Hour)
 	}
-	
+
 	return sessionID
 }
 
 // GetSSOSession retrieves an SSO session by ID
 func GetSSOSession(sessionID string) (*SSOSession, error) {
 	utils.SessionDebugLog(sessionID, "GetSSOSession called")
-	
+
 	// Try Redis first
 	if data, err := database.Get("sso_session:" + sessionID); err == nil && data != "" {
 		utils.SessionDebugLog(sessionID, "Found session in Redis")
@@ -376,22 +376,22 @@ func GetSSOSession(sessionID string) (*SSOSession, error) {
 	} else {
 		utils.SessionDebugLog(sessionID, "Session not found in Redis: %v", err)
 	}
-	
+
 	// Fallback to memory
 	ssoMutex.RLock()
 	defer ssoMutex.RUnlock()
-	
+
 	session, exists := ssoSessions[sessionID]
 	if !exists {
 		utils.SessionDebugLog(sessionID, "Session not found in memory")
 		return nil, fmt.Errorf("session not found")
 	}
-	
+
 	if time.Now().After(session.ExpiresAt) {
 		utils.SessionDebugLog(sessionID, "Session expired in memory. ExpiresAt: %v, Now: %v", session.ExpiresAt, time.Now())
 		return nil, fmt.Errorf("session expired")
 	}
-	
+
 	utils.SessionDebugLog(sessionID, "Valid session found in memory, UserID: %d", session.UserID)
 	return session, nil
 }
@@ -400,9 +400,9 @@ func GetSSOSession(sessionID string) (*SSOSession, error) {
 func clearUserSSOSessions(userID int) {
 	ssoMutex.Lock()
 	defer ssoMutex.Unlock()
-	
+
 	deletedCount := 0
-	
+
 	// 1. Clear from memory map
 	for sessionID, session := range ssoSessions {
 		if session.UserID == userID {
@@ -410,28 +410,28 @@ func clearUserSSOSessions(userID int) {
 			deletedCount++
 		}
 	}
-	
+
 	// 2. Clear from Redis (scan all sso_session:* keys)
 	if database.RedisClient != nil {
 		ctx := context.Background()
-		
+
 		// Scan all sso_session keys
 		iter := database.RedisClient.Scan(ctx, 0, "sso_session:*", 100).Iterator()
 		for iter.Next(ctx) {
 			key := iter.Val()
-			
+
 			// Get session data from Redis
 			sessionData, err := database.RedisClient.Get(ctx, key).Result()
 			if err != nil {
 				continue
 			}
-			
+
 			// Parse session to check UserID
 			var session SSOSession
 			if err := json.Unmarshal([]byte(sessionData), &session); err != nil {
 				continue
 			}
-			
+
 			// If this session belongs to the user, delete it
 			if session.UserID == userID {
 				err := database.RedisClient.Del(ctx, key).Err()
@@ -443,12 +443,12 @@ func clearUserSSOSessions(userID int) {
 				}
 			}
 		}
-		
+
 		if err := iter.Err(); err != nil {
 			log.Printf("❌ [SSO] Redis scan error: %v", err)
 		}
 	}
-	
+
 	log.Printf("✅ [SSO] Cleared %d sessions for user %d", deletedCount, userID)
 }
 
@@ -460,22 +460,22 @@ func SSOInit(c *fiber.Ctx) error {
 	if targetURL == "" {
 		targetURL = "/"
 	}
-	
+
 	utils.RequestDebugLog("GET", "/sso/init", "SSO Init page requested for target: %s", targetURL)
-	
+
 	// Check if user is already authenticated on this domain
 	if session, _ := validateAndGetSSOSession(c, ""); session != nil {
 		// User is authenticated - direct redirect (custom domains now handle redirect at Traefik level)
 		utils.AuthDebugLog("User %d authenticated, redirecting to: %s", session.UserID, targetURL)
 		return c.Redirect(targetURL, fiber.StatusTemporaryRedirect)
 	}
-	
+
 	// No valid authentication, redirect to CitizenAuth SSO Init
 	citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
 	if citizenAuthURL == "" {
 		citizenAuthURL = "https://ustun.tech"
 	}
-	
+
 	ssoInitURL := fmt.Sprintf("%s/sso/init?redirect=%s", citizenAuthURL, url.QueryEscape(targetURL))
 	utils.AuthDebugLog("No authentication found, redirecting to SSO Init: %s", ssoInitURL)
 	return c.Redirect(ssoInitURL, fiber.StatusTemporaryRedirect)
@@ -486,9 +486,9 @@ func SSOInit(c *fiber.Ctx) error {
 // SSO Check endpoint - Microsoft style (called by hidden iframe)
 func SSOCheck(c *fiber.Ctx) error {
 	origin := c.Get("Origin")
-	
+
 	utils.RequestDebugLog("GET", "/sso/check", "Origin: '%s', Host: '%s'", origin, c.Hostname())
-	
+
 	// Validate origin
 	if origin != "" && !isAllowedOrigin(origin) {
 		utils.SecurityLog("SSO Check - Origin not allowed: %s", origin)
@@ -496,33 +496,33 @@ func SSOCheck(c *fiber.Ctx) error {
 			"error": "Invalid origin",
 		})
 	}
-	
+
 	// Get SSO session
 	session, sessionID := validateAndGetSSOSession(c, "")
-	
+
 	allowedOrigin := origin
 	if allowedOrigin == "" {
 		allowedOrigin = "*"
 	}
-	
+
 	if session == nil {
 		return c.Type("html").SendString(getSSOCheckHTML(false, "", allowedOrigin))
 	}
-	
+
 	// Update last activity
 	session.LastActivity = time.Now()
-	
+
 	// Set cookie for custom domain if needed
 	if origin != "" {
 		if parsedOrigin, err := url.Parse(origin); err == nil {
 			originHost := parsedOrigin.Host
 			if getDomainType(originHost) == DomainTypeCustom {
 				utils.AuthDebugLog("Setting SSO session cookie for custom domain origin: %s", originHost)
-				
+
 				// For SSO Check, use Lax for custom domains as per original logic
 				config := getCookieConfig(originHost, c.Get("X-Forwarded-Proto"))
 				config.SameSite = "Lax" // Override to Lax for cross-site iframe compatibility
-				
+
 				c.Cookie(&fiber.Cookie{
 					Name:     "sso_session",
 					Value:    sessionID,
@@ -536,7 +536,7 @@ func SSOCheck(c *fiber.Ctx) error {
 			}
 		}
 	}
-	
+
 	return c.Type("html").SendString(getSSOCheckHTML(true, sessionID, allowedOrigin))
 }
 
@@ -554,7 +554,7 @@ func Login(c *fiber.Ctx) error {
 			}
 			return c.Redirect("/")
 		}
-		
+
 		return c.SendString("Login sayfası")
 	}
 
@@ -616,13 +616,13 @@ func Login(c *fiber.Ctx) error {
 
 	currentHost := c.Hostname()
 	loginHost := getLoginHost()
-	
+
 	utils.SessionDebugLog(ssoSessionID, "Storing SSO session for User: %d", userID)
 
 	// Always set SSO session cookie for current host first
 	cookieDomain := getCookieDomainForHost(currentHost)
 	currentHostSameSite := getSameSitePolicy(currentHost)
-	
+
 	c.Cookie(&fiber.Cookie{
 		Name:     "sso_session",
 		Value:    ssoSessionID,
@@ -634,10 +634,10 @@ func Login(c *fiber.Ctx) error {
 		Secure:   isHttpsRequired(),
 	})
 
-			// Always set SSO session cookie for login host (unless we're already on login host)
+	// Always set SSO session cookie for login host (unless we're already on login host)
 	if currentHost != loginHost {
 		utils.AuthDebugLog("Setting SSO session cookie for login host: %s", loginHost)
-		
+
 		loginCookieDomain := getCookieDomainForHost(loginHost)
 		loginSameSitePolicy := getSameSitePolicy(loginHost)
 		c.Cookie(&fiber.Cookie{
@@ -656,23 +656,23 @@ func Login(c *fiber.Ctx) error {
 	if redirectURL != "" {
 		if redirectURLParsed, err := url.Parse(redirectURL); err == nil {
 			redirectHost := redirectURLParsed.Host
-			
+
 			// If redirect is to a custom domain (not login host or subdomain) and not current host
 			if redirectHost != loginHost && !strings.HasSuffix(redirectHost, "."+loginHost) && redirectHost != currentHost {
 				utils.AuthDebugLog("Setting SSO session cookie for custom domain: %s", redirectHost)
-				
+
 				// For custom domains, use domain-specific cookie strategy
 				var customCookieDomain string
 				var customSameSitePolicy string
 				var customIsSecure bool
-				
+
 				// Custom domain - use Lax policy for cross-site compatibility
-				customCookieDomain = "" // No domain set for custom domains
-				customSameSitePolicy = "Lax" // Use Lax for cross-site navigation compatibility
+				customCookieDomain = ""                                                 // No domain set for custom domains
+				customSameSitePolicy = "Lax"                                            // Use Lax for cross-site navigation compatibility
 				customIsSecure = strings.HasPrefix(c.Get("X-Forwarded-Proto"), "https") // Check actual protocol
-				
+
 				utils.AuthDebugLog("Custom domain redirect detected, using Lax cookie policy for %s", redirectHost)
-				
+
 				// Set cookie for the custom domain as well
 				c.Cookie(&fiber.Cookie{
 					Name:     "sso_session",
@@ -687,7 +687,7 @@ func Login(c *fiber.Ctx) error {
 			}
 		}
 	}
-	
+
 	utils.SecurityLog("User %s LOGIN - SSO Session: %s, Host: %s", userID, ssoSessionID, currentHost)
 
 	// Response
@@ -716,7 +716,7 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 	c.Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 	c.Set("Pragma", "no-cache")
 	c.Set("Expires", "0")
-	
+
 	// Handle OPTIONS preflight requests - always allow
 	if c.Method() == "OPTIONS" || c.Get("X-Forwarded-Method") == "OPTIONS" {
 		origin := c.Get("Origin")
@@ -733,28 +733,50 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 	// Get forwarded headers
 	forwardedHost := c.Get("X-Forwarded-Host")
 	forwardedUri := c.Get("X-Forwarded-Uri")
-	
+
 	// Get Authorization header (Traefik forwards it)
-	authHeader := c.Get("Authorization")
-	
+	authHeader := strings.TrimSpace(c.Get("Authorization"))
+
 	if authHeader == "" {
-		authHeader = c.Get("X-Forwarded-Authorization")
+		authHeader = strings.TrimSpace(c.Get("X-Forwarded-Authorization"))
 	}
-	
+
+	// Normalize common empty placeholders
+	if strings.EqualFold(authHeader, "Bearer null") || strings.EqualFold(authHeader, "Bearer") {
+		authHeader = ""
+	}
+
+	var bearerToken string
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		bearerToken = strings.TrimSpace(authHeader[len("Bearer "):])
+		if bearerToken == "" || strings.EqualFold(bearerToken, "null") {
+			bearerToken = ""
+			authHeader = ""
+		}
+	}
+
 	// Log all headers for debugging
-	log.Printf("🔍 [VALIDATE] URI: %s, Authorization: %v, Cookie: %v", 
-		forwardedUri, 
-		authHeader != "", 
+	log.Printf("🔍 [VALIDATE] URI: %s, Authorization: %v, Cookie: %v",
+		forwardedUri,
+		authHeader != "",
 		c.Get("Cookie") != "")
-	
+
 	if authHeader != "" {
 		headerPreview := authHeader
-		if len(authHeader) > 30 {
+		if bearerToken != "" {
+			if len(bearerToken) > 8 {
+				headerPreview = fmt.Sprintf("Bearer %s…%s", bearerToken[:4], bearerToken[len(bearerToken)-4:])
+			} else {
+				headerPreview = fmt.Sprintf("Bearer (len=%d)", len(bearerToken))
+			}
+		} else if len(authHeader) > 30 {
 			headerPreview = authHeader[:30] + "..."
 		}
 		log.Printf("🔑 [VALIDATE] Auth header: %s", headerPreview)
+	} else {
+		log.Printf("🔑 [VALIDATE] Auth header: (missing)")
 	}
-	
+
 	utils.RequestDebugLog("VALIDATE", forwardedUri, "Host: %s, Auth: %v", forwardedHost, authHeader != "")
 
 	// Check public paths
@@ -774,28 +796,27 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 	}
 
 	// Get Authorization header (already extracted above)
-	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+	if bearerToken != "" {
 		// This is a JWT token from CitizenAuth - validate it directly
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		
 		// Try JWT validation first
 		if jwtValidator := getJWTValidator(); jwtValidator != nil {
-			claims, err := jwtValidator.ValidateToken(token)
+			claims, err := jwtValidator.ValidateToken(bearerToken)
 			if err == nil {
+				log.Printf("✅ [VALIDATE] Authenticated via JWT: %s (%s)", claims.UserID, claims.Email)
 				utils.AuthDebugLog("JWT validated via ForwardAuth: %s", claims.Email)
 				return c.SendStatus(fiber.StatusOK)
 			}
 		}
 	}
-	
+
 	// Try API Token authentication (if app has API access enabled)
 	if appName != "" {
 		queryToken := c.Query("token")
-		
+
 		if token := tokens.ExtractAPIToken(authHeader, queryToken); token != "" && appName != "" {
 			// Check if app has API access enabled (simple on/off check)
 			hasAccess, err := api.AppAPIAccess.IsAppAPIAccessEnabled(c.Context(), appName)
-			
+
 			if err == nil && hasAccess {
 				// Validate API token
 				user, err := api.APITokens.ValidateAPIToken(c.Context(), token)
@@ -816,17 +837,18 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 
 	// Fallback to SSO session validation
 	session, _ := validateAndGetSSOSession(c, forwardedUri)
-	
+
 	if session == nil {
 		utils.AuthDebugLog("No valid authentication found for host: %s", forwardedHost)
-		
+
 		originalURL := c.Get("X-Forwarded-Proto") + "://" + forwardedHost + forwardedUri
-		
+
 		// Always redirect to CitizenAuth SSO Init
 		return redirectToLogin(c, originalURL)
 	}
-	
+
 	// SSO session validated
+	log.Printf("✅ [VALIDATE] Authenticated via SSO session: user_id=%d", session.UserID)
 	utils.AuthDebugLog("SSO session validation successful for host: %s, User: %d", forwardedHost, session.UserID)
 	return c.SendStatus(fiber.StatusOK)
 }
@@ -855,7 +877,7 @@ func Logout(c *fiber.Ctx) error {
 		// For custom domains, use domain-specific policy
 		config := getCookieConfig(currentHost, c.Get("X-Forwarded-Proto"))
 		// Keep the original SameSite policy for clearing
-		
+
 		c.Cookie(&fiber.Cookie{
 			Name:     "sso_session",
 			Value:    "",
@@ -874,10 +896,10 @@ func Logout(c *fiber.Ctx) error {
 	// Clear login host cookie if different
 	if currentHost != loginHost {
 		utils.AuthDebugLog("Clearing login host cookie during logout")
-		
+
 		// Use special config for login host (always SameSite=None)
 		config := getCookieConfigForLoginHost(c.Get("X-Forwarded-Proto"))
-		
+
 		c.Cookie(&fiber.Cookie{
 			Name:     "sso_session",
 			Value:    "",
@@ -903,7 +925,7 @@ func Logout(c *fiber.Ctx) error {
 // ValidateSessionEndpoint - API endpoint for SSO session validation (keeping token-validate path for compatibility)
 func ValidateSessionEndpoint(c *fiber.Ctx) error {
 	log.Printf("[AUTH] ValidateSessionEndpoint called from IP: %s", c.IP())
-	
+
 	session, _ := validateAndGetSSOSession(c, "")
 	if session == nil {
 		log.Printf("[AUTH] ValidateSessionEndpoint - No valid SSO session found")
@@ -991,7 +1013,7 @@ func Register(c *fiber.Ctx) error {
 		Email:    user.Email,
 		Password: hashedPassword,
 	}
-	
+
 	if err := api.Users.CreateUser(c.Context(), newUser); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -1044,18 +1066,18 @@ func GetProfile(c *fiber.Ctx) error {
 // getCookieDomainForHost returns the cookie domain for a given host
 func getCookieDomainForHost(host string) string {
 	loginDomain := getLoginHost()
-	
+
 	if strings.Contains(host, "localhost") {
 		// For localhost development, set .localhost domain for subdomain sharing
 		utils.AuthDebugLog("getCookieDomainForHost('%s') = '.localhost' (localhost subdomain support)", host)
 		return ".localhost"
 	}
-	
+
 	if host == loginDomain || strings.HasSuffix(host, "."+loginDomain) {
 		utils.AuthDebugLog("getCookieDomainForHost('%s') = '.%s' (login domain/subdomain)", host, loginDomain)
 		return "." + loginDomain
 	}
-	
+
 	domains, err := getActiveCustomDomainsFromDB()
 	if err != nil {
 		log.Printf("[AUTH] Error fetching custom domains: %v", err)
@@ -1081,9 +1103,9 @@ func getSameSitePolicy(host string) string {
 		utils.AuthDebugLog("getSameSitePolicy('%s') = 'Lax' (localhost)", host)
 		return "Lax"
 	}
-	
+
 	loginDomain := getLoginHost()
-	
+
 	// For custom domains, check if HTTPS is required
 	if host != loginDomain && !strings.HasSuffix(host, "."+loginDomain) {
 		// Custom domain - for cross-domain cookies we need SameSite=None and Secure=true
@@ -1097,7 +1119,7 @@ func getSameSitePolicy(host string) string {
 			return "Lax"
 		}
 	}
-	
+
 	// For subdomains of login domain, use None for cross-domain functionality (with HTTPS)
 	if isHttpsRequired() {
 		utils.AuthDebugLog("getSameSitePolicy('%s') = 'None' (production/subdomain, HTTPS)", host)
@@ -1113,7 +1135,7 @@ func isHttpsRequired() bool {
 	if forceHttps == "" {
 		forceHttps = "true"
 	}
-	
+
 	result := forceHttps == "true"
 	utils.AuthDebugLog("isHttpsRequired() = %v (FORCE_HTTPS='%s')", result, forceHttps)
 	return result
@@ -1157,20 +1179,20 @@ func isAllowedOrigin(origin string) bool {
 	if origin == "" {
 		return false
 	}
-	
+
 	u, err := url.Parse(origin)
 	if err != nil {
 		return false
 	}
-	
+
 	host := u.Host
 	domainType := getDomainType(host)
-	
+
 	// Allow login host and subdomains
 	if domainType == DomainTypeLogin || domainType == DomainTypeSubdomain {
 		return true
 	}
-	
+
 	// Check custom domains
 	domains, err := getActiveCustomDomainsFromDB()
 	if err == nil {
@@ -1180,7 +1202,7 @@ func isAllowedOrigin(origin string) bool {
 			}
 		}
 	}
-	
+
 	return false
 }
 
@@ -1190,7 +1212,7 @@ func redirectToLogin(c *fiber.Ctx, originalURL string) error {
 	if citizenAuthURL == "" {
 		citizenAuthURL = "https://ustun.tech"
 	}
-	
+
 	// Add CORS headers for redirect response
 	origin := c.Get("Origin")
 	if origin != "" {
@@ -1199,7 +1221,7 @@ func redirectToLogin(c *fiber.Ctx, originalURL string) error {
 		c.Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		c.Set("Access-Control-Allow-Headers", "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie")
 	}
-	
+
 	ssoInitURL := fmt.Sprintf("%s/sso/init?redirect=%s", citizenAuthURL, url.QueryEscape(originalURL))
 	log.Printf("[AUTH] Redirecting to SSO Init: %s", ssoInitURL)
 	c.Set("Location", ssoInitURL)
@@ -1208,7 +1230,7 @@ func redirectToLogin(c *fiber.Ctx, originalURL string) error {
 
 func cleanViteParams(originalURL string) string {
 	viteParams := []string{"?t=", "&t="}
-	
+
 	cleanedURL := originalURL
 	for _, param := range viteParams {
 		if strings.Contains(cleanedURL, param) {
@@ -1223,10 +1245,10 @@ func cleanViteParams(originalURL string) string {
 			}
 		}
 	}
-	
+
 	cleanedURL = strings.TrimSuffix(cleanedURL, "?")
 	cleanedURL = strings.TrimSuffix(cleanedURL, "&")
-	
+
 	return cleanedURL
 }
 
@@ -1273,7 +1295,7 @@ func getSSOCheckHTML(authenticated bool, ssoSessionID string, allowedOrigin stri
 func CleanExpiredSSOTokens() {
 	ssoMutex.Lock()
 	defer ssoMutex.Unlock()
-	
+
 	now := time.Now()
 	for sessionID, session := range ssoSessions {
 		if now.After(session.ExpiresAt) {
@@ -1287,7 +1309,7 @@ func init() {
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		
+
 		for range ticker.C {
 			CleanExpiredSSOTokens()
 		}

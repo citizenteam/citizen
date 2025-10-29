@@ -155,9 +155,10 @@ func SetupRoutes(app *fiber.App) {
 	// GitHub integration endpoints
 	github := api.Group("/github")
 
-	// GitHub endpoints (SSO session required)
+	// GitHub endpoints (JWT or SSO session required)
 	githubProtected := github.Group("")
-	githubProtected.Use(middleware.Protected())
+	githubProtected.Use(middleware.JWTAuth())   // Try JWT first (CitizenAuth)
+	githubProtected.Use(middleware.Protected()) // Fallback to SSO session
 	{
 		// GitHub config endpoints (admin only)
 		githubProtected.Post("/config", handlers.SetupGitHubConfig)
@@ -203,12 +204,7 @@ func SetupRoutes(app *fiber.App) {
 			permissions.Get("/", handlers.GetPermissionsForCitizenAuth)
 		}
 
-		service.Post(
-			"/instances/handshake",
-			middleware.APIKeyAuth(),
-			middleware.RequireServiceAuth(),
-			middleware.RequireScope("instance:import"),
-			handlers.InstanceHandshake,
-		)
+		// Instance handshake (no middleware - handler does its own auth)
+		service.Post("/instances/handshake", handlers.InstanceHandshake)
 	}
 }
