@@ -125,28 +125,9 @@ RUN if [ -d "/ssh_keys" ]; then \
 # Install runtime tools and su-exec for user switching
 RUN apk add --no-cache curl su-exec
 
-# Create entrypoint script that fixes SSH permissions then switches to appuser
-RUN echo '#!/bin/sh' > /entrypoint.sh && \
-    echo 'set -e' >> /entrypoint.sh && \
-    echo 'echo "Container starting..."' >> /entrypoint.sh && \
-    echo '# Fix SSH key permissions if mounted' >> /entrypoint.sh && \
-    echo 'if [ -d "/home/appuser/.ssh" ]; then' >> /entrypoint.sh && \
-    echo '  echo "Setting up SSH key permissions..."' >> /entrypoint.sh && \
-    echo '  chown -R appuser:appgroup /home/appuser/.ssh' >> /entrypoint.sh && \
-    echo '  chmod 700 /home/appuser/.ssh' >> /entrypoint.sh && \
-    echo '  if [ -f "/home/appuser/.ssh/id_rsa" ]; then' >> /entrypoint.sh && \
-    echo '    chmod 600 /home/appuser/.ssh/id_rsa' >> /entrypoint.sh && \
-    echo '  fi' >> /entrypoint.sh && \
-    echo '  if [ -f "/home/appuser/.ssh/id_rsa.pub" ]; then' >> /entrypoint.sh && \
-    echo '    chmod 644 /home/appuser/.ssh/id_rsa.pub' >> /entrypoint.sh && \
-    echo '  fi' >> /entrypoint.sh && \
-    echo '  echo "SSH keys configured"' >> /entrypoint.sh && \
-    echo 'else' >> /entrypoint.sh && \
-    echo '  echo "No SSH keys directory found"' >> /entrypoint.sh && \
-    echo 'fi' >> /entrypoint.sh && \
-    echo 'echo "Switching to appuser and starting application..."' >> /entrypoint.sh && \
-    echo 'exec su-exec appuser "$@"' >> /entrypoint.sh && \
-    chmod +x /entrypoint.sh
+# Copy entrypoint script that fixes SSH permissions then switches to appuser
+COPY docker/dockerfiles/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Set the entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
