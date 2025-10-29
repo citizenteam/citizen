@@ -1,48 +1,48 @@
 package main
 
 import (
-    "bytes"
-    "crypto/hmac"
-    "crypto/rand"
-    "crypto/sha256"
-    "encoding/hex"
-    "encoding/json"
-    "errors"
-    "fmt"
-    "io"
-    "log"
-    "net/http"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "strconv"
-    "strings"
-    "sync"
-    "time"
+	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
-    "github.com/google/uuid"
-    "github.com/joho/godotenv"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 )
 
 const (
-	defaultBindAddr        = "0.0.0.0:8085"
-	defaultDataDir         = "/opt/citizen"
-	defaultComposeRelPath  = "docker/docker-compose.yml"
-	defaultEnvRelPath      = "docker/.env"
-	defaultLogFileName     = "citizen-bootstrap.log"
-	maxLogTailBytes  int64 = 64 * 1024
+	defaultBindAddr             = "0.0.0.0:8085"
+	defaultDataDir              = "/opt/citizen"
+	defaultComposeRelPath       = "docker/docker-compose.prod.yml"
+	defaultEnvRelPath           = "docker/.env"
+	defaultLogFileName          = "citizen-bootstrap.log"
+	maxLogTailBytes       int64 = 64 * 1024
 
 	headerProvisionToken = "X-Provision-Token"
 )
 
 type serverConfig struct {
-	bindAddr      string
-	dataDir       string
-	composeRel    string
-	envRel        string
-	logFilePath   string
-	sharedSecret  string
-	runPull       bool
+	bindAddr     string
+	dataDir      string
+	composeRel   string
+	envRel       string
+	logFilePath  string
+	sharedSecret string
+	runPull      bool
 }
 
 type bootstrapServer struct {
@@ -54,22 +54,22 @@ type bootstrapServer struct {
 }
 
 type jobStatus struct {
-	JobID       string    `json:"job_id"`
-	State       string    `json:"state"`
-	Error       string    `json:"error,omitempty"`
-	StartedAt   time.Time `json:"started_at"`
+	JobID       string     `json:"job_id"`
+	State       string     `json:"state"`
+	Error       string     `json:"error,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
-	LastUpdated time.Time `json:"last_updated"`
+	LastUpdated time.Time  `json:"last_updated"`
 }
 
 type initRequest struct {
-	JobID            string        `json:"job_id"`
-	ComposePath      string        `json:"compose_path,omitempty"`
-	EnvPath          string        `json:"env_path,omitempty"`
-	Files            []filePayload `json:"files"`
-	DockerArgs       []string      `json:"docker_args"`
-	SkipPull         bool          `json:"skip_pull"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
+	JobID       string            `json:"job_id"`
+	ComposePath string            `json:"compose_path,omitempty"`
+	EnvPath     string            `json:"env_path,omitempty"`
+	Files       []filePayload     `json:"files"`
+	DockerArgs  []string          `json:"docker_args"`
+	SkipPull    bool              `json:"skip_pull"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
 type filePayload struct {
@@ -282,6 +282,10 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 		return err
 	}
 
+	if err := s.prepareSource(req.Metadata); err != nil {
+		return err
+	}
+
 	if err := s.writeFiles(req.Files); err != nil {
 		return err
 	}
@@ -296,10 +300,6 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 		if err := os.MkdirAll(composedir, 0o750); err != nil {
 			return fmt.Errorf("create compose dir: %w", err)
 		}
-	}
-
-	if err := s.prepareSource(req.Metadata); err != nil {
-		return err
 	}
 
 	if s.cfg.runPull && !req.SkipPull {
