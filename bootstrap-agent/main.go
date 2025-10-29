@@ -343,6 +343,12 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 		return err
 	}
 
+	if envContents, err := os.ReadFile(envPath); err != nil {
+		s.logf("⚠️  Failed to read generated env file %s: %v", envPath, err)
+	} else {
+		s.logf("📄 Generated env file (%s):\n%s", envPath, strings.TrimSpace(string(envContents)))
+	}
+
 	return nil
 }
 
@@ -435,6 +441,15 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 		return nil
 	}
 
+	apiContainer := strings.TrimSpace(metadata["api_container"])
+	if apiContainer != "" {
+		s.logf("⏳ Waiting for container %s to report healthy...", apiContainer)
+		if err := waitForContainerHealthy(apiContainer, 10*time.Minute); err != nil {
+			return err
+		}
+		s.logf("✅ Container %s is healthy.", apiContainer)
+	}
+
 	handshakeURL := strings.TrimSpace(metadata["handshake_url"])
 	registrationToken := strings.TrimSpace(metadata["registration_token"])
 	apiKey := metadata["api_key"]
@@ -477,6 +492,28 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 
 	s.logf("🤝 CitizenAuth handshake completed (status %d)", resp.StatusCode)
 	return nil
+}
+
+func waitForContainerHealthy(name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		cmd := exec.Command("docker", "inspect", "--format", "{{.State.Health.Status}}", name)
+		output, err := cmd.Output()
+		if err != nil {
+			return fmt.Errorf("docker inspect %s: %w", name, err)
+		}
+		status := strings.TrimSpace(string(output))
+		switch status {
+		case "healthy":
+			return nil
+		case "unhealthy":
+			return fmt.Errorf("container %s reported unhealthy status", name)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for container %s health (last status: %s)", name, status)
+		}
+		time.Sleep(5 * time.Second)
+	}
 }
 
 func randomHex(n int) (string, error) {
