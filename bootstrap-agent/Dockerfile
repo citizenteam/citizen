@@ -15,6 +15,8 @@ WORKDIR /opt/citizen
 
 COPY --from=build /src/bootstrap-agent /usr/local/bin/bootstrap-agent
 
+RUN apk add --no-cache git
+
 ENV BOOTSTRAP_BIND="0.0.0.0:8085" \
     BOOTSTRAP_DATA_DIR="/opt/citizen/data"
 

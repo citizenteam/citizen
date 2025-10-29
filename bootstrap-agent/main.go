@@ -298,6 +298,10 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 		}
 	}
 
+	if err := s.prepareSource(req.Metadata); err != nil {
+		return err
+	}
+
 	if s.cfg.runPull && !req.SkipPull {
 		if err := s.runDockerCompose(composePath, "pull"); err != nil {
 			return fmt.Errorf("docker compose pull: %w", err)
@@ -400,6 +404,81 @@ func (s *bootstrapServer) runDockerCompose(composePath string, args ...string) e
 		s.logf("docker stderr:\n%s", errOut)
 	}
 
+	return nil
+}
+
+func (s *bootstrapServer) runCommand(dir, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Env = os.Environ()
+	if dir != "" {
+		cmd.Dir = dir
+	}
+
+	s.logf("▶️  running: %s %s", name, strings.Join(args, " "))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if out := strings.TrimSpace(stdout.String()); out != "" {
+			s.logf("stdout:\n%s", out)
+		}
+		if errOut := strings.TrimSpace(stderr.String()); errOut != "" {
+			s.logf("stderr:\n%s", errOut)
+		}
+		return err
+	}
+
+	if out := strings.TrimSpace(stdout.String()); out != "" {
+		s.logf("stdout:\n%s", out)
+	}
+	if errOut := strings.TrimSpace(stderr.String()); errOut != "" {
+		s.logf("stderr:\n%s", errOut)
+	}
+
+	return nil
+}
+
+func (s *bootstrapServer) prepareSource(metadata map[string]string) error {
+	if metadata == nil {
+		return nil
+	}
+	repo := strings.TrimSpace(metadata["git_repo"])
+	if repo == "" {
+		return nil
+	}
+	ref := strings.TrimSpace(metadata["git_ref"])
+	if ref == "" {
+		ref = "main"
+	}
+	imageTag := strings.TrimSpace(metadata["local_image_tag"])
+	if imageTag == "" {
+		imageTag = "citizen-api:bootstrap-local"
+	}
+
+	sourceDir := filepath.Join(s.cfg.dataDir, "source")
+	if err := os.RemoveAll(sourceDir); err != nil {
+		s.logf("⚠️  failed to cleanup source dir: %v", err)
+	}
+
+	args := []string{"clone", "--depth", "1", "--branch", ref, repo, sourceDir}
+	if err := s.runCommand("", "git", args...); err != nil {
+		return fmt.Errorf("git clone failed: %w", err)
+	}
+
+	backendDir := filepath.Join(sourceDir, "backend")
+	if _, err := os.Stat(backendDir); err != nil {
+		return fmt.Errorf("backend directory not found in repository: %w", err)
+	}
+
+	buildArgs := []string{"build", "-f", "Dockerfile.release", "-t", imageTag, "."}
+	if err := s.runCommand(backendDir, "docker", buildArgs...); err != nil {
+		return fmt.Errorf("docker build failed: %w", err)
+	}
+
+	s.logf("✅ Built image %s from %s@%s", imageTag, repo, ref)
 	return nil
 }
 
