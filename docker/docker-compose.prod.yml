@@ -53,24 +53,39 @@ services:
       - "traefik.enable=false"
 
   api:
-    build:
-      context: ../backend
-      dockerfile: dockerfiles/Dockerfile.watcher
+    image: golang:1.23-alpine
     container_name: citizen-api-prod
     restart: unless-stopped
+    working_dir: /app
     env_file:
       - .env
     environment:
+      - CGO_ENABLED=0
+      - GOOS=linux
+      - GOARCH=amd64
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    ports:
+      - "3001:3000"  # Expose for direct access during development
     volumes:
+      - ../backend:/app
+      - ../backend/.air.toml:/app/.air.toml
       - ./ssh_keys:/home/developer/.ssh:ro
       - ./logs/api:/app/logs
+      - citizen-go-cache-prod:/go/pkg/mod
     networks:
       - citizen-network-prod
     depends_on:
       - postgres
       - redis
       - dokku
+    command: >
+      sh -c "
+      apk add --no-cache git wget bash openssh-client &&
+      go install github.com/air-verse/air@v1.61.1 &&
+      echo '✅ Air v1.61.1 installed' &&
+      echo '🔥 Starting with Air hot reload...' &&
+      air -c .air.toml
+      "
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
       interval: 30s
