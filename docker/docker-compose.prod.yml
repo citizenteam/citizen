@@ -163,3 +163,5 @@ volumes:
     driver: local
   citizen-dokku-data-prod:
     driver: local
+  citizen-go-cache-prod:
+    driver: local
