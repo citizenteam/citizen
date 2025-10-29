@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -290,6 +291,32 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 		return err
 	}
 
+	if _, err := os.Stat(composePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			var fallbackPath string
+			if req.Metadata != nil {
+				if rel := strings.TrimSpace(req.Metadata["compose_fallback"]); rel != "" {
+					resolved, resolveErr := s.resolvePath(rel, s.cfg.composeRel)
+					if resolveErr != nil {
+						return fmt.Errorf("compose file missing (%s) and fallback resolution failed: %w", composePath, resolveErr)
+					}
+					fallbackPath = resolved
+				}
+			}
+			if fallbackPath != "" {
+				if _, err := os.Stat(fallbackPath); err != nil {
+					return fmt.Errorf("compose file missing (%s) and fallback missing (%s): %w", composePath, fallbackPath, err)
+				}
+				s.logf("⚠️ compose file %s not found; using fallback %s", composePath, fallbackPath)
+				composePath = fallbackPath
+			} else {
+				return fmt.Errorf("compose file not found: %s", composePath)
+			}
+		} else {
+			return fmt.Errorf("stat compose file %s: %w", composePath, err)
+		}
+	}
+
 	if req.EnvPath == "" {
 		if err := ensureFile(envPath); err != nil {
 			return fmt.Errorf("ensure env file: %w", err)
@@ -478,6 +505,21 @@ func (s *bootstrapServer) prepareSource(metadata map[string]string) error {
 		return fmt.Errorf("docker build failed: %w", err)
 	}
 
+	sourceDockerDir := filepath.Join(sourceDir, "docker")
+	targetDockerDir := filepath.Join(s.cfg.dataDir, "docker")
+	if _, err := os.Stat(sourceDockerDir); err == nil {
+		if err := os.RemoveAll(targetDockerDir); err != nil {
+			s.logf("⚠️  failed to clean target compose directory: %v", err)
+		} else {
+			s.logf("🧹 refreshed compose directory at %s", targetDockerDir)
+		}
+		if err := copyDir(sourceDockerDir, targetDockerDir); err != nil {
+			return fmt.Errorf("copy docker bundle: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat source docker dir: %w", err)
+	}
+
 	s.logf("✅ Built image %s from %s@%s", imageTag, repo, ref)
 	return nil
 }
@@ -528,6 +570,70 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	}
 
 	s.logf("🤝 CitizenAuth handshake completed (status %d)", resp.StatusCode)
+	return nil
+}
+
+func copyDir(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+		return err
+	}
+
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+
+		if d.IsDir() {
+			if rel == "." {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return copyFile(path, target, info.Mode())
+	})
+}
+
+func copyFile(src, dst string, mode fs.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm())
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
 	return nil
 }
 
