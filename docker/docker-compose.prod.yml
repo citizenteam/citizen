@@ -8,8 +8,8 @@ services:
     environment:
       - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
     ports:
-      - "8089:80"   # HTTP on port 8089
-      - "8443:443"  # HTTPS on port 8443
+      - "80:80"
+      - "443:443"
       - "8081:8080"  # Traefik Dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -52,63 +52,32 @@ services:
     labels:
       - "traefik.enable=false"
 
-  # Standalone API Service - Air hot reload for development
   api:
-    image: golang:1.23-alpine
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.release
+    image: citizen-api:bootstrap
     container_name: citizen-api-prod
     restart: unless-stopped
-    working_dir: /app
     env_file:
       - .env
     environment:
-      - CGO_ENABLED=0
-      - GOOS=linux
-      - GOARCH=amd64
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-    ports:
-      - "3001:3000"  # Expose for direct access during development
     volumes:
-      - ../backend:/app
-      - ../backend/.air.toml:/app/.air.toml
       - ./ssh_keys:/home/developer/.ssh:ro
       - ./logs/api:/app/logs
-      - citizen-go-cache-prod:/go/pkg/mod
     networks:
       - citizen-network-prod
     depends_on:
       - postgres
       - redis
       - dokku
-    command: >
-      sh -c "
-      apk add --no-cache git wget bash openssh-client &&
-      go install github.com/air-verse/air@v1.61.1 &&
-      echo '✅ Air v1.61.1 installed' &&
-      echo '🔥 Starting with Air hot reload...' &&
-      air -c .air.toml
-      "
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
-
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
-      args:
-        VITE_API_URL: ${VITE_API_URL}
-        VITE_ALLOWED_REDIRECT_DOMAINS: ${VITE_ALLOWED_REDIRECT_DOMAINS}
-        VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS}
-        VITE_DEFAULT_DOMAINS: ${VITE_DEFAULT_DOMAINS}
-    container_name: citizen-frontend-prod
-    restart: unless-stopped
-    env_file:
-      - .env
-    networks:
-      - citizen-network-prod
 
   postgres:
     image: postgres:14-alpine
@@ -147,8 +116,8 @@ services:
     environment:
       - ENVIRONMENT=prod
       - CHECK_INTERVAL=30
-      - DOKKU_CONTAINER=citizen-dokku
-      - TRAEFIK_CONTAINER=citizen-traefik
+      - DOKKU_CONTAINER=citizen-dokku-prod
+      - TRAEFIK_CONTAINER=citizen-traefik-prod
       - CONFIG_FILE=/app/config/dynamic_conf.yml
       - FORCE_REGEN_INTERVAL=300
       - HEALTH_CHECK_INTERVAL=60
@@ -179,6 +148,4 @@ volumes:
   citizen-redis-data-prod:
     driver: local
   citizen-dokku-data-prod:
-    driver: local
-  citizen-go-cache-prod:
     driver: local

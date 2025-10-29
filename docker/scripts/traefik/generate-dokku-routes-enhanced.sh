@@ -39,19 +39,8 @@ else
     log "⚠️  Using fallback database credentials: $DB_USER@$DB_NAME"
 fi
 
-# Auto-detect environment
-detect_environment() {
-    if docker ps --format "{{.Names}}" | grep -q "citizen-.*-dev"; then
-        echo "dev"
-    elif docker ps --format "{{.Names}}" | grep -q "citizen-.*-prod"; then
-        echo "prod"
-    else
-        # Fallback to environment variable or default
-        echo "${ENVIRONMENT:-dev}"
-    fi
-}
-
-ENVIRONMENT=$(detect_environment)
+# Environment defaults (prod only)
+ENVIRONMENT=${ENVIRONMENT:-prod}
 CONTAINER_SUFFIX="-${ENVIRONMENT}"
 log "🚀 Route generator started - Environment: $ENVIRONMENT"
 
@@ -59,20 +48,11 @@ log "🚀 Route generator started - Environment: $ENVIRONMENT"
 API_CONTAINER="citizen-api${CONTAINER_SUFFIX}"
 POSTGRES_CONTAINER="citizen-postgres${CONTAINER_SUFFIX}"
 
-if [ "$ENVIRONMENT" = "dev" ]; then
-    FRONTEND_CONTAINER="citizen-frontend${CONTAINER_SUFFIX}"
-    FRONTEND_PORT="5173"
-    LOGIN_HOST=${LOGIN_HOST:-"localhost"}
-    ENABLE_HTTPS="false"
+LOGIN_HOST=${LOGIN_HOST:-"localhost"}
+if [ "$LOGIN_HOST" != "localhost" ]; then
+    ENABLE_HTTPS="true"
 else
-    FRONTEND_CONTAINER="citizen-frontend${CONTAINER_SUFFIX}"
-    FRONTEND_PORT="80"
-    LOGIN_HOST=${LOGIN_HOST:-"localhost"}
-    if [ "$LOGIN_HOST" != "localhost" ]; then
-        ENABLE_HTTPS="true"
-    else
-        ENABLE_HTTPS="false"
-    fi
+    ENABLE_HTTPS="false"
 fi
 
 DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${POSTGRES_CONTAINER}:5432/${DB_NAME}"
@@ -258,13 +238,6 @@ EOF
       middlewares: ["auth-api", "no-cache", "security-headers"]
       priority: 110
 
-    # 🏠 Main frontend route - Priority 100
-    main-frontend-http:
-      rule: "Host(\`${LOGIN_HOST}\`)"
-      service: main-frontend-service
-      entryPoints: ["web"]
-      middlewares: ["auth-api", "no-cache", "security-headers"]
-      priority: 100
 EOF
     fi
 }
@@ -453,12 +426,6 @@ generate_services() {
       loadBalancer:
         servers:
           - url: "http://${API_CONTAINER}:3000"
-
-    # Frontend service disabled - all routes go to API
-    # main-frontend-service:
-    #   loadBalancer:
-    #     servers:
-    #       - url: "http://${FRONTEND_CONTAINER}:${FRONTEND_PORT}"
 
     # 🔀 Redirect Service (legacy compatibility)
     redirect-service:
