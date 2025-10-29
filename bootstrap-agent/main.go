@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -283,10 +282,6 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 		return err
 	}
 
-	if err := s.prepareSource(req.Metadata); err != nil {
-		return err
-	}
-
 	if err := s.writeFiles(req.Files); err != nil {
 		return err
 	}
@@ -404,6 +399,7 @@ func (s *bootstrapServer) runDockerCompose(composePath string, args ...string) e
 	cmdArgs := append([]string{"compose", "-f", composePath}, args...)
 	cmd := exec.Command("docker", cmdArgs...)
 	cmd.Env = os.Environ()
+	cmd.Dir = filepath.Dir(composePath)
 
 	s.logf("🐳 running: docker %s", strings.Join(cmdArgs, " "))
 
@@ -431,96 +427,6 @@ func (s *bootstrapServer) runDockerCompose(composePath string, args ...string) e
 		s.logf("docker stderr:\n%s", errOut)
 	}
 
-	return nil
-}
-
-func (s *bootstrapServer) runCommand(dir, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Env = os.Environ()
-	if dir != "" {
-		cmd.Dir = dir
-	}
-
-	s.logf("▶️  running: %s %s", name, strings.Join(args, " "))
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		if out := strings.TrimSpace(stdout.String()); out != "" {
-			s.logf("stdout:\n%s", out)
-		}
-		if errOut := strings.TrimSpace(stderr.String()); errOut != "" {
-			s.logf("stderr:\n%s", errOut)
-		}
-		return err
-	}
-
-	if out := strings.TrimSpace(stdout.String()); out != "" {
-		s.logf("stdout:\n%s", out)
-	}
-	if errOut := strings.TrimSpace(stderr.String()); errOut != "" {
-		s.logf("stderr:\n%s", errOut)
-	}
-
-	return nil
-}
-
-func (s *bootstrapServer) prepareSource(metadata map[string]string) error {
-	if metadata == nil {
-		return nil
-	}
-	repo := strings.TrimSpace(metadata["git_repo"])
-	if repo == "" {
-		return nil
-	}
-	ref := strings.TrimSpace(metadata["git_ref"])
-	if ref == "" {
-		ref = "main"
-	}
-	imageTag := strings.TrimSpace(metadata["local_image_tag"])
-	if imageTag == "" {
-		imageTag = "citizen-api:bootstrap-local"
-	}
-
-	sourceDir := filepath.Join(s.cfg.dataDir, "source")
-	if err := os.RemoveAll(sourceDir); err != nil {
-		s.logf("⚠️  failed to cleanup source dir: %v", err)
-	}
-
-	args := []string{"clone", "--depth", "1", "--branch", ref, repo, sourceDir}
-	if err := s.runCommand("", "git", args...); err != nil {
-		return fmt.Errorf("git clone failed: %w", err)
-	}
-
-	backendDir := filepath.Join(sourceDir, "backend")
-	if _, err := os.Stat(backendDir); err != nil {
-		return fmt.Errorf("backend directory not found in repository: %w", err)
-	}
-
-	buildArgs := []string{"build", "-f", "Dockerfile.release", "-t", imageTag, "."}
-	if err := s.runCommand(backendDir, "docker", buildArgs...); err != nil {
-		return fmt.Errorf("docker build failed: %w", err)
-	}
-
-	sourceDockerDir := filepath.Join(sourceDir, "docker")
-	targetDockerDir := filepath.Join(s.cfg.dataDir, "docker")
-	if _, err := os.Stat(sourceDockerDir); err == nil {
-		if err := os.RemoveAll(targetDockerDir); err != nil {
-			s.logf("⚠️  failed to clean target compose directory: %v", err)
-		} else {
-			s.logf("🧹 refreshed compose directory at %s", targetDockerDir)
-		}
-		if err := copyDir(sourceDockerDir, targetDockerDir); err != nil {
-			return fmt.Errorf("copy docker bundle: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat source docker dir: %w", err)
-	}
-
-	s.logf("✅ Built image %s from %s@%s", imageTag, repo, ref)
 	return nil
 }
 
@@ -570,70 +476,6 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	}
 
 	s.logf("🤝 CitizenAuth handshake completed (status %d)", resp.StatusCode)
-	return nil
-}
-
-func copyDir(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
-		return err
-	}
-
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-
-		if d.IsDir() {
-			if rel == "." {
-				return nil
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
-				return err
-			}
-			return nil
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		return copyFile(path, target, info.Mode())
-	})
-}
-
-func copyFile(src, dst string, mode fs.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm())
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
 	return nil
 }
 

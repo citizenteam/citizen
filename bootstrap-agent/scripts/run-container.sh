@@ -6,6 +6,7 @@ IMAGE="${BOOTSTRAP_AGENT_IMAGE:-citizen-bootstrap-agent:latest}"
 CONTAINER_NAME="${BOOTSTRAP_AGENT_CONTAINER:-citizen-bootstrap-agent}"
 HOST_DATA_DIR="${BOOTSTRAP_AGENT_DATA_DIR:-/opt/citizen/data}"
 HOST_LOG_DIR="${BOOTSTRAP_AGENT_LOG_DIR:-/opt/citizen/logs}"
+HOST_WORKSPACE_DIR="${BOOTSTRAP_AGENT_WORKSPACE:-}"
 PORT="${BOOTSTRAP_AGENT_PORT:-8085}"
 SECRET="${BOOTSTRAP_AGENT_SHARED_SECRET:-}"
 PULL_IMAGE="${BOOTSTRAP_AGENT_PULL_IMAGE:-true}"
@@ -67,6 +68,11 @@ ensure_docker_compose
 
 mkdir -p "${HOST_DATA_DIR}" "${HOST_LOG_DIR}"
 
+if [[ -n "${HOST_WORKSPACE_DIR}" && ! -d "${HOST_WORKSPACE_DIR}" ]]; then
+  echo "❌ Specified workspace directory ${HOST_WORKSPACE_DIR} does not exist" >&2
+  exit 1
+fi
+
 if [[ "${PULL_IMAGE}" == "true" ]]; then
   echo "📥 Pulling bootstrap agent image: ${IMAGE}"
   docker pull "${IMAGE}"
@@ -79,18 +85,29 @@ fi
 
 echo "🚀 Starting bootstrap agent container (${CONTAINER_NAME}) on port ${PORT}"
 
-docker run -d \
-  --name "${CONTAINER_NAME}" \
-  --restart unless-stopped \
-  -p "${PORT}:${PORT}" \
-  -e "BOOTSTRAP_BIND=0.0.0.0:${PORT}" \
-  -e "BOOTSTRAP_SHARED_SECRET=${SECRET}" \
-  -e "BOOTSTRAP_DATA_DIR=/opt/citizen/data" \
-  -e "BOOTSTRAP_LOG_PATH=/opt/citizen/logs/bootstrap.log" \
-  -v "${HOST_DATA_DIR}:/opt/citizen/data" \
-  -v "${HOST_LOG_DIR}:/opt/citizen/logs" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  "${IMAGE}"
+docker_args=(
+  docker run -d
+  --name "${CONTAINER_NAME}"
+  --restart unless-stopped
+  -p "${PORT}:${PORT}"
+  -e "BOOTSTRAP_BIND=0.0.0.0:${PORT}"
+  -e "BOOTSTRAP_SHARED_SECRET=${SECRET}"
+  -e "BOOTSTRAP_DATA_DIR=/opt/citizen/data"
+  -e "BOOTSTRAP_LOG_PATH=/opt/citizen/logs/bootstrap.log"
+  -v "${HOST_DATA_DIR}:/opt/citizen/data"
+  -v "${HOST_LOG_DIR}:/opt/citizen/logs"
+  -v /var/run/docker.sock:/var/run/docker.sock
+)
+
+if [[ -n "${HOST_WORKSPACE_DIR}" ]]; then
+  docker_args+=(
+    -v "${HOST_WORKSPACE_DIR}:${HOST_WORKSPACE_DIR}"
+  )
+fi
+
+docker_args+=("${IMAGE}")
+
+"${docker_args[@]}"
 
 echo "✅ Bootstrap agent is running."
 echo "   Health check: http://localhost:${PORT}/healthz"
