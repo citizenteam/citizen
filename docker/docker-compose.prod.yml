@@ -63,7 +63,7 @@ services:
     environment:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
     ports:
-      - "3001:3000"  # Expose for direct access during development
+      - "3000:3000"  # Expose for direct access during development
     volumes:
       - ./ssh_keys:/ssh_keys:ro
       - ./logs/api:/app/logs

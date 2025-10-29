@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -330,6 +334,10 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 		}
 	}
 
+	if err := ensureSSHKeys(composePath); err != nil {
+		return fmt.Errorf("prepare ssh keys: %w", err)
+	}
+
 	args := req.DockerArgs
 	if len(args) == 0 {
 		args = []string{"up", "-d", "--remove-orphans"}
@@ -431,6 +439,48 @@ func (s *bootstrapServer) runDockerCompose(composePath string, args ...string) e
 	}
 	if errOut := strings.TrimSpace(stderr.String()); errOut != "" {
 		s.logf("docker stderr:\n%s", errOut)
+	}
+
+	return nil
+}
+
+func ensureSSHKeys(composePath string) error {
+	dir := filepath.Dir(composePath)
+	sshDir := filepath.Join(dir, "ssh_keys")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return fmt.Errorf("create ssh dir: %w", err)
+	}
+
+	privatePath := filepath.Join(sshDir, "id_rsa")
+	publicPath := filepath.Join(sshDir, "id_rsa.pub")
+
+	if _, err := os.Stat(privatePath); err == nil {
+		if _, err := os.Stat(publicPath); err == nil {
+			return nil
+		}
+	}
+
+	s.logf("🔑 Generating new SSH key pair at %s", sshDir)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return fmt.Errorf("generate ssh key: %w", err)
+	}
+
+	privateBlock := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
+	var privBuf bytes.Buffer
+	if err := pem.Encode(&privBuf, privateBlock); err != nil {
+		return fmt.Errorf("encode private key: %w", err)
+	}
+	if err := os.WriteFile(privatePath, privBuf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("write private key: %w", err)
+	}
+
+	pub, err := ssh.NewPublicKey(&key.PublicKey)
+	if err != nil {
+		return fmt.Errorf("create public key: %w", err)
+	}
+	if err := os.WriteFile(publicPath, ssh.MarshalAuthorizedKey(pub), 0o644); err != nil {
+		return fmt.Errorf("write public key: %w", err)
 	}
 
 	return nil
