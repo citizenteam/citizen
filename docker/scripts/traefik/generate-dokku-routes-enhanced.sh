@@ -118,7 +118,21 @@ get_app_deployments() {
                  ORDER BY ad.app_name;"
     
     # Execute query and return results in format: app_name|domain|port|status|git_url|builder|buildpack|is_public
-    docker exec -e PGPASSWORD="$DB_PASSWORD" "$pg_container" psql -U "$DB_USER" -d "$DB_NAME" -t -A -F'|' -c "$query" 2>/dev/null || echo ""
+    local output
+    if ! output=$(docker exec -e PGPASSWORD="$DB_PASSWORD" "$pg_container" \
+        psql -U "$DB_USER" -d "$DB_NAME" -t -A -F'|' -c "$query" 2>&1); then
+        log "⚠️  Database not ready for route query: ${output%%$'\n'*}"
+        echo ""
+        return
+    fi
+
+    if echo "$output" | grep -qi "relation .* does not exist"; then
+        log "⚠️  Required tables missing (migrations still running?). Skipping regeneration."
+        echo ""
+        return
+    fi
+
+    echo "$output"
 }
 
 # Function to get current Dokku containers

@@ -538,7 +538,16 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	apiContainer := strings.TrimSpace(metadata["api_container"])
 	if apiContainer != "" {
 		s.logf("⏳ Waiting for container %s to report healthy...", apiContainer)
-		if err := waitForContainerHealthy(apiContainer, 10*time.Minute); err != nil {
+		details, err := waitForContainerHealthy(apiContainer, 10*time.Minute)
+		if err != nil {
+			if details != nil {
+				if lastLogs := strings.TrimSpace(details.LastLogs); lastLogs != "" {
+					s.logf("⚠️ Container %s recent logs:\n%s", apiContainer, lastLogs)
+				}
+				if details.LastState != "" {
+					s.logf("⚠️ Container %s state: %s", apiContainer, details.LastState)
+				}
+			}
 			return err
 		}
 		s.logf("✅ Container %s is healthy.", apiContainer)
@@ -597,24 +606,56 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	return nil
 }
 
-func waitForContainerHealthy(name string, timeout time.Duration) error {
+type containerHealthDetails struct {
+	LastLogs  string
+	LastState string
+}
+
+func waitForContainerHealthy(name string, timeout time.Duration) (*containerHealthDetails, error) {
 	deadline := time.Now().Add(timeout)
+	details := &containerHealthDetails{}
+
 	for {
-		cmd := exec.Command("docker", "inspect", "--format", "{{.State.Health.Status}}", name)
-		output, err := cmd.Output()
+		inspectCmd := exec.Command("docker", "inspect", name)
+		output, err := inspectCmd.Output()
 		if err != nil {
-			return fmt.Errorf("docker inspect %s: %w", name, err)
+			return details, fmt.Errorf("docker inspect %s: %w", name, err)
 		}
-		status := strings.TrimSpace(string(output))
-		switch status {
-		case "healthy":
-			return nil
-		case "unhealthy":
-			return fmt.Errorf("container %s reported unhealthy status", name)
+
+		var info []map[string]interface{}
+		if err := json.Unmarshal(output, &info); err != nil {
+			return details, fmt.Errorf("parse inspect output for %s: %w", name, err)
 		}
+
+		var status string
+		if len(info) > 0 {
+			if state, ok := info[0]["State"].(map[string]interface{}); ok {
+				if health, ok := state["Health"].(map[string]interface{}); ok {
+					if s, ok := health["Status"].(string); ok {
+						status = strings.ToLower(s)
+					}
+				}
+				if last, ok := state["Status"].(string); ok {
+					details.LastState = strings.ToLower(last)
+				}
+			}
+		}
+
+		if status == "healthy" {
+			return details, nil
+		}
+		if status == "unhealthy" {
+			logs, _ := exec.Command("docker", "logs", "--tail", "20", name).CombinedOutput()
+			details.LastLogs = string(logs)
+			return details, fmt.Errorf("container %s reported unhealthy status", name)
+		}
+
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for container %s health (last status: %s)", name, status)
+			logs, _ := exec.Command("docker", "logs", "--tail", "20", name).CombinedOutput()
+			details.LastLogs = string(logs)
+			return details, fmt.Errorf("timed out waiting for container %s health (last status: %s)", name, status)
 		}
+
 		time.Sleep(5 * time.Second)
 	}
 }
