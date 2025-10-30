@@ -12,14 +12,17 @@ fi
 
 CONFIG_FILE="${PROJECT_ROOT}/config/dynamic_conf.yml"
 
-# Ensure configuration path is a writable file
+# Ensure configuration directory exists and treat config path as file
 CONFIG_DIR="$(dirname "${CONFIG_FILE}")"
-if [ -d "${CONFIG_FILE}" ]; then
-    CONFIG_DIR="${CONFIG_FILE}"
-    CONFIG_FILE="${CONFIG_DIR}/dynamic_conf.yml"
-fi
-
 mkdir -p "${CONFIG_DIR}"
+if [ -d "${CONFIG_FILE}" ]; then
+    CONFIG_FILE="${CONFIG_FILE%/}/dynamic_conf.yml"
+fi
+touch "${CONFIG_FILE}"
+
+if [ -d "${CONFIG_FILE}" ]; then
+    CONFIG_FILE="${CONFIG_FILE%/}/dynamic_conf.yml"
+fi
 touch "${CONFIG_FILE}"
 
 CACHE_FILE="${CONFIG_DIR}/.route_cache"
