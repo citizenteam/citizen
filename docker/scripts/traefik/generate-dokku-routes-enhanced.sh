@@ -11,7 +11,18 @@ else
 fi
 
 CONFIG_FILE="${PROJECT_ROOT}/config/dynamic_conf.yml"
-CACHE_FILE="${PROJECT_ROOT}/config/.route_cache"
+
+# Ensure configuration path is a writable file
+CONFIG_DIR="$(dirname "${CONFIG_FILE}")"
+if [ -d "${CONFIG_FILE}" ]; then
+    CONFIG_DIR="${CONFIG_FILE}"
+    CONFIG_FILE="${CONFIG_DIR}/dynamic_conf.yml"
+fi
+
+mkdir -p "${CONFIG_DIR}"
+touch "${CONFIG_FILE}"
+
+CACHE_FILE="${CONFIG_DIR}/.route_cache"
 LOG_FILE="${PROJECT_ROOT}/logs/route-generator.log"
 
 # Create logs directory if it doesn't exist
