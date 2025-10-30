@@ -596,6 +596,7 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 		return nil
 	}
 
+	jobID := strings.TrimSpace(metadata["job_id"])
 	nonce, err := randomHex(16)
 	if err != nil {
 		return fmt.Errorf("generate nonce: %w", err)
@@ -607,6 +608,9 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 		"registration_token": registrationToken,
 		"nonce":              nonce,
 		"challenge":          challenge,
+	}
+	if jobID != "" {
+		payload["job_id"] = jobID
 	}
 
 	body, _ := json.Marshal(payload)
