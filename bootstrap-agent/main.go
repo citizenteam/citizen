@@ -552,6 +552,10 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 			return err
 		}
 		s.logf("✅ Container %s is healthy.", apiContainer)
+
+		if err := ensureBootstrapAgentNetwork("docker_citizen-network-prod"); err != nil {
+			s.logf("⚠️ Failed to connect bootstrap agent to network: %v", err)
+		}
 	}
 
 	healthURL := strings.TrimSpace(metadata["citizen_health_url"])
@@ -702,6 +706,25 @@ func waitForAnyHTTPHealth(urls []string, timeout time.Duration) error {
 		return fmt.Errorf("citizen API health check failed: %w", lastErr)
 	}
 	return fmt.Errorf("citizen API health check timed out after %s", timeout)
+}
+
+func ensureBootstrapAgentNetwork(network string) error {
+	if network == "" {
+		return nil
+	}
+
+	cmd := exec.Command("docker", "network", "connect", network, "citizen-bootstrap-agent")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if bytes.Contains(output, []byte("already exists")) {
+			return nil
+		}
+
+		return fmt.Errorf("docker network connect %s citizen-bootstrap-agent: %w - %s",
+			network, err, strings.TrimSpace(string(output)))
+	}
+
+	return nil
 }
 
 func randomHex(n int) (string, error) {
