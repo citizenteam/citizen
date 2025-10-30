@@ -334,7 +334,7 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 		}
 	}
 
-	if err := ensureSSHKeys(composePath); err != nil {
+	if err := s.ensureSSHKeys(composePath); err != nil {
 		return fmt.Errorf("prepare ssh keys: %w", err)
 	}
 
@@ -444,7 +444,7 @@ func (s *bootstrapServer) runDockerCompose(composePath string, args ...string) e
 	return nil
 }
 
-func ensureSSHKeys(composePath string) error {
+func (s *bootstrapServer) ensureSSHKeys(composePath string) error {
 	dir := filepath.Dir(composePath)
 	sshDir := filepath.Join(dir, "ssh_keys")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
