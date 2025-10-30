@@ -22,7 +22,17 @@ if [ -d "${CONFIG_FILE}" ]; then
         echo "ERROR: ${CONFIG_FILE} is a directory and not empty; cannot continue." >&2
         exit 1
     fi
-    rmdir "${CONFIG_FILE}"
+    if ! rmdir "${CONFIG_FILE}" 2>/tmp/dynamic_conf_rmdir.err; then
+        if grep -q "Resource busy" /tmp/dynamic_conf_rmdir.err 2>/dev/null; then
+            echo "ERROR: ${CONFIG_FILE} is a mounted directory. Replace the host path with a file and recreate the container." >&2
+            rm -f /tmp/dynamic_conf_rmdir.err
+            exit 1
+        fi
+        cat /tmp/dynamic_conf_rmdir.err >&2
+        rm -f /tmp/dynamic_conf_rmdir.err
+        exit 1
+    fi
+    rm -f /tmp/dynamic_conf_rmdir.err
 fi
 
 # Create the config file if it doesn't exist

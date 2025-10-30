@@ -338,6 +338,10 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 		return fmt.Errorf("prepare ssh keys: %w", err)
 	}
 
+	if err := s.ensureTraefikDynamicConfig(composePath); err != nil {
+		return fmt.Errorf("prepare traefik dynamic config: %w", err)
+	}
+
 	args := req.DockerArgs
 	if len(args) == 0 {
 		args = []string{"up", "-d", "--remove-orphans"}
@@ -483,6 +487,46 @@ func (s *bootstrapServer) ensureSSHKeys(composePath string) error {
 		return fmt.Errorf("write public key: %w", err)
 	}
 
+	return nil
+}
+
+func (s *bootstrapServer) ensureTraefikDynamicConfig(composePath string) error {
+	dockerDir := filepath.Dir(composePath)
+	confPath := filepath.Join(dockerDir, "config", "dynamic_conf.yml")
+
+	if err := os.MkdirAll(filepath.Dir(confPath), 0o750); err != nil {
+		return fmt.Errorf("create traefik config dir: %w", err)
+	}
+
+	info, err := os.Stat(confPath)
+	if err == nil {
+		if info.Mode().IsRegular() {
+			return nil
+		}
+
+		if info.IsDir() {
+			entries, readErr := os.ReadDir(confPath)
+			if readErr != nil {
+				return fmt.Errorf("inspect traefik config dir %s: %w", confPath, readErr)
+			}
+			if len(entries) > 0 {
+				return fmt.Errorf("traefik dynamic config path %s is a directory and not empty", confPath)
+			}
+			if removeErr := os.Remove(confPath); removeErr != nil {
+				return fmt.Errorf("remove empty traefik config dir %s: %w", confPath, removeErr)
+			}
+			s.logf("⚠️  Replaced empty directory at %s with a file.", confPath)
+		} else {
+			return fmt.Errorf("traefik dynamic config path %s exists but is not a regular file", confPath)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat traefik dynamic config %s: %w", confPath, err)
+	}
+
+	if err := ensureFile(confPath); err != nil {
+		return fmt.Errorf("create traefik dynamic config %s: %w", confPath, err)
+	}
+	s.logf("📝 Ensured Traefik dynamic config file at %s", confPath)
 	return nil
 }
 
