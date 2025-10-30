@@ -559,6 +559,7 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	}
 
 	healthURL := strings.TrimSpace(metadata["citizen_health_url"])
+	apiKey := metadata["api_key"]
 	if healthURL != "" || apiContainer != "" {
 		targets := buildHealthTargets(healthURL, apiContainer)
 		if len(targets) == 0 {
@@ -571,9 +572,25 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 		s.logf("✅ Citizen API health check passed.")
 	}
 
+	instanceHandshakeURL := strings.TrimSpace(metadata["citizen_instance_handshake_url"])
+	instanceID := strings.TrimSpace(metadata["citizen_instance_id"])
+	instanceOrgID := strings.TrimSpace(metadata["citizen_instance_organization_id"])
+	instanceDomain := strings.TrimSpace(metadata["citizen_instance_domain"])
+	citizenauthURL := strings.TrimSpace(metadata["citizenauth_url"])
+	webhookSecret := strings.TrimSpace(metadata["webhook_secret"])
+
+	if instanceHandshakeURL != "" && instanceID != "" && instanceOrgID != "" && apiKey != "" && webhookSecret != "" {
+		s.logf("🔐 Performing Citizen instance handshake at %s...", instanceHandshakeURL)
+		if err := performCitizenInstanceHandshake(instanceHandshakeURL, apiKey, instanceID, instanceOrgID, instanceDomain, citizenauthURL, webhookSecret); err != nil {
+			return err
+		}
+		s.logf("✅ Citizen instance handshake succeeded.")
+	} else {
+		s.logf("⚠️  Citizen instance handshake metadata incomplete, skipping.")
+	}
+
 	handshakeURL := strings.TrimSpace(metadata["handshake_url"])
 	registrationToken := strings.TrimSpace(metadata["registration_token"])
-	apiKey := metadata["api_key"]
 
 	if handshakeURL == "" || registrationToken == "" || apiKey == "" {
 		return nil
@@ -811,6 +828,50 @@ func getContainerIPs(container string) ([]string, error) {
 	}
 	sort.Strings(ips)
 	return ips, nil
+}
+
+func performCitizenInstanceHandshake(url, apiKey, instanceID, organizationID, domain, citizenauthURL, webhookSecret string) error {
+	payload := map[string]string{
+		"instance_id":     instanceID,
+		"organization_id": organizationID,
+		"domain":          domain,
+		"citizenauth_url": citizenauthURL,
+		"api_key":         apiKey,
+		"webhook_secret":  webhookSecret,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal citizen handshake payload: %w", err)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	var lastErr error
+
+	for attempt := 1; attempt <= 6; attempt++ {
+		req, reqErr := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+		if reqErr != nil {
+			return fmt.Errorf("create citizen handshake request: %w", reqErr)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", apiKey)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+		} else {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return nil
+			}
+			lastErr = fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		}
+
+		time.Sleep(time.Duration(attempt*5) * time.Second)
+	}
+
+	return fmt.Errorf("citizen instance handshake failed: %w", lastErr)
 }
 
 func computeHMACSHA256(secret, message string) string {
