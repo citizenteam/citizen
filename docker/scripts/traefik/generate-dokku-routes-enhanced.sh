@@ -16,12 +16,12 @@ CONFIG_FILE="${PROJECT_ROOT}/config/dynamic_conf.yml"
 CONFIG_DIR="$(dirname "${CONFIG_FILE}")"
 mkdir -p "${CONFIG_DIR}"
 if [ -d "${CONFIG_FILE}" ]; then
-    CONFIG_FILE="${CONFIG_FILE%/}/dynamic_conf.yml"
+    CONFIG_FILE="${CONFIG_FILE%/}"
 fi
 touch "${CONFIG_FILE}"
 
 if [ -d "${CONFIG_FILE}" ]; then
-    CONFIG_FILE="${CONFIG_FILE%/}/dynamic_conf.yml"
+    CONFIG_FILE="${CONFIG_FILE%/}"
 fi
 touch "${CONFIG_FILE}"
 
