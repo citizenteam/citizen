@@ -15,7 +15,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -727,47 +726,22 @@ func buildHealthTargets(baseURL, container string) []string {
 		targets = append(targets, val)
 	}
 
-	if baseURL != "" {
-		add(baseURL)
-		if parsed, err := url.Parse(baseURL); err == nil {
-			scheme := parsed.Scheme
-			if scheme == "" {
-				scheme = "http"
-			}
-			host := parsed.Hostname()
-			port := parsed.Port()
-			if port == "" {
-				switch scheme {
-				case "https":
-					port = "443"
-				default:
-					port = "3000"
-				}
-			}
-			path := parsed.EscapedPath()
-			if parsed.RawQuery != "" {
-				path += "?" + parsed.RawQuery
-			}
-
-			if container != "" {
-				add(fmt.Sprintf("%s://%s:%s%s", scheme, container, port, path))
-			}
-			if ips, err := getContainerIPs(container); err == nil {
-				for _, ip := range ips {
-					add(fmt.Sprintf("%s://%s:%s%s", scheme, ip, port, path))
-				}
-			}
-			if host == "127.0.0.1" || host == "localhost" {
-				add(fmt.Sprintf("%s://localhost:%s%s", scheme, port, path))
-			}
-		}
-	} else if container != "" {
-		add(fmt.Sprintf("http://%s:3000/health", container))
-		if ips, err := getContainerIPs(container); err == nil {
+	if container != "" {
+		if ips, err := getContainerIPs(container); err == nil && len(ips) > 0 {
 			for _, ip := range ips {
 				add(fmt.Sprintf("http://%s:3000/health", ip))
 			}
 		}
+
+		if len(targets) == 0 {
+			// Fallback to container DNS name if no IPs were resolved.
+			add(fmt.Sprintf("http://%s:3000/health", container))
+		}
+		return targets
+	}
+
+	if baseURL != "" {
+		add(baseURL)
 	}
 
 	return targets
