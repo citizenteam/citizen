@@ -15,14 +15,17 @@ CONFIG_FILE="${PROJECT_ROOT}/config/dynamic_conf.yml"
 # Ensure configuration directory exists and treat config path as file
 CONFIG_DIR="$(dirname "${CONFIG_FILE}")"
 mkdir -p "${CONFIG_DIR}"
-if [ -d "${CONFIG_FILE}" ]; then
-    CONFIG_FILE="${CONFIG_FILE%/}"
-fi
-touch "${CONFIG_FILE}"
 
+# If the target path is an (accidentally created) directory, convert it back to a file
 if [ -d "${CONFIG_FILE}" ]; then
-    CONFIG_FILE="${CONFIG_FILE%/}"
+    if [ -n "$(ls -A "${CONFIG_FILE}")" ]; then
+        echo "ERROR: ${CONFIG_FILE} is a directory and not empty; cannot continue." >&2
+        exit 1
+    fi
+    rmdir "${CONFIG_FILE}"
 fi
+
+# Create the config file if it doesn't exist
 touch "${CONFIG_FILE}"
 
 CACHE_FILE="${CONFIG_DIR}/.route_cache"
