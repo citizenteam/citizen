@@ -544,6 +544,15 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 		s.logf("✅ Container %s is healthy.", apiContainer)
 	}
 
+	healthURL := strings.TrimSpace(metadata["citizen_health_url"])
+	if healthURL != "" {
+		s.logf("🩺 Waiting for Citizen API health at %s...", healthURL)
+		if err := waitForHTTPHealth(healthURL, 5*time.Minute); err != nil {
+			return err
+		}
+		s.logf("✅ Citizen API health check passed.")
+	}
+
 	handshakeURL := strings.TrimSpace(metadata["handshake_url"])
 	registrationToken := strings.TrimSpace(metadata["registration_token"])
 	apiKey := metadata["api_key"]
@@ -608,6 +617,33 @@ func waitForContainerHealthy(name string, timeout time.Duration) error {
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func waitForHTTPHealth(healthURL string, timeout time.Duration) error {
+	client := &http.Client{Timeout: 5 * time.Second}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(healthURL)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return nil
+			}
+			err = fmt.Errorf("unexpected status code %d", resp.StatusCode)
+		} else {
+			lastErr = err
+		}
+		if err != nil {
+			lastErr = err
+		}
+		time.Sleep(5 * time.Second)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("citizen API health check failed for %s: %w", healthURL, lastErr)
+	}
+	return fmt.Errorf("citizen API health check timed out for %s", healthURL)
 }
 
 func randomHex(n int) (string, error) {
