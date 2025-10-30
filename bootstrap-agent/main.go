@@ -589,6 +589,9 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
