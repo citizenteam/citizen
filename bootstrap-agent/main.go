@@ -15,9 +15,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -554,9 +556,13 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	}
 
 	healthURL := strings.TrimSpace(metadata["citizen_health_url"])
-	if healthURL != "" {
-		s.logf("🩺 Waiting for Citizen API health at %s...", healthURL)
-		if err := waitForHTTPHealth(healthURL, 5*time.Minute); err != nil {
+	if healthURL != "" || apiContainer != "" {
+		targets := buildHealthTargets(healthURL, apiContainer)
+		if len(targets) == 0 {
+			return fmt.Errorf("no valid Citizen API health check targets")
+		}
+		s.logf("🩺 Waiting for Citizen API health (%s)...", strings.Join(targets, ", "))
+		if err := waitForAnyHTTPHealth(targets, 5*time.Minute); err != nil {
 			return err
 		}
 		s.logf("✅ Citizen API health check passed.")
@@ -619,6 +625,10 @@ func waitForContainerHealthy(name string, timeout time.Duration) (*containerHeal
 	details := &containerHealthDetails{}
 
 	for {
+		if name == "" {
+			return details, errors.New("container name required for health checks")
+		}
+
 		inspectCmd := exec.Command("docker", "inspect", name)
 		output, err := inspectCmd.Output()
 		if err != nil {
@@ -663,31 +673,36 @@ func waitForContainerHealthy(name string, timeout time.Duration) (*containerHeal
 	}
 }
 
-func waitForHTTPHealth(healthURL string, timeout time.Duration) error {
-	client := &http.Client{Timeout: 5 * time.Second}
+func waitForAnyHTTPHealth(urls []string, timeout time.Duration) error {
+	if len(urls) == 0 {
+		return errors.New("no health check URLs provided")
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
+
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(healthURL)
-		if err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				return nil
+		for _, target := range urls {
+			resp, err := client.Get(target)
+			if err == nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					return nil
+				}
+				err = fmt.Errorf("unexpected status code %d", resp.StatusCode)
 			}
-			err = fmt.Errorf("unexpected status code %d", resp.StatusCode)
-		} else {
-			lastErr = err
+			if err != nil {
+				lastErr = fmt.Errorf("%w (target: %s)", err, target)
+			}
 		}
-		if err != nil {
-			lastErr = err
-		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(2 * time.Second)
 	}
 	if lastErr != nil {
-		return fmt.Errorf("citizen API health check failed for %s: %w", healthURL, lastErr)
+		return fmt.Errorf("citizen API health check failed: %w", lastErr)
 	}
-	return fmt.Errorf("citizen API health check timed out for %s", healthURL)
+	return fmt.Errorf("citizen API health check timed out after %s", timeout)
 }
 
 func randomHex(n int) (string, error) {
@@ -696,6 +711,109 @@ func randomHex(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+func buildHealthTargets(baseURL, container string) []string {
+	var targets []string
+	add := func(val string) {
+		if val == "" {
+			return
+		}
+		for _, existing := range targets {
+			if existing == val {
+				return
+			}
+		}
+		targets = append(targets, val)
+	}
+
+	if baseURL != "" {
+		add(baseURL)
+		if parsed, err := url.Parse(baseURL); err == nil {
+			scheme := parsed.Scheme
+			if scheme == "" {
+				scheme = "http"
+			}
+			host := parsed.Hostname()
+			port := parsed.Port()
+			if port == "" {
+				switch scheme {
+				case "https":
+					port = "443"
+				default:
+					port = "3000"
+				}
+			}
+			path := parsed.EscapedPath()
+			if parsed.RawQuery != "" {
+				path += "?" + parsed.RawQuery
+			}
+
+			if container != "" {
+				add(fmt.Sprintf("%s://%s:%s%s", scheme, container, port, path))
+			}
+			if ips, err := getContainerIPs(container); err == nil {
+				for _, ip := range ips {
+					add(fmt.Sprintf("%s://%s:%s%s", scheme, ip, port, path))
+				}
+			}
+			if host == "127.0.0.1" || host == "localhost" {
+				add(fmt.Sprintf("%s://localhost:%s%s", scheme, port, path))
+			}
+		}
+	} else if container != "" {
+		add(fmt.Sprintf("http://%s:3000/health", container))
+		if ips, err := getContainerIPs(container); err == nil {
+			for _, ip := range ips {
+				add(fmt.Sprintf("http://%s:3000/health", ip))
+			}
+		}
+	}
+
+	return targets
+}
+
+func getContainerIPs(container string) ([]string, error) {
+	if container == "" {
+		return nil, errors.New("container name is empty")
+	}
+
+	output, err := exec.Command("docker", "inspect", container).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker inspect %s: %w", container, err)
+	}
+
+	var inspectData []struct {
+		NetworkSettings struct {
+			Networks map[string]struct {
+				IPAddress string `json:"IPAddress"`
+			} `json:"Networks"`
+		} `json:"NetworkSettings"`
+	}
+
+	if err := json.Unmarshal(output, &inspectData); err != nil {
+		return nil, fmt.Errorf("parse docker inspect for %s: %w", container, err)
+	}
+
+	ipSet := make(map[string]struct{})
+	for _, entry := range inspectData {
+		for _, network := range entry.NetworkSettings.Networks {
+			if network.IPAddress != "" {
+				ipSet[network.IPAddress] = struct{}{}
+			}
+		}
+	}
+
+	if len(ipSet) == 0 {
+		return nil, nil
+	}
+
+	var ips []string
+	for ip := range ipSet {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	return ips, nil
 }
 
 func computeHMACSHA256(secret, message string) string {
