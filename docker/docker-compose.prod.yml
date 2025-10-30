@@ -44,6 +44,7 @@ services:
       /sbin/my_init &
       sleep 10 &&
       if [ -f /tmp/id_rsa.pub ]; then
+        dokku ssh-keys:remove citizen-api >/dev/null 2>&1 || true &&
         dokku ssh-keys:add citizen-api /tmp/id_rsa.pub || true
       fi &&
       dokku network:set --global attach-post-create docker_citizen-network-prod || true &&
