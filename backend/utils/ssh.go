@@ -23,7 +23,7 @@ func testSSHConnection() bool {
 		SSHDebugLog("testSSHConnection: sshClient is nil")
 		return false
 	}
-	
+
 	// Try to create a session to test the connection
 	session, err := sshClient.NewSession()
 	if err != nil {
@@ -38,13 +38,13 @@ func testSSHConnection() bool {
 // SSHConnect establishes SSH connection
 func SSHConnect() error {
 	SSHDebugLog("SSHConnect started...")
-	
+
 	// Test existing connection first
 	if testSSHConnection() {
 		SSHDebugLog("Current SSH connection is active, no need to reconnect")
 		return nil
 	}
-	
+
 	// Close broken connection if it exists
 	if sshClient != nil {
 		SSHDebugLog("Closing old SSH connection...")
@@ -60,10 +60,10 @@ func SSHConnect() error {
 
 	// SSH connection configuration
 	sshConfig := &ssh.ClientConfig{
-		User: cfg.SSHUser,
-		Auth: []ssh.AuthMethod{},
+		User:            cfg.SSHUser,
+		Auth:            []ssh.AuthMethod{},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout: 10 * time.Second,
+		Timeout:         10 * time.Second,
 	}
 
 	// Password authentication
@@ -94,13 +94,13 @@ func SSHConnect() error {
 			log.Printf("[SSH DEBUG] SSH key file not found: %s", keyPath)
 		} else {
 			log.Printf("[SSH DEBUG] SSH key file found: %s", keyPath)
-			
+
 			key, err := ioutil.ReadFile(keyPath)
 			if err != nil {
 				log.Printf("[SSH DEBUG] SSH key read error: %v", err)
 			} else {
 				log.Printf("[SSH DEBUG] SSH key successfully read, %d bytes", len(key))
-				
+
 				signer, err := ssh.ParsePrivateKey(key)
 				if err != nil {
 					log.Printf("[SSH DEBUG] SSH key parse error: %v", err)
@@ -122,25 +122,31 @@ func SSHConnect() error {
 	// Establish SSH connection with retry logic
 	addr := fmt.Sprintf("%s:%d", cfg.SSHHost, cfg.SSHPort)
 	log.Printf("[SSH DEBUG] Attempting SSH connection: %s", addr)
-	
-	// Retry connection up to 3 times with delay
-	for i := 0; i < 3; i++ {
-		log.Printf("[SSH DEBUG] SSH connection attempt %d/3...", i+1)
+
+	const maxAttempts = 10
+	const initialDelay = 2 * time.Second
+
+	for i := 0; i < maxAttempts; i++ {
+		log.Printf("[SSH DEBUG] SSH connection attempt %d/%d...", i+1, maxAttempts)
 		sshClient, err = ssh.Dial("tcp", addr, sshConfig)
 		if err == nil {
 			log.Printf("[SSH DEBUG] SSH connection successful! (attempt %d)", i+1)
 			break
 		}
 		log.Printf("[SSH DEBUG] SSH connection error (attempt %d): %v", i+1, err)
-		if i < 2 { // Don't sleep on last attempt
-			log.Printf("[SSH DEBUG] Waiting 2 seconds...")
-			time.Sleep(2 * time.Second)
+		if i < maxAttempts-1 {
+			delay := initialDelay * time.Duration(i+1)
+			if delay > 10*time.Second {
+				delay = 10 * time.Second
+			}
+			log.Printf("[SSH DEBUG] Waiting %v before retry...", delay)
+			time.Sleep(delay)
 		}
 	}
-	
+
 	if err != nil {
-		log.Printf("[SSH DEBUG] SSH connection failed after 3 attempts!")
-		return fmt.Errorf("SSH connection could not be established (after 3 attempts): %v", err)
+		log.Printf("[SSH DEBUG] SSH connection failed after %d attempts!", maxAttempts)
+		return fmt.Errorf("SSH connection could not be established (after %d attempts): %v", maxAttempts, err)
 	}
 
 	log.Printf("[SSH DEBUG] SSH connection completely successful!")
@@ -159,7 +165,7 @@ func SSHDisconnect() {
 // RunSSHCommand executes commands via SSH
 func RunSSHCommand(command string) (string, error) {
 	log.Printf("[SSH DEBUG] RunSSHCommand called: %s", command)
-	
+
 	// Check SSH connection and reconnect if necessary
 	if err := SSHConnect(); err != nil {
 		log.Printf("[SSH DEBUG] RunSSHCommand: SSH connection failed: %v", err)
@@ -176,7 +182,7 @@ func RunSSHCommand(command string) (string, error) {
 			log.Printf("[SSH DEBUG] RunSSHCommand: Reconnection failed: %v", err)
 			return "", fmt.Errorf("SSH reconnection failed: %v", err)
 		}
-		
+
 		// Try creating session again
 		session, err = sshClient.NewSession()
 		if err != nil {
@@ -205,4 +211,4 @@ func RunSSHCommand(command string) (string, error) {
 	result := stdout.String()
 	log.Printf("[SSH DEBUG] SSH command successful - output: %s", result)
 	return result, nil
-} 
+}
