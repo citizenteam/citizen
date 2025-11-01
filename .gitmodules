@@ -1,0 +1,3 @@
+[submodule "docker/plugins-local/src/github.com/citizenteam/traefik-custom-response"]
+	path = docker/plugins-local/src/github.com/citizenteam/traefik-custom-response
+	url = https://github.com/citizenteam/traefik-custom-response.git
