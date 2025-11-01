@@ -429,4 +429,10 @@ heapdump*
 !LICENSE*
 !*.example.*
 !*.template.*
-!.gitkeep 
+!.gitkeep
+
+# Allow Traefik local plugins to be versioned
+!docker/plugins-local/
+!docker/plugins-local/src/
+!docker/plugins-local/src/github.com/
+!docker/plugins-local/src/github.com/**

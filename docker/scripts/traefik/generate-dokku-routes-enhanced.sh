@@ -11,6 +11,7 @@ else
 fi
 
 CONFIG_FILE="${PROJECT_ROOT}/config/dynamic_conf.yml"
+HTTP_CHALLENGE_FILE="${PROJECT_ROOT}/config/http_challenges.json"
 
 # Ensure configuration directory exists and treat config path as file
 CONFIG_DIR="$(dirname "${CONFIG_FILE}")"
@@ -40,6 +41,10 @@ touch "${CONFIG_FILE}"
 
 CACHE_FILE="${CONFIG_DIR}/.route_cache"
 LOG_FILE="${PROJECT_ROOT}/logs/route-generator.log"
+
+declare -a HTTP_CHALLENGE_MIDDLEWARE_NAMES=()
+declare -a HTTP_CHALLENGE_BODIES=()
+declare -A HTTP_CHALLENGE_SEEN=()
 
 # Create logs directory if it doesn't exist
 mkdir -p "${PROJECT_ROOT}/logs"
@@ -101,6 +106,29 @@ standardize_name() {
     echo "${clean_name}-${suffix}"
 }
 
+slugify_basic() {
+    local value="$1"
+    local slug
+    slug=$(echo "$value" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//')
+    if [ -z "$slug" ]; then
+        slug="cf"
+    fi
+    echo "$slug"
+}
+
+escape_backticks() {
+    echo "$1" | sed 's/`/\\`/g'
+}
+
+escape_yaml_string() {
+    local input="$1"
+    input=${input//\\/\\\\}
+    input=${input//\"/\\\"}
+    input=${input//$'\n'/\\n}
+    input=${input//$'\r'/\\r}
+    echo "$input"
+}
+
 # Function to get app deployments from database with public flag
 get_app_deployments() {
     log "🔍 Fetching app deployments from database..."
@@ -144,9 +172,14 @@ get_dokku_containers() {
 generate_state_hash() {
     local deployments="$1"
     local containers="$2"
+    local challenges=""
+
+    if [ -f "$HTTP_CHALLENGE_FILE" ]; then
+        challenges="$(cat "$HTTP_CHALLENGE_FILE")"
+    fi
     
     # Combine deployments and containers info and create hash
-    echo -e "$deployments\n$containers" | md5sum | cut -d' ' -f1
+    echo -e "$deployments\n$containers\n$challenges" | md5sum | cut -d' ' -f1
 }
 
 # Function to get container name and port
@@ -281,6 +314,67 @@ EOF
 
 EOF
     fi
+
+    generate_http_challenge_routers
+}
+
+generate_http_challenge_routers() {
+    if [ ! -f "$HTTP_CHALLENGE_FILE" ] || [ ! -s "$HTTP_CHALLENGE_FILE" ]; then
+        return
+    fi
+
+    local jq_output jq_status
+    set +e
+    jq_output=$(jq -c '.[]' "$HTTP_CHALLENGE_FILE" 2>/dev/null)
+    jq_status=$?
+    set -e
+    if [ $jq_status -ne 0 ]; then
+        log "⚠️  Failed to parse HTTP challenge file: $HTTP_CHALLENGE_FILE"
+        return
+    fi
+    if [ -z "$jq_output" ]; then
+        return
+    fi
+
+    log "🧩 Adding $(echo "$jq_output" | wc -l | tr -d ' ') Cloudflare HTTP challenge route(s)" >&2
+
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        local host path body key
+        host=$(echo "$entry" | jq -r '.host // empty')
+        path=$(echo "$entry" | jq -r '.path // empty')
+        body=$(echo "$entry" | jq -r '.body // empty')
+        if [ -z "$host" ] || [ -z "$path" ] || [ -z "$body" ]; then
+            continue
+        fi
+
+        key="${host}|${path}"
+        if [ -n "${HTTP_CHALLENGE_SEEN[$key]}" ]; then
+            continue
+        fi
+        HTTP_CHALLENGE_SEEN[$key]=1
+
+        local slug_host slug_hash router_name middleware_name safe_path
+        slug_host=$(slugify_basic "$host")
+        slug_hash=$(echo -n "${host}${path}" | md5sum | cut -c1-10)
+        router_name="cf-http-challenge-${slug_host}-${slug_hash}"
+        middleware_name="${router_name}-body"
+        safe_path=$(escape_backticks "$path")
+
+        HTTP_CHALLENGE_MIDDLEWARE_NAMES+=("$middleware_name")
+        HTTP_CHALLENGE_BODIES+=("$body")
+
+        cat << EOF
+
+    # 🧩 Cloudflare HTTP challenge for ${host}${path}
+    ${router_name}:
+      rule: "Host(\`${host}\`) && Path(\`${safe_path}\`)"
+      entryPoints: ["web"]
+      service: noop@internal
+      middlewares: ["${middleware_name}"]
+      priority: 2000
+EOF
+    done <<< "$jq_output"
 }
 
 # Function to generate app routes
@@ -497,6 +591,33 @@ EOF
     done
 }
 
+generate_http_challenge_middlewares() {
+    local count=${#HTTP_CHALLENGE_MIDDLEWARE_NAMES[@]}
+    if [ "$count" -eq 0 ]; then
+        return
+    fi
+
+    for idx in "${!HTTP_CHALLENGE_MIDDLEWARE_NAMES[@]}"; do
+        local name="${HTTP_CHALLENGE_MIDDLEWARE_NAMES[$idx]}"
+        local body="${HTTP_CHALLENGE_BODIES[$idx]}"
+        local escaped_body
+        escaped_body=$(escape_yaml_string "$body")
+
+        cat << EOF
+
+    ${name}:
+      plugin:
+        customresponse:
+          statusCode: 200
+          contentType: text/plain
+          body: "${escaped_body}"
+          allowedMethods:
+            - GET
+            - HEAD
+EOF
+    done
+}
+
 # Function to generate middlewares
 generate_middlewares() {
     local deployments="$1"
@@ -546,6 +667,8 @@ generate_middlewares() {
         frameDeny: true
         browserXssFilter: true
 EOF
+
+    generate_http_challenge_middlewares
 
 }
 

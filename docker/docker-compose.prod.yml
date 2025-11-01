@@ -15,6 +15,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config/traefik.yml:/etc/traefik/traefik.yml:rw
       - ./config/dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:rw # Dynamic configuration file (read-write for file watching)
+      - ./plugins-local:/plugins-local:ro
       - ./data/letsencrypt:/letsencrypt
       - ./logs:/var/log/traefik
     networks:

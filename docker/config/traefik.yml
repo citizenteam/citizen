@@ -18,6 +18,11 @@ providers:
     watch: true
     # 🎯 v3.4 file provider (pollInterval field removed)
 
+experimental:
+  localPlugins:
+    customresponse:
+      moduleName: github.com/citizenteam/traefik-custom-response
+
 # 🎯 v3.4 Core configuration
 core:
   # Temporary for v2 syntax support

@@ -15,6 +15,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +84,17 @@ type filePayload struct {
 	Mode     string `json:"mode,omitempty"`
 }
 
+type httpChallengeEntry struct {
+	Host      string `json:"host"`
+	Path      string `json:"path"`
+	Body      string `json:"body"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type challengeCleanupRequest struct {
+	URL string `json:"url"`
+}
+
 type statusResponse struct {
 	Status *jobStatus `json:"status,omitempty"`
 }
@@ -102,6 +114,7 @@ func main() {
 	mux.HandleFunc("/status", srv.handleStatus)
 	mux.HandleFunc("/logs", srv.handleLogs)
 	mux.HandleFunc("/bootstrap/init", srv.withAuth(srv.handleInit))
+	mux.HandleFunc("/bootstrap/challenge/cleanup", srv.withAuth(srv.handleChallengeCleanup))
 
 	srv.logf("🛠️  Citizen bootstrap agent started on %s (data dir: %s)", cfg.bindAddr, cfg.dataDir)
 	if err := http.ListenAndServe(cfg.bindAddr, mux); err != nil {
@@ -274,6 +287,48 @@ func (s *bootstrapServer) handleInit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "ok",
 		"job_id": req.JobID,
+	})
+}
+
+func (s *bootstrapServer) handleChallengeCleanup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	defer r.Body.Close()
+
+	var payload challengeCleanupRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf("invalid payload: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	challengeURL := strings.TrimSpace(payload.URL)
+	if challengeURL == "" {
+		http.Error(w, "url is required", http.StatusBadRequest)
+		return
+	}
+
+	removed, err := s.removeHTTPChallenge(challengeURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !removed {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "noop",
+		})
+		return
+	}
+
+	if err := s.signalTraefikReload(); err != nil {
+		s.logf("⚠️  Failed to signal Traefik reload after challenge cleanup: %v", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "removed",
 	})
 }
 
@@ -537,6 +592,8 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	}
 
 	apiContainer := strings.TrimSpace(metadata["api_container"])
+	httpChallengeURL := strings.TrimSpace(metadata["cf_http_verification_url"])
+	httpChallengeBody := metadata["cf_http_verification_body"]
 	if apiContainer != "" {
 		s.logf("⏳ Waiting for container %s to report healthy...", apiContainer)
 		details, err := waitForContainerHealthy(apiContainer, 10*time.Minute)
@@ -570,6 +627,18 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 			return err
 		}
 		s.logf("✅ Citizen API health check passed.")
+	}
+
+	if httpChallengeURL != "" && httpChallengeBody != "" {
+		s.logf("🧩 Configuring Cloudflare HTTP challenge route for %s", httpChallengeURL)
+		if err := s.ensureHTTPChallengeResponse(httpChallengeURL, httpChallengeBody); err != nil {
+			return err
+		}
+		if err := s.signalTraefikReload(); err != nil {
+			s.logf("⚠️  Failed to signal Traefik reload: %v", err)
+		} else {
+			s.logf("🔔 Traefik reload signal created")
+		}
 	}
 
 	instanceHandshakeURL := strings.TrimSpace(metadata["citizen_instance_handshake_url"])
@@ -636,6 +705,194 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	}
 
 	s.logf("🤝 CitizenAuth handshake completed (status %d)", resp.StatusCode)
+	return nil
+}
+
+func (s *bootstrapServer) ensureHTTPChallengeResponse(challengeURL, challengeBody string) error {
+	parsed, err := url.Parse(challengeURL)
+	if err != nil {
+		return fmt.Errorf("parse challenge url: %w", err)
+	}
+
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		host = strings.TrimSpace(parsed.Host)
+	}
+	if host == "" {
+		return fmt.Errorf("challenge url missing host: %s", challengeURL)
+	}
+
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+
+	configDir := filepath.Join(s.cfg.dataDir, "docker", "config")
+	if err := os.MkdirAll(configDir, 0o750); err != nil {
+		return fmt.Errorf("create challenge directory: %w", err)
+	}
+
+	challengePath := filepath.Join(configDir, "http_challenges.json")
+	var entries []httpChallengeEntry
+
+	if data, readErr := os.ReadFile(challengePath); readErr == nil && len(data) > 0 {
+		if err := json.Unmarshal(data, &entries); err != nil {
+			s.logf("⚠️  Failed to parse existing challenge file %s, recreating: %v", challengePath, err)
+			entries = nil
+		}
+	} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return fmt.Errorf("read challenge file %s: %w", challengePath, readErr)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	updated := false
+	for i := range entries {
+		if strings.EqualFold(entries[i].Host, host) && entries[i].Path == path {
+			if entries[i].Body != challengeBody {
+				entries[i].Body = challengeBody
+			}
+			entries[i].UpdatedAt = now
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		entries = append(entries, httpChallengeEntry{
+			Host:      host,
+			Path:      path,
+			Body:      challengeBody,
+			UpdatedAt: now,
+		})
+		sort.Slice(entries, func(i, j int) bool {
+			if !strings.EqualFold(entries[i].Host, entries[j].Host) {
+				return strings.ToLower(entries[i].Host) < strings.ToLower(entries[j].Host)
+			}
+			return entries[i].Path < entries[j].Path
+		})
+	}
+
+	content, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode challenge file: %w", err)
+	}
+
+	tmpPath := challengePath + ".tmp"
+	if err := os.WriteFile(tmpPath, append(content, '\n'), 0o640); err != nil {
+		return fmt.Errorf("write challenge temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, challengePath); err != nil {
+		return fmt.Errorf("replace challenge file: %w", err)
+	}
+
+	s.logf("🧩 Stored HTTP challenge for %s%s", host, path)
+	return nil
+}
+
+func (s *bootstrapServer) removeHTTPChallenge(challengeURL string) (bool, error) {
+	parsed, err := url.Parse(challengeURL)
+	if err != nil {
+		return false, fmt.Errorf("parse challenge url: %w", err)
+	}
+
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		host = strings.TrimSpace(parsed.Host)
+	}
+	if host == "" {
+		return false, fmt.Errorf("challenge url missing host: %s", challengeURL)
+	}
+
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+
+	configDir := filepath.Join(s.cfg.dataDir, "docker", "config")
+	if err := os.MkdirAll(configDir, 0o750); err != nil {
+		return false, fmt.Errorf("create challenge directory: %w", err)
+	}
+
+	challengePath := filepath.Join(configDir, "http_challenges.json")
+	data, err := os.ReadFile(challengePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read challenge file: %w", err)
+	}
+	if len(data) == 0 {
+		return false, nil
+	}
+
+	var entries []httpChallengeEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return false, fmt.Errorf("parse challenge file: %w", err)
+	}
+
+	removed := false
+	filtered := make([]httpChallengeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Host, host) && entry.Path == path {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+
+	if !removed {
+		return false, nil
+	}
+
+	if len(filtered) == 0 {
+		if err := os.Remove(challengePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("remove challenge file: %w", err)
+		}
+		s.logf("🧹 Removed HTTP challenge file after clearing %s%s", host, path)
+		return true, nil
+	}
+
+	content, err := json.MarshalIndent(filtered, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("encode challenge file: %w", err)
+	}
+
+	tmpPath := challengePath + ".tmp"
+	if err := os.WriteFile(tmpPath, append(content, '\n'), 0o640); err != nil {
+		return false, fmt.Errorf("write challenge temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, challengePath); err != nil {
+		return false, fmt.Errorf("replace challenge file: %w", err)
+	}
+
+	s.logf("🧼 Cleared HTTP challenge for %s%s", host, path)
+	return true, nil
+}
+
+func (s *bootstrapServer) signalTraefikReload() error {
+	signalPaths := []string{"/tmp/traefik-reload-signal"}
+	if env := strings.TrimSpace(os.Getenv("ENVIRONMENT")); env != "" {
+		signalPaths = append(signalPaths, fmt.Sprintf("/tmp/traefik-reload-signal-%s", env))
+	}
+
+	now := time.Now().Format(time.RFC3339Nano)
+	for _, path := range signalPaths {
+		if err := writeSignalFile(path, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeSignalFile(path, payload string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("touch %s: %w", path, err)
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(payload); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
 	return nil
 }
 
