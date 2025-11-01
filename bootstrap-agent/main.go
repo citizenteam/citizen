@@ -92,7 +92,9 @@ type httpChallengeEntry struct {
 }
 
 type challengeCleanupRequest struct {
-	URL string `json:"url"`
+	URL       string `json:"url"`
+	Status    string `json:"status,omitempty"`
+	SSLStatus string `json:"ssl_status,omitempty"`
 }
 
 type statusResponse struct {
@@ -308,6 +310,10 @@ func (s *bootstrapServer) handleChallengeCleanup(w http.ResponseWriter, r *http.
 	if challengeURL == "" {
 		http.Error(w, "url is required", http.StatusBadRequest)
 		return
+	}
+
+	if payload.Status != "" || payload.SSLStatus != "" {
+		s.logf("ℹ️  Cloudflare hostname status update: status=%s ssl_status=%s", payload.Status, payload.SSLStatus)
 	}
 
 	removed, err := s.removeHTTPChallenge(challengeURL)
