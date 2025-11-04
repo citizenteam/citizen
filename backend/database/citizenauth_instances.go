@@ -207,6 +207,48 @@ func GetCitizenauthInstanceByUUID(ctx context.Context, instanceUUID uuid.UUID) (
 	return instance, nil
 }
 
+// GetActiveCitizenauthInstance returns the most recent active CitizenAuth configuration.
+func GetActiveCitizenauthInstance(ctx context.Context) (*CitizenauthInstance, error) {
+	query := `
+        SELECT instance_uuid, organization_id, domain, citizenauth_url,
+               api_key_hash, api_key_prefix, api_key_encrypted, webhook_secret_encrypted, status
+        FROM citizenauth_instances
+        WHERE status = 'active'
+        ORDER BY updated_at DESC
+        LIMIT 1
+    `
+
+	row := DB.QueryRow(ctx, query)
+	instance := &CitizenauthInstance{}
+	var domain, citizenauthURL, apiKeyHash, apiKeyPrefix, apiKeyEncrypted, webhookEncrypted *string
+
+	if err := row.Scan(
+		&instance.InstanceUUID,
+		&instance.OrganizationID,
+		&domain,
+		&citizenauthURL,
+		&apiKeyHash,
+		&apiKeyPrefix,
+		&apiKeyEncrypted,
+		&webhookEncrypted,
+		&instance.Status,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrCitizenauthInstanceNotFound
+		}
+		return nil, err
+	}
+
+	instance.Domain = domain
+	instance.CitizenauthURL = citizenauthURL
+	instance.APIKeyHash = apiKeyHash
+	instance.APIKeyPrefix = apiKeyPrefix
+	instance.APIKeyEncrypted = apiKeyEncrypted
+	instance.WebhookSecretEncrypted = webhookEncrypted
+
+	return instance, nil
+}
+
 // GetCitizenauthWebhookSecret returns decrypted webhook secret and organization ID.
 func GetCitizenauthWebhookSecret(ctx context.Context, instanceUUID uuid.UUID) (string, uuid.UUID, error) {
 	instance, err := GetCitizenauthInstanceByUUID(ctx, instanceUUID)

@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -309,9 +311,13 @@ func WebhookInstanceLifecycle(c *fiber.Ctx) error {
 	}
 
 	var payload struct {
-		Event      string `json:"event"`
-		InstanceID string `json:"instance_id"`
-		Reason     string `json:"reason"`
+		Event         string `json:"event"`
+		InstanceID    string `json:"instance_id"`
+		Reason        string `json:"reason"`
+		AppName       string `json:"app_name"`
+		Domain        string `json:"domain"`
+		ChallengeURL  string `json:"challenge_url"`
+		ChallengeBody string `json:"challenge_body"`
 	}
 
 	if err := c.BodyParser(&payload); err != nil {
@@ -373,6 +379,78 @@ func WebhookInstanceLifecycle(c *fiber.Ctx) error {
 			},
 		))
 
+	case "app.challenge.created":
+		if payload.Domain == "" || payload.ChallengeURL == "" || payload.ChallengeBody == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false,
+				"domain, challenge_url and challenge_body required",
+				nil,
+			))
+		}
+		host, path, err := parseChallengeURL(payload.ChallengeURL)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false,
+				err.Error(),
+				nil,
+			))
+		}
+		if err := utils.AddHTTPChallengeEntry(host, path, payload.ChallengeBody); err != nil {
+			log.Printf("❌ [WEBHOOK-LIFECYCLE] Failed to persist challenge: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+				false,
+				"Failed to store HTTP challenge",
+				nil,
+			))
+		}
+		if err := utils.ReloadTraefik(); err != nil {
+			log.Printf("⚠️  [WEBHOOK-LIFECYCLE] Traefik reload after challenge add failed: %v", err)
+		}
+		return c.JSON(utils.NewCitizenResponse(
+			true,
+			"HTTP challenge registered",
+			fiber.Map{
+				"domain": payload.Domain,
+			},
+		))
+
+	case "app.challenge.completed":
+		if payload.Domain == "" || payload.ChallengeURL == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false,
+				"domain and challenge_url required",
+				nil,
+			))
+		}
+		host, path, err := parseChallengeURL(payload.ChallengeURL)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false,
+				err.Error(),
+				nil,
+			))
+		}
+		if removed, err := utils.RemoveHTTPChallengeEntry(host, path); err != nil {
+			log.Printf("❌ [WEBHOOK-LIFECYCLE] Failed to remove challenge: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+				false,
+				"Failed to remove HTTP challenge",
+				nil,
+			))
+		} else if !removed {
+			log.Printf("ℹ️  [WEBHOOK-LIFECYCLE] Challenge already removed for %s", payload.ChallengeURL)
+		}
+		if err := utils.ReloadTraefik(); err != nil {
+			log.Printf("⚠️  [WEBHOOK-LIFECYCLE] Traefik reload after challenge cleanup failed: %v", err)
+		}
+		return c.JSON(utils.NewCitizenResponse(
+			true,
+			"HTTP challenge cleanup completed",
+			fiber.Map{
+				"domain": payload.Domain,
+			},
+		))
+
 	default:
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,
@@ -425,6 +503,25 @@ func GetPermissionsForCitizenAuth(c *fiber.Ctx) error {
 			"count":           len(apps),
 		},
 	))
+}
+
+func parseChallengeURL(raw string) (string, string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid challenge_url")
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		host = strings.TrimSpace(parsed.Host)
+	}
+	if host == "" {
+		return "", "", fmt.Errorf("challenge_url missing host")
+	}
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	return host, path, nil
 }
 
 // verifyWebhookSignature verifies HMAC signature

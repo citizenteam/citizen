@@ -1,12 +1,13 @@
 package handlers
 
 import (
-	"bufio"
-	"context"
-	"backend/utils"
 	"backend/database"
 	"backend/database/api"
 	"backend/models"
+	"backend/services"
+	"backend/utils"
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -85,8 +86,10 @@ func CreateApp(c *fiber.Ctx) error {
 		))
 	}
 
+	appName := strings.ToLower(strings.TrimSpace(data.AppName))
+
 	// Create app
-	output, err := utils.CreateApp(strings.ToLower(data.AppName))
+	output, err := utils.CreateApp(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -95,12 +98,32 @@ func CreateApp(c *fiber.Ctx) error {
 		))
 	}
 
+	domainResp, err := services.RegisterAppDomain(c.Context(), appName)
+	if err != nil {
+		// cleanup created app to avoid orphaned state
+		if _, destroyErr := utils.DestroyApp(appName); destroyErr != nil {
+			fmt.Printf("[WARN] Failed to rollback app %s after domain error: %v\n", appName, destroyErr)
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+			false,
+			"Failed to register custom hostname: "+err.Error(),
+			nil,
+		))
+	}
+
+	if domainResp != nil && domainResp.Domain != "" {
+		if updateErr := api.Deployments.UpdateDeploymentDomain(context.Background(), appName, domainResp.Domain); updateErr != nil {
+			fmt.Printf("[WARN] Failed to persist deployment domain for %s: %v\n", appName, updateErr)
+		}
+	}
+
 	return c.Status(fiber.StatusCreated).JSON(utils.NewCitizenResponse(
 		true,
 		"Application successfully created",
 		fiber.Map{
-			"app_name": strings.ToLower(data.AppName),
+			"app_name": appName,
 			"output":   output,
+			"domain":   domainResp,
 		},
 	))
 }
@@ -237,7 +260,7 @@ func AddDomain(c *fiber.Ctx) error {
 			userID = &uid
 		}
 	}
-	
+
 	domainActivity, activityErr := database.LogDomainActivity(appName, data.Domain, "add", userID)
 	if activityErr != nil {
 		fmt.Printf("[ACTIVITY] ⚠️ Failed to log domain activity: %v\n", activityErr)
@@ -251,7 +274,7 @@ func AddDomain(c *fiber.Ctx) error {
 			errorMsg := err.Error()
 			database.UpdateActivity(domainActivity.ID, database.StatusError, &errorMsg)
 		}
-		
+
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
 			"An error occurred while adding the domain: "+err.Error(),
@@ -315,7 +338,7 @@ func RemoveDomain(c *fiber.Ctx) error {
 			userID = &uid
 		}
 	}
-	
+
 	domainActivity, activityErr := database.LogDomainActivity(appName, data.Domain, "remove", userID)
 	if activityErr != nil {
 		fmt.Printf("[ACTIVITY] ⚠️ Failed to log domain activity: %v\n", activityErr)
@@ -329,7 +352,7 @@ func RemoveDomain(c *fiber.Ctx) error {
 			errorMsg := err.Error()
 			database.UpdateActivity(domainActivity.ID, database.StatusError, &errorMsg)
 		}
-		
+
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
 			"An error occurred while removing the domain: "+err.Error(),
@@ -416,18 +439,18 @@ func DeployApp(c *fiber.Ctx) error {
 	// 🔧 AUTO-DETECT AND SET PORT BEFORE DEPLOY (WITH GITHUB TOKEN SUPPORT)
 	var portInfo *utils.ConfigPort
 	var portSetMessage string
-	
+
 	// Log port detection start
 	fmt.Printf("[PORT DETECTION] ==================== STARTING PORT DETECTION ====================\n")
 	fmt.Printf("[PORT DETECTION] Repository: %s\n", deployData.GitURL)
 	fmt.Printf("[PORT DETECTION] Branch: %s\n", deployData.GitBranch)
 	fmt.Printf("[PORT DETECTION] App Name: %s\n", appName)
 	fmt.Printf("[PORT DETECTION] User ID: %v\n", userID)
-	
+
 	// Get current port from database
 	var currentPort int
 	var currentPortSource string
-	
+
 	deployment, err := api.Deployments.GetDeploymentByAppName(context.Background(), appName)
 	if err == nil && deployment.Status == "deployed" {
 		currentPort = deployment.Port
@@ -436,19 +459,19 @@ func DeployApp(c *fiber.Ctx) error {
 	} else {
 		fmt.Printf("[PORT DETECTION] 📊 No current port in database, will set if detected\n")
 	}
-	
+
 	// Try to detect port from config files (WITH GITHUB TOKEN)
 	if configPort, err := utils.DetectPortFromGitRepo(deployData.GitURL, deployData.GitBranch, userID); err == nil {
 		portInfo = configPort
 		fmt.Printf("[PORT DETECTION] ✅ Port detected: %d from %s\n", configPort.Port, configPort.Source)
-		
+
 		// Check if port changed
 		if currentPort != 0 && currentPort == configPort.Port {
 			portSetMessage = fmt.Sprintf("✅ Port %d unchanged from %s (skipping re-config)", configPort.Port, configPort.Source)
 			fmt.Printf("[PORT DETECTION] ↻ Port %d unchanged, skipping re-configuration\n", configPort.Port)
 		} else {
 			fmt.Printf("[PORT DETECTION] 🔄 Port changed from %d to %d, updating configuration\n", currentPort, configPort.Port)
-			
+
 			// 1. Set PORT environment variable so app runs on detected port
 			portEnv := map[string]string{
 				"PORT": fmt.Sprintf("%d", configPort.Port),
@@ -458,7 +481,7 @@ func DeployApp(c *fiber.Ctx) error {
 			} else {
 				fmt.Printf("[PORT DETECTION] ✅ PORT environment variable set to %d\n", configPort.Port)
 			}
-			
+
 			// 2. Set port mapping so nginx routes to correct port
 			if _, portErr := utils.SetPort(appName, fmt.Sprintf("%d", configPort.Port)); portErr == nil {
 				portSetMessage = fmt.Sprintf("✅ Port %d auto-configured from %s (both env & mapping)", configPort.Port, configPort.Source)
@@ -470,19 +493,19 @@ func DeployApp(c *fiber.Ctx) error {
 		}
 	} else {
 		fmt.Printf("[PORT DETECTION] ⚠️ Config file detection failed: %v\n", err)
-		
+
 		// Try to extract port from package.json as fallback (WITH GITHUB TOKEN)
 		if pkgPort, pkgErr := utils.ExtractPortFromPackageJson(deployData.GitURL, deployData.GitBranch, userID); pkgErr == nil {
 			portInfo = pkgPort
 			fmt.Printf("[PORT DETECTION] ✅ Port detected from package.json: %d from %s\n", pkgPort.Port, pkgPort.Source)
-			
+
 			// Check if port changed
 			if currentPort != 0 && currentPort == pkgPort.Port {
 				portSetMessage = fmt.Sprintf("✅ Port %d unchanged from %s (skipping re-config)", pkgPort.Port, pkgPort.Source)
 				fmt.Printf("[PORT DETECTION] ↻ Port %d unchanged, skipping re-configuration\n", pkgPort.Port)
 			} else {
 				fmt.Printf("[PORT DETECTION] 🔄 Port changed from %d to %d, updating configuration\n", currentPort, pkgPort.Port)
-				
+
 				// 1. Set PORT environment variable so app runs on detected port
 				portEnv := map[string]string{
 					"PORT": fmt.Sprintf("%d", pkgPort.Port),
@@ -492,7 +515,7 @@ func DeployApp(c *fiber.Ctx) error {
 				} else {
 					fmt.Printf("[PORT DETECTION] ✅ PORT environment variable set to %d\n", pkgPort.Port)
 				}
-				
+
 				// 2. Set port mapping so nginx routes to correct port
 				if _, portErr := utils.SetPort(appName, fmt.Sprintf("%d", pkgPort.Port)); portErr == nil {
 					portSetMessage = fmt.Sprintf("✅ Port %d auto-configured from %s (both env & mapping)", pkgPort.Port, pkgPort.Source)
@@ -515,7 +538,7 @@ func DeployApp(c *fiber.Ctx) error {
 			activityUserID = &uid
 		}
 	}
-	
+
 	deployActivity, activityErr := database.LogDeployActivity(appName, deployData.GitURL, deployData.GitBranch, "", "", activityUserID, database.TriggerManual)
 	if activityErr != nil {
 		fmt.Printf("[ACTIVITY] ⚠️ Failed to log deploy activity: %v\n", activityErr)
@@ -529,23 +552,23 @@ func DeployApp(c *fiber.Ctx) error {
 			errorMsg := err.Error()
 			database.UpdateActivity(deployActivity.ID, database.StatusError, &errorMsg)
 		}
-		
+
 		// Deploy failed - include both error and any available output
 		errorMessage := "Failed to deploy app: " + err.Error()
-		
+
 		// Try to get build logs for failed deploys
 		buildLogs, _ := utils.GetBuildLogs(appName)
-		
+
 		responseData := fiber.Map{
-			"output": output,
+			"output":        output,
 			"error_details": err.Error(),
 		}
-		
+
 		// Add build logs if available
 		if buildLogs != "" {
 			responseData["build_logs"] = buildLogs
 		}
-		
+
 		// Add port detection info even on failure
 		if portInfo != nil {
 			responseData["port_detection"] = fiber.Map{
@@ -554,7 +577,7 @@ func DeployApp(c *fiber.Ctx) error {
 				"message":       portSetMessage,
 			}
 		}
-		
+
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
 			errorMessage,
@@ -575,19 +598,19 @@ func DeployApp(c *fiber.Ctx) error {
 		Status:     "deployed",
 		LastDeploy: time.Now(),
 	}
-	
+
 	// Add port info if detected
 	if portInfo != nil {
 		newDeployment.Port = portInfo.Port
 		newDeployment.PortSource = portInfo.Source
 	}
-	
+
 	// Save the full deploy output for build logs
 	if output != "" {
 		// Store the full deploy output in deployment_logs field (TEXT field)
 		newDeployment.DeploymentLogs = output
 	}
-	
+
 	// Save to database
 	if dbErr := database.SaveAppDeployment(newDeployment); dbErr != nil {
 		fmt.Printf("[DB] ⚠️ Failed to save deployment info: %v\n", dbErr)
@@ -599,13 +622,13 @@ func DeployApp(c *fiber.Ctx) error {
 
 	// Success response with port detection info
 	responseData := fiber.Map{
-		"app_name": appName,
-		"git_url":  deployData.GitURL,
-		"branch":   deployData.GitBranch,
-		"output":   output,
+		"app_name":               appName,
+		"git_url":                deployData.GitURL,
+		"branch":                 deployData.GitBranch,
+		"output":                 output,
 		"port_detection_message": portSetMessage,
 	}
-	
+
 	if portInfo != nil {
 		responseData["port_detection"] = fiber.Map{
 			"detected_port": portInfo.Port,
@@ -670,7 +693,7 @@ func SetEnv(c *fiber.Ctx) error {
 			userID = &uid
 		}
 	}
-	
+
 	var envActivities []*database.Activity
 	for key := range data.EnvVars {
 		envActivity, activityErr := database.LogEnvActivity(appName, key, "set", userID)
@@ -691,7 +714,7 @@ func SetEnv(c *fiber.Ctx) error {
 				database.UpdateActivity(activity.ID, database.StatusError, &errorMsg)
 			}
 		}
-		
+
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
 			"An error occurred while setting environment variables: "+err.Error(),
@@ -755,7 +778,7 @@ func RestartApp(c *fiber.Ctx) error {
 			userID = &uid
 		}
 	}
-	
+
 	restartActivity, activityErr := database.LogRestartActivity(appName, userID)
 	if activityErr != nil {
 		fmt.Printf("[ACTIVITY] ⚠️ Failed to log restart activity: %v\n", activityErr)
@@ -769,7 +792,7 @@ func RestartApp(c *fiber.Ctx) error {
 			errorMsg := err.Error()
 			database.UpdateActivity(restartActivity.ID, database.StatusError, &errorMsg)
 		}
-		
+
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
 			"An error occurred while restarting the app: "+err.Error(),
@@ -1131,8 +1154,8 @@ func GetAppLogs(c *fiber.Ctx) error {
 	}
 
 	// Get query parameters
-	tail := c.QueryInt("tail", 100) // Default 100 lines
-	logType := c.Query("type", "app") // app, build, deploy
+	tail := c.QueryInt("tail", 100)          // Default 100 lines
+	logType := c.Query("type", "app")        // app, build, deploy
 	processType := c.Query("process", "web") // web, worker, all
 
 	var logs string
@@ -1167,10 +1190,10 @@ func GetAppLogs(c *fiber.Ctx) error {
 		true,
 		"Logs fetched successfully",
 		fiber.Map{
-			"logs": logs,
-			"type": logType,
-			"process": processType,
-			"tail": tail,
+			"logs":      logs,
+			"type":      logType,
+			"process":   processType,
+			"tail":      tail,
 			"timestamp": time.Now().Unix(),
 		},
 	))
@@ -1206,11 +1229,11 @@ func StreamAppLogs(c *fiber.Ctx) error {
 
 		// Send logs in SSE format
 		logData := map[string]interface{}{
-			"logs": logs,
+			"logs":      logs,
 			"timestamp": fmt.Sprintf("%d", time.Now().Unix()),
-			"type": "initial",
+			"type":      "initial",
 		}
-		
+
 		jsonData, _ := json.Marshal(logData)
 		fmt.Fprintf(w, "data: %s\n\n", jsonData)
 		w.Flush()
@@ -1310,7 +1333,7 @@ func RemoveEnv(c *fiber.Ctx) error {
 			userID = &uid
 		}
 	}
-	
+
 	envActivity, activityErr := database.LogEnvActivity(appName, data.Key, "remove", userID)
 	if activityErr != nil {
 		fmt.Printf("[ACTIVITY] ⚠️ Failed to log env activity: %v\n", activityErr)
@@ -1324,7 +1347,7 @@ func RemoveEnv(c *fiber.Ctx) error {
 			errorMsg := err.Error()
 			database.UpdateActivity(envActivity.ID, database.StatusError, &errorMsg)
 		}
-		
+
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
 			"An error occurred while removing the environment variable: "+err.Error(),
@@ -1467,7 +1490,7 @@ func GetLiveBuildLogs(c *fiber.Ctx) error {
 			"timestamp":      time.Now().Unix(),
 		},
 	))
-} 
+}
 
 // GetAllAppsInfo gets detailed information for all apps collectively
 func GetAllAppsInfo(c *fiber.Ctx) error {
@@ -1485,4 +1508,4 @@ func GetAllAppsInfo(c *fiber.Ctx) error {
 		"Detailed information for all apps retrieved successfully",
 		allInfo,
 	))
-} 
+}
