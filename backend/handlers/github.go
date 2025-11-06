@@ -834,6 +834,11 @@ func SetupGitHubConfig(c *fiber.Ctx) error {
 		})
 	}
 
+	// Normalize/trim user input to avoid hidden whitespace issues
+	req.ClientID = strings.TrimSpace(req.ClientID)
+	req.ClientSecret = strings.TrimSpace(req.ClientSecret)
+	req.RedirectURI = strings.TrimSpace(req.RedirectURI)
+
 	// Validate required fields
 	if req.ClientID == "" || req.ClientSecret == "" || req.RedirectURI == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
