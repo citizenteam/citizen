@@ -868,10 +868,13 @@ func SetupGitHubConfig(c *fiber.Ctx) error {
 	}
 
 	log.Printf("[GITHUB] ✅ GitHub OAuth setup completed")
-	return c.JSON(fiber.Map{
-		"message": "GitHub OAuth setup completed successfully",
-		"configured": true,
-	})
+	return c.JSON(utils.NewCitizenResponse(
+		true,
+		"GitHub OAuth setup completed successfully",
+		fiber.Map{
+			"configured": true,
+		},
+	))
 }
 
 // GetGitHubConfig returns current GitHub configuration (without secrets)
