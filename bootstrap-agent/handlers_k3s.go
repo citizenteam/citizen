@@ -113,8 +113,7 @@ func (srv *bootstrapServer) handleK3sStatus(w http.ResponseWriter, r *http.Reque
 		}
 
 		// Try to get kubeconfig
-		kubeconfig, err := k3s.GetKubeconfig()
-		if err == nil {
+		if _, err := k3s.GetKubeconfig(); err == nil {
 			status["kubeconfig_available"] = true
 			// Don't send full kubeconfig in status, just indicate it's available
 		} else {
@@ -198,4 +197,3 @@ func (srv *bootstrapServer) handleK3sKubeconfig(w http.ResponseWriter, r *http.R
 		"kubeconfig": kubeconfig,
 	})
 }
-
