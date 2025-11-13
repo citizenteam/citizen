@@ -80,20 +80,20 @@ func Install(cfg InstallConfig) (*InstallResult, error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	serviceName := k3sServiceName(cfg.ServerMode)
-	if err := cmd.Run(); err != nil {
-		if svcErr := waitForService(serviceName, 60*time.Second); svcErr == nil {
-			fmt.Printf("[WARN] k3s install command returned %v but service appears to be starting; continuing...\n", err)
-		} else {
-			return &InstallResult{
-				Success: false,
-				Error:   fmt.Sprintf("k3s installation failed: %v", err),
-			}, err
-		}
-	}
+    serviceName := k3sServiceName(cfg.ServerMode)
+    if err := cmd.Run(); err != nil {
+        if svcErr := waitForService(serviceName, 3*time.Minute); svcErr == nil {
+            fmt.Printf("[WARN] k3s install command returned %v but service appears to be starting; continuing...\n", err)
+        } else {
+            return &InstallResult{
+                Success: false,
+                Error:   fmt.Sprintf("k3s installation failed: %v", err),
+            }, err
+        }
+    }
 
-	// Wait for k3s service to be active
-	if err := waitForService(serviceName, 60*time.Second); err != nil {
+    // Wait for k3s service to be active
+    if err := waitForService(serviceName, 3*time.Minute); err != nil {
 		return &InstallResult{
 			Success: false,
 			Error:   fmt.Sprintf("k3s service not ready: %v", err),
