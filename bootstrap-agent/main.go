@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	k3s "citizen-bootstrap-agent/k3s"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
@@ -346,16 +347,26 @@ func (s *bootstrapServer) handleChallengeCleanup(w http.ResponseWriter, r *http.
 }
 
 func (s *bootstrapServer) processInit(req initRequest) error {
+	if err := s.writeFiles(req.Files); err != nil {
+		return err
+	}
+
+	runtime := detectRuntime(req.Metadata)
+	switch runtime {
+	case "k3s":
+		return s.processK3sInit(req)
+	default:
+		return s.processDockerInit(req)
+	}
+}
+
+func (s *bootstrapServer) processDockerInit(req initRequest) error {
 	composePath, err := s.resolvePath(req.ComposePath, s.cfg.composeRel)
 	if err != nil {
 		return err
 	}
 	envPath, err := s.resolvePath(req.EnvPath, s.cfg.envRel)
 	if err != nil {
-		return err
-	}
-
-	if err := s.writeFiles(req.Files); err != nil {
 		return err
 	}
 
@@ -431,6 +442,83 @@ func (s *bootstrapServer) processInit(req initRequest) error {
 	}
 
 	return nil
+}
+
+func (s *bootstrapServer) processK3sInit(req initRequest) error {
+	if req.Metadata == nil {
+		return fmt.Errorf("k3s bootstrap requires metadata payload")
+	}
+
+	skipInstall := parseBool(req.Metadata["k3s_skip_install"])
+	if !skipInstall {
+		mode := strings.ToLower(strings.TrimSpace(req.Metadata["k3s_mode"]))
+		if mode == "" {
+			mode = "server"
+		}
+
+		installCfg := k3s.InstallConfig{
+			ServerMode: mode != "agent",
+			ServerURL:  strings.TrimSpace(req.Metadata["k3s_server_url"]),
+			Token:      strings.TrimSpace(req.Metadata["k3s_token"]),
+			DataDir:    strings.TrimSpace(req.Metadata["k3s_data_dir"]),
+			ExtraArgs:  splitCSV(req.Metadata["k3s_extra_args"]),
+		}
+
+		if !installCfg.ServerMode {
+			if installCfg.ServerURL == "" || installCfg.Token == "" {
+				return fmt.Errorf("k3s agent mode requires server_url and token metadata")
+			}
+		}
+
+		s.logf("⚙️  Installing k3s (mode=%s)...", mode)
+		result, err := k3s.Install(installCfg)
+		if err != nil {
+			return err
+		}
+		if result != nil && !result.Success {
+			if result.Error != "" {
+				return fmt.Errorf("k3s install failed: %s", result.Error)
+			}
+			return fmt.Errorf("k3s install failed with unknown error")
+		}
+		s.logf("✅ k3s installation completed.")
+	} else {
+		s.logf("⏭️  Skipping k3s installation per metadata flag.")
+	}
+
+	manifestContent := strings.TrimSpace(req.Metadata["k3s_manifest"])
+	if manifestContent == "" {
+		if manifestPath := strings.TrimSpace(req.Metadata["k3s_manifest_path"]); manifestPath != "" {
+			resolved, err := s.resolvePath(manifestPath, "")
+			if err != nil {
+				return fmt.Errorf("resolve manifest path: %w", err)
+			}
+			data, err := os.ReadFile(resolved)
+			if err != nil {
+				return fmt.Errorf("read manifest file %s: %w", resolved, err)
+			}
+			manifestContent = string(data)
+		}
+	}
+
+	if manifestContent == "" {
+		return fmt.Errorf("k3s manifest not provided")
+	}
+
+	namespace := strings.TrimSpace(req.Metadata["k3s_manifest_namespace"])
+	waitApply := parseBool(req.Metadata["k3s_manifest_wait"])
+
+	s.logf("📝 Applying k3s manifest (namespace=%s wait=%v)...", namespace, waitApply)
+	if err := k3s.ApplyManifest(k3s.ManifestConfig{
+		Content:   manifestContent,
+		Namespace: namespace,
+		Wait:      waitApply,
+	}); err != nil {
+		return fmt.Errorf("apply k3s manifest: %w", err)
+	}
+	s.logf("✅ Manifest applied successfully.")
+
+	return s.performPostActions(req.Metadata)
 }
 
 func (s *bootstrapServer) writeFiles(files []filePayload) error {
@@ -604,10 +692,13 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 		return nil
 	}
 
+	runtime := detectRuntime(metadata)
+	useK3s := runtime == "k3s"
+
 	apiContainer := strings.TrimSpace(metadata["api_container"])
 	httpChallengeURL := strings.TrimSpace(metadata["cf_http_verification_url"])
 	httpChallengeBody := metadata["cf_http_verification_body"]
-	if apiContainer != "" {
+	if apiContainer != "" && !useK3s {
 		s.logf("⏳ Waiting for container %s to report healthy...", apiContainer)
 		details, err := waitForContainerHealthy(apiContainer, 10*time.Minute)
 		if err != nil {
@@ -630,8 +721,12 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 
 	healthURL := strings.TrimSpace(metadata["citizen_health_url"])
 	apiKey := metadata["api_key"]
-	if healthURL != "" || apiContainer != "" {
-		targets := buildHealthTargets(healthURL, apiContainer)
+	containerTarget := ""
+	if !useK3s {
+		containerTarget = apiContainer
+	}
+	if healthURL != "" || containerTarget != "" {
+		targets := buildHealthTargets(healthURL, containerTarget)
 		if len(targets) == 0 {
 			return fmt.Errorf("no valid Citizen API health check targets")
 		}
@@ -643,14 +738,21 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	}
 
 	if httpChallengeURL != "" && httpChallengeBody != "" {
-		s.logf("🧩 Configuring Cloudflare HTTP challenge route for %s", httpChallengeURL)
-		if err := s.ensureHTTPChallengeResponse(httpChallengeURL, httpChallengeBody); err != nil {
-			return err
-		}
-		if err := s.signalTraefikReload(); err != nil {
-			s.logf("⚠️  Failed to signal Traefik reload: %v", err)
+		if useK3s {
+			s.logf("🧩 Applying Kubernetes HTTP challenge manifest for %s", httpChallengeURL)
+			if err := s.ensureK3sHTTPChallengeResponse(httpChallengeURL, httpChallengeBody); err != nil {
+				return err
+			}
 		} else {
-			s.logf("🔔 Traefik reload signal created")
+			s.logf("🧩 Configuring Cloudflare HTTP challenge route for %s", httpChallengeURL)
+			if err := s.ensureHTTPChallengeResponse(httpChallengeURL, httpChallengeBody); err != nil {
+				return err
+			}
+			if err := s.signalTraefikReload(); err != nil {
+				s.logf("⚠️  Failed to signal Traefik reload: %v", err)
+			} else {
+				s.logf("🔔 Traefik reload signal created")
+			}
 		}
 	}
 
@@ -798,6 +900,63 @@ func (s *bootstrapServer) ensureHTTPChallengeResponse(challengeURL, challengeBod
 	}
 
 	s.logf("🧩 Stored HTTP challenge for %s%s", host, path)
+	return nil
+}
+
+func (s *bootstrapServer) ensureK3sHTTPChallengeResponse(challengeURL, challengeBody string) error {
+	parsed, err := url.Parse(challengeURL)
+	if err != nil {
+		return fmt.Errorf("parse challenge url: %w", err)
+	}
+
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return fmt.Errorf("challenge host missing in %s", challengeURL)
+	}
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+
+	challengeName := fmt.Sprintf("cf-challenge-%s", sanitizeK8sName(fmt.Sprintf("%x", sha256.Sum256([]byte(host+path)))))
+	body := escapeYAML(challengeBody)
+
+	manifest := fmt.Sprintf(`apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: %s
+  namespace: citizen-system
+spec:
+  plugin:
+    traefik-custom-response:
+      statusCode: 200
+      contentType: text/plain
+      body: "%s"
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: %s
+  namespace: citizen-system
+spec:
+  entryPoints:
+  - web
+  - websecure
+  routes:
+  - match: Host("%s") && PathPrefix("%s")
+    kind: Rule
+    middlewares:
+    - name: %s
+    services:
+    - kind: TraefikService
+      name: noop@internal
+`, challengeName, body, challengeName, host, path, challengeName)
+
+	if err := k3s.ApplyManifest(k3s.ManifestConfig{
+		Content: manifest,
+	}); err != nil {
+		return fmt.Errorf("apply k3s challenge manifest: %w", err)
+	}
 	return nil
 }
 
@@ -1211,4 +1370,67 @@ func getEnvBool(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func detectRuntime(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return "dokku"
+	}
+	if val := strings.ToLower(strings.TrimSpace(metadata["runtime_adapter"])); val != "" {
+		return val
+	}
+	if val := strings.ToLower(strings.TrimSpace(metadata["bootstrap_mode"])); val != "" {
+		return val
+	}
+	return "dokku"
+}
+
+func splitCSV(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	var result []string
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func parseBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeK8sName(input string) string {
+	input = strings.ToLower(input)
+	var b strings.Builder
+	for _, r := range input {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	result := strings.Trim(b.String(), "-")
+	if result == "" {
+		return "cf-challenge"
+	}
+	if len(result) > 50 {
+		return result[:50]
+	}
+	return result
+}
+
+func escapeYAML(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	value = strings.ReplaceAll(value, "\n", `\n`)
+	return value
 }
