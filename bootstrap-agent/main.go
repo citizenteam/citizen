@@ -117,6 +117,13 @@ func main() {
 	mux.HandleFunc("/logs", srv.handleLogs)
 	mux.HandleFunc("/bootstrap/init", srv.withAuth(srv.handleInit))
 	mux.HandleFunc("/bootstrap/challenge/cleanup", srv.withAuth(srv.handleChallengeCleanup))
+	
+	// K3s endpoints
+	mux.HandleFunc("/k3s/install", srv.withAuth(srv.handleK3sInstall))
+	mux.HandleFunc("/k3s/uninstall", srv.withAuth(srv.handleK3sUninstall))
+	mux.HandleFunc("/k3s/status", srv.handleK3sStatus)
+	mux.HandleFunc("/k3s/apply", srv.withAuth(srv.handleK3sApply))
+	mux.HandleFunc("/k3s/kubeconfig", srv.withAuth(srv.handleK3sKubeconfig))
 
 	srv.logf("🛠️  Citizen bootstrap agent started on %s (data dir: %s)", cfg.bindAddr, cfg.dataDir)
 	if err := http.ListenAndServe(cfg.bindAddr, mux); err != nil {

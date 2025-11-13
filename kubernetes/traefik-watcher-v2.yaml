@@ -1,0 +1,99 @@
+# Traefik Watcher v2 Deployment for K3s
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik-watcher
+  namespace: citizen-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: traefik-watcher
+rules:
+- apiGroups: [""]
+  resources: ["services", "pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: traefik-watcher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: traefik-watcher
+subjects:
+- kind: ServiceAccount
+  name: traefik-watcher
+  namespace: citizen-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik-watcher-v2
+  namespace: citizen-system
+  labels:
+    app: traefik-watcher
+    version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traefik-watcher
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: traefik-watcher
+        version: v2
+    spec:
+      serviceAccountName: traefik-watcher
+      containers:
+      - name: watcher
+        image: ghcr.io/citizen/traefik-watcher:v2
+        env:
+        - name: DATABASE_URL
+          value: postgres://$(DB_USER):$(DB_PASSWORD)@citizen-postgres:5432/$(DB_NAME)?sslmode=disable
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: dotenv
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: dotenv
+              key: DB_PASSWORD
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: dotenv
+              key: DB_NAME
+        - name: PLATFORM_ADAPTER
+          value: "k3s"
+        - name: CHECK_INTERVAL
+          value: "30"
+        - name: CONFIG_FILE
+          value: "/etc/traefik/dynamic_conf.yml"
+        volumeMounts:
+        - name: traefik-config
+          mountPath: /etc/traefik
+        - name: reload-signal
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+      volumes:
+      - name: traefik-config
+        persistentVolumeClaim:
+          claimName: traefik-dynamic-pvc
+      - name: reload-signal
+        emptyDir: {}
+

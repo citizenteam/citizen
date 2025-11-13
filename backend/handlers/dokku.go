@@ -4,6 +4,7 @@ import (
 	"backend/database"
 	"backend/database/api"
 	"backend/models"
+	"backend/platform"
 	"backend/services"
 	"backend/utils"
 	"bufio"
@@ -18,7 +19,7 @@ import (
 
 // ListApps lists all Citizen apps
 func ListApps(c *fiber.Ctx) error {
-	apps, err := utils.ListApps()
+	apps, err := platform.GetAdapter().ListApps()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -47,7 +48,7 @@ func ListDomains(c *fiber.Ctx) error {
 	}
 
 	// Get domains
-	domains, err := utils.ListDomains(appName)
+	domains, err := platform.GetAdapter().ListDomains(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -89,7 +90,7 @@ func CreateApp(c *fiber.Ctx) error {
 	appName := strings.ToLower(strings.TrimSpace(data.AppName))
 
 	// Create app
-	output, err := utils.CreateApp(appName)
+	output, err := platform.GetAdapter().CreateApp(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -101,7 +102,7 @@ func CreateApp(c *fiber.Ctx) error {
 	domainResp, err := services.RegisterAppDomain(c.Context(), appName)
 	if err != nil {
 		// cleanup created app to avoid orphaned state
-		if _, destroyErr := utils.DestroyApp(appName); destroyErr != nil {
+		if _, destroyErr := platform.GetAdapter().DestroyApp(appName); destroyErr != nil {
 			fmt.Printf("[WARN] Failed to rollback app %s after domain error: %v\n", appName, destroyErr)
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
@@ -141,7 +142,7 @@ func DestroyApp(c *fiber.Ctx) error {
 	}
 
 	// Delete app
-	output, err := utils.DestroyApp(appName)
+	output, err := platform.GetAdapter().DestroyApp(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -200,7 +201,7 @@ func SetPort(c *fiber.Ctx) error {
 	}
 
 	// Set port
-	output, err := utils.SetPort(appName, data.Port)
+	output, err := platform.GetAdapter().SetPort(appName, data.Port)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -267,7 +268,7 @@ func AddDomain(c *fiber.Ctx) error {
 	}
 
 	// Add domain
-	output, err := utils.AddDomain(appName, data.Domain)
+	output, err := platform.GetAdapter().AddDomain(appName, data.Domain)
 	if err != nil {
 		// 📝 Update domain activity as failed
 		if domainActivity != nil {
@@ -345,7 +346,7 @@ func RemoveDomain(c *fiber.Ctx) error {
 	}
 
 	// Remove domain
-	output, err := utils.RemoveDomain(appName, data.Domain)
+	output, err := platform.GetAdapter().RemoveDomain(appName, data.Domain)
 	if err != nil {
 		// 📝 Update domain activity as failed
 		if domainActivity != nil {
@@ -437,7 +438,7 @@ func DeployApp(c *fiber.Ctx) error {
 	}
 
 	// 🔧 AUTO-DETECT AND SET PORT BEFORE DEPLOY (WITH GITHUB TOKEN SUPPORT)
-	var portInfo *utils.ConfigPort
+	var portInfo *platform.ConfigPort
 	var portSetMessage string
 
 	// Log port detection start
@@ -461,7 +462,7 @@ func DeployApp(c *fiber.Ctx) error {
 	}
 
 	// Try to detect port from config files (WITH GITHUB TOKEN)
-	if configPort, err := utils.DetectPortFromGitRepo(deployData.GitURL, deployData.GitBranch, userID); err == nil {
+	if configPort, err := platform.GetAdapter().DetectPortFromGitRepo(deployData.GitURL, deployData.GitBranch, userID); err == nil {
 		portInfo = configPort
 		fmt.Printf("[PORT DETECTION] ✅ Port detected: %d from %s\n", configPort.Port, configPort.Source)
 
@@ -476,14 +477,14 @@ func DeployApp(c *fiber.Ctx) error {
 			portEnv := map[string]string{
 				"PORT": fmt.Sprintf("%d", configPort.Port),
 			}
-			if _, envErr := utils.SetEnv(appName, portEnv); envErr != nil {
+			if _, envErr := platform.GetAdapter().SetEnv(appName, portEnv); envErr != nil {
 				fmt.Printf("[PORT DETECTION] ⚠️ Failed to set PORT environment variable: %v\n", envErr)
 			} else {
 				fmt.Printf("[PORT DETECTION] ✅ PORT environment variable set to %d\n", configPort.Port)
 			}
 
 			// 2. Set port mapping so nginx routes to correct port
-			if _, portErr := utils.SetPort(appName, fmt.Sprintf("%d", configPort.Port)); portErr == nil {
+			if _, portErr := platform.GetAdapter().SetPort(appName, fmt.Sprintf("%d", configPort.Port)); portErr == nil {
 				portSetMessage = fmt.Sprintf("✅ Port %d auto-configured from %s (both env & mapping)", configPort.Port, configPort.Source)
 				fmt.Printf("[PORT DETECTION] ✅ Port %d successfully set in Citizen (mapping)\n", configPort.Port)
 			} else {
@@ -495,7 +496,7 @@ func DeployApp(c *fiber.Ctx) error {
 		fmt.Printf("[PORT DETECTION] ⚠️ Config file detection failed: %v\n", err)
 
 		// Try to extract port from package.json as fallback (WITH GITHUB TOKEN)
-		if pkgPort, pkgErr := utils.ExtractPortFromPackageJson(deployData.GitURL, deployData.GitBranch, userID); pkgErr == nil {
+		if pkgPort, pkgErr := platform.GetAdapter().ExtractPortFromPackageJson(deployData.GitURL, deployData.GitBranch, userID); pkgErr == nil {
 			portInfo = pkgPort
 			fmt.Printf("[PORT DETECTION] ✅ Port detected from package.json: %d from %s\n", pkgPort.Port, pkgPort.Source)
 
@@ -510,14 +511,14 @@ func DeployApp(c *fiber.Ctx) error {
 				portEnv := map[string]string{
 					"PORT": fmt.Sprintf("%d", pkgPort.Port),
 				}
-				if _, envErr := utils.SetEnv(appName, portEnv); envErr != nil {
+				if _, envErr := platform.GetAdapter().SetEnv(appName, portEnv); envErr != nil {
 					fmt.Printf("[PORT DETECTION] ⚠️ Failed to set PORT environment variable: %v\n", envErr)
 				} else {
 					fmt.Printf("[PORT DETECTION] ✅ PORT environment variable set to %d\n", pkgPort.Port)
 				}
 
 				// 2. Set port mapping so nginx routes to correct port
-				if _, portErr := utils.SetPort(appName, fmt.Sprintf("%d", pkgPort.Port)); portErr == nil {
+				if _, portErr := platform.GetAdapter().SetPort(appName, fmt.Sprintf("%d", pkgPort.Port)); portErr == nil {
 					portSetMessage = fmt.Sprintf("✅ Port %d auto-configured from %s (both env & mapping)", pkgPort.Port, pkgPort.Source)
 					fmt.Printf("[PORT DETECTION] ✅ Port %d successfully set in Citizen (mapping)\n", pkgPort.Port)
 				} else {
@@ -545,7 +546,7 @@ func DeployApp(c *fiber.Ctx) error {
 	}
 
 	// 🚀 Deploy from git repository with specific branch (WITH GITHUB TOKEN)
-	output, err := utils.DeployFromGit(appName, deployData.GitURL, deployData.GitBranch, userID)
+	output, err := platform.GetAdapter().DeployFromGit(appName, deployData.GitURL, deployData.GitBranch, userID)
 	if err != nil {
 		// 📝 Update deployment activity as failed
 		if deployActivity != nil {
@@ -557,7 +558,7 @@ func DeployApp(c *fiber.Ctx) error {
 		errorMessage := "Failed to deploy app: " + err.Error()
 
 		// Try to get build logs for failed deploys
-		buildLogs, _ := utils.GetBuildLogs(appName)
+		buildLogs, _ := platform.GetAdapter().GetBuildLogs(appName)
 
 		responseData := fiber.Map{
 			"output":        output,
@@ -705,7 +706,7 @@ func SetEnv(c *fiber.Ctx) error {
 	}
 
 	// Set environment variables
-	output, err := utils.SetEnv(appName, data.EnvVars)
+	output, err := platform.GetAdapter().SetEnv(appName, data.EnvVars)
 	if err != nil {
 		// 📝 Update env activities as failed
 		for _, activity := range envActivities {
@@ -743,7 +744,7 @@ func SetEnv(c *fiber.Ctx) error {
 // GetAppInfo gets the information of an app
 func GetAppInfo(c *fiber.Ctx) error {
 	appName := c.Params("app_name")
-	info, err := utils.GetAppInfo(appName)
+	info, err := platform.GetAdapter().GetAppInfo(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -785,7 +786,7 @@ func RestartApp(c *fiber.Ctx) error {
 	}
 
 	// Restart app from new
-	output, err := utils.RestartApp(appName)
+	output, err := platform.GetAdapter().RestartApp(appName)
 	if err != nil {
 		// 📝 Update restart activity as failed
 		if restartActivity != nil {
@@ -828,7 +829,7 @@ func ListBuildpacks(c *fiber.Ctx) error {
 		))
 	}
 
-	buildpacks, err := utils.ListBuildpacks(appName)
+	buildpacks, err := platform.GetAdapter().ListBuildpacks(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -874,7 +875,7 @@ func AddBuildpack(c *fiber.Ctx) error {
 		))
 	}
 
-	output, err := utils.AddBuildpack(appName, data.BuildpackURL)
+	output, err := platform.GetAdapter().AddBuildpack(appName, data.BuildpackURL)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -925,7 +926,7 @@ func SetBuildpack(c *fiber.Ctx) error {
 		))
 	}
 
-	output, err := utils.SetBuildpack(appName, data.BuildpackURL, data.Index)
+	output, err := platform.GetAdapter().SetBuildpack(appName, data.BuildpackURL, data.Index)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -976,7 +977,7 @@ func RemoveBuildpack(c *fiber.Ctx) error {
 		))
 	}
 
-	output, err := utils.RemoveBuildpack(appName, data.BuildpackURL)
+	output, err := platform.GetAdapter().RemoveBuildpack(appName, data.BuildpackURL)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -1007,7 +1008,7 @@ func ClearBuildpacks(c *fiber.Ctx) error {
 		))
 	}
 
-	output, err := utils.ClearBuildpacks(appName)
+	output, err := platform.GetAdapter().ClearBuildpacks(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -1037,7 +1038,7 @@ func GetBuildpackReport(c *fiber.Ctx) error {
 		))
 	}
 
-	report, err := utils.GetBuildpackReport(appName)
+	report, err := platform.GetAdapter().GetBuildpackReport(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -1093,7 +1094,7 @@ func SetBuilder(c *fiber.Ctx) error {
 		))
 	}
 
-	output, err := utils.SetBuilder(appName, data.BuilderType)
+	output, err := platform.GetAdapter().SetBuilder(appName, data.BuilderType)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -1124,7 +1125,7 @@ func GetBuilderReport(c *fiber.Ctx) error {
 		))
 	}
 
-	report, err := utils.GetBuilderReport(appName)
+	report, err := platform.GetAdapter().GetBuilderReport(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -1163,18 +1164,18 @@ func GetAppLogs(c *fiber.Ctx) error {
 
 	switch logType {
 	case "build":
-		logs, err = utils.GetBuildLogs(appName)
+		logs, err = platform.GetAdapter().GetBuildLogs(appName)
 	case "deploy":
-		logs, err = utils.GetDeployLogs(appName)
+		logs, err = platform.GetAdapter().GetDeployLogs(appName)
 	case "all":
 		// Logs for all processes
-		logs, err = utils.GetAllProcessLogs(appName, tail)
+		logs, err = platform.GetAdapter().GetAllProcessLogs(appName, tail)
 	default:
 		// Logs for a specific process or web process
 		if processType == "all" {
-			logs, err = utils.GetAllProcessLogs(appName, tail)
+			logs, err = platform.GetAdapter().GetAllProcessLogs(appName, tail)
 		} else {
-			logs, err = utils.GetProcessSpecificLogs(appName, processType, tail)
+			logs, err = platform.GetAdapter().GetProcessSpecificLogs(appName, processType, tail)
 		}
 	}
 
@@ -1220,7 +1221,7 @@ func StreamAppLogs(c *fiber.Ctx) error {
 	// Configure SSE using StreamWriter
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 		// Get initial logs and send
-		logs, err := utils.GetAppLogs(appName, 50, false)
+		logs, err := platform.GetAdapter().GetAppLogs(appName, 50, false)
 		if err != nil {
 			fmt.Fprintf(w, "data: {\"error\": \"%s\"}\n\n", err.Error())
 			w.Flush()
@@ -1268,7 +1269,7 @@ func GetLogInfo(c *fiber.Ctx) error {
 		))
 	}
 
-	logInfo, err := utils.GetLogInfo(appName)
+	logInfo, err := platform.GetAdapter().GetLogInfo(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -1340,7 +1341,7 @@ func RemoveEnv(c *fiber.Ctx) error {
 	}
 
 	// Remove environment variable
-	output, err := utils.RemoveEnv(appName, data.Key)
+	output, err := platform.GetAdapter().RemoveEnv(appName, data.Key)
 	if err != nil {
 		// 📝 Update env activity as failed
 		if envActivity != nil {
@@ -1384,7 +1385,7 @@ func GetEnv(c *fiber.Ctx) error {
 	}
 
 	// Get environment variables
-	envVars, err := utils.GetEnv(appName)
+	envVars, err := platform.GetAdapter().GetEnv(appName)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -1475,7 +1476,7 @@ func GetLiveBuildLogs(c *fiber.Ctx) error {
 	}
 
 	// Get build logs (deploy output only)
-	buildLogs, err := utils.GetBuildLogs(appName)
+	buildLogs, err := platform.GetAdapter().GetBuildLogs(appName)
 	if err != nil {
 		fmt.Printf("[LOGS] Failed to get build logs: %v\n", err)
 		buildLogs = "No build logs available yet..."
@@ -1494,7 +1495,7 @@ func GetLiveBuildLogs(c *fiber.Ctx) error {
 
 // GetAllAppsInfo gets detailed information for all apps collectively
 func GetAllAppsInfo(c *fiber.Ctx) error {
-	allInfo, err := utils.GetAllAppsInfo()
+	allInfo, err := platform.GetAdapter().GetAllAppsInfo()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,

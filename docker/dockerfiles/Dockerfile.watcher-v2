@@ -1,0 +1,42 @@
+# Traefik Watcher v2 - Go-based
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /build
+
+# Copy go mod files
+COPY citizen/backend/go.mod citizen/backend/go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source
+COPY citizen/backend/cmd/traefik-watcher ./cmd/traefik-watcher
+
+# Build binary
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-w -s" \
+    -o traefik-watcher \
+    ./cmd/traefik-watcher
+
+# Final stage
+FROM alpine:3.19
+
+# Install ca-certificates for HTTPS
+RUN apk --no-cache add ca-certificates tzdata
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/traefik-watcher /app/traefik-watcher
+
+# Create directories
+RUN mkdir -p /etc/traefik /var/log
+
+# Run as non-root
+RUN adduser -D -u 1000 watcher && \
+    chown -R watcher:watcher /app /etc/traefik /var/log
+
+USER watcher
+
+ENTRYPOINT ["/app/traefik-watcher"]
+

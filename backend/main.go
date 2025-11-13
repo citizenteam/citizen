@@ -58,6 +58,13 @@ func main() {
 	}
 	utils.StartupLog("Encryption system initialized successfully")
 
+	// Initialize platform adapter
+	utils.StartupLog("Initializing platform adapter...")
+	if err := initPlatformAdapter(); err != nil {
+		utils.ErrorLog("Platform adapter initialization failed: %v", err)
+		log.Fatalf("Platform adapter initialization failed: %v", err)
+	}
+
 	// Start database connection (check skip flag)
 	if os.Getenv("SKIP_DB_PING") != "true" {
 		utils.StartupLog("Connecting to database...")

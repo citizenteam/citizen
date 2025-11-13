@@ -3,6 +3,7 @@ package handlers
 import (
 	"backend/database/api"
 	"backend/models"
+	"backend/platform"
 	"backend/utils"
 	"context"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
-
 
 // Database helper functions for app settings
 
@@ -20,7 +20,7 @@ func setCustomDomainToDB(appName, domain string) (*models.AppCustomDomain, error
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Return the created domain
 	return &models.AppCustomDomain{
 		AppName:   appName,
@@ -37,7 +37,7 @@ func getCustomDomainsByAppFromDB(appName string) ([]models.AppCustomDomain, erro
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var result []models.AppCustomDomain
 	for _, domain := range domains {
 		result = append(result, models.AppCustomDomain{
@@ -67,7 +67,7 @@ func setPublicAppToDB(appName string, isPublic bool) (*models.AppPublicSetting, 
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Return the created/updated setting
 	return &models.AppPublicSetting{
 		AppName:   appName,
@@ -138,7 +138,7 @@ func SetCustomDomain(c *fiber.Ctx) error {
 	}
 
 	// Check if the domain already exists in Citizen
-	existingCitizenDomains, err := utils.ListDomains(appName)
+	existingCitizenDomains, err := platform.GetAdapter().ListDomains(appName)
 	if err == nil {
 		for _, existingDomain := range existingCitizenDomains {
 			if existingDomain == body.Domain {
@@ -169,7 +169,7 @@ func SetCustomDomain(c *fiber.Ctx) error {
 	}
 
 	// STEP 2: Add domain to Citizen
-	output, err := utils.AddDomain(appName, body.Domain)
+	output, err := platform.GetAdapter().AddDomain(appName, body.Domain)
 	if err != nil {
 		// If error in Citizen, rollback the database record
 		if removeErr := api.Settings.DeleteCustomDomain(context.Background(), appName, body.Domain); removeErr != nil {
@@ -192,7 +192,7 @@ func SetCustomDomain(c *fiber.Ctx) error {
 		true,
 		"Custom domain successfully configured",
 		fiber.Map{
-			"domain":        domain,
+			"domain":         domain,
 			"citizen_output": output,
 		},
 	))
@@ -268,7 +268,7 @@ func RemoveCustomDomain(c *fiber.Ctx) error {
 			nil,
 		))
 	}
-	
+
 	domainExistsInDb := false
 	for _, existingDomain := range existingDbDomains {
 		if existingDomain == data.Domain {
@@ -276,7 +276,7 @@ func RemoveCustomDomain(c *fiber.Ctx) error {
 			break
 		}
 	}
-	
+
 	if !domainExistsInDb {
 		return c.Status(fiber.StatusNotFound).JSON(utils.NewCitizenResponse(
 			false,
@@ -286,7 +286,7 @@ func RemoveCustomDomain(c *fiber.Ctx) error {
 	}
 
 	// STEP 1: Remove domain from Citizen
-	output, err := utils.RemoveDomain(appName, data.Domain)
+	output, err := platform.GetAdapter().RemoveDomain(appName, data.Domain)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
@@ -299,7 +299,7 @@ func RemoveCustomDomain(c *fiber.Ctx) error {
 	err = api.Settings.DeleteCustomDomain(context.Background(), appName, data.Domain)
 	if err != nil {
 		// If deletion from database fails, add back to Citizen (rollback)
-		if _, addBackErr := utils.AddDomain(appName, data.Domain); addBackErr != nil {
+		if _, addBackErr := platform.GetAdapter().AddDomain(appName, data.Domain); addBackErr != nil {
 			// If rollback also fails, log as critical
 			fmt.Printf("[CRITICAL] Domain rollback failed for %s - %s: Citizen remove succeeded but DB delete failed, and Citizen add-back failed: %v\n", appName, data.Domain, addBackErr)
 		}
@@ -326,8 +326,8 @@ func RemoveCustomDomain(c *fiber.Ctx) error {
 		true,
 		"Custom domain successfully removed",
 		fiber.Map{
-			"app_name":      appName,
-			"domain":        data.Domain,
+			"app_name":       appName,
+			"domain":         data.Domain,
 			"citizen_output": output,
 		},
 	))

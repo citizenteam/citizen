@@ -92,7 +92,8 @@ func (ps *PermissionSubscriber) handlePermissionChange(payload string) {
 }
 
 // invalidateUserCache invalidates permission cache for a specific user
-// TODO: Implement when permission caching is added
+// Permission caching will be implemented when Redis-based caching layer is added
+// This will reduce database queries for frequent permission checks
 func (ps *PermissionSubscriber) invalidateUserCache(userID string) {
 	// Future implementation:
 	// - Delete key: citizen:perms:user:{userID} from Redis
