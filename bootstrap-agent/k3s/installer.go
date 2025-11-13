@@ -35,6 +35,9 @@ func Install(cfg InstallConfig) (*InstallResult, error) {
 	if err := ensureServiceSupervisor(); err != nil {
 		return &InstallResult{Success: false, Error: err.Error()}, err
 	}
+	if err := ensureNetworkingTools(); err != nil {
+		return &InstallResult{Success: false, Error: err.Error()}, err
+	}
 	var script string
 
 	if cfg.ServerMode {
@@ -242,6 +245,60 @@ func installOpenRC() error {
 		return nil
 	}
 	return fmt.Errorf("failed to install openrc via available package managers")
+}
+
+func ensureNetworkingTools() error {
+	required := []string{"iptables-save", "iptables-restore", "ip6tables-save", "ip6tables-restore"}
+	missing := make([]string, 0)
+	for _, bin := range required {
+		if _, err := exec.LookPath(bin); err != nil {
+			missing = append(missing, bin)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	installers := []struct {
+		cmd     string
+		args    []string
+		verify  []string
+	}{
+		{"apk", []string{"add", "--no-cache", "iptables", "ip6tables"}, required},
+		{"apt-get", []string{"update"}, nil},
+		{"apt-get", []string{"install", "-y", "iptables"}, required},
+		{"yum", []string{"install", "-y", "iptables"}, required},
+		{"dnf", []string{"install", "-y", "iptables"}, required},
+	}
+
+	for _, installer := range installers {
+		if _, err := exec.LookPath(installer.cmd); err != nil {
+			continue
+		}
+		cmd := exec.Command(installer.cmd, installer.args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+		allPresent := true
+		for _, bin := range required {
+			if _, err := exec.LookPath(bin); err != nil {
+				allPresent = false
+				break
+			}
+		}
+		if allPresent {
+			return nil
+		}
+	}
+
+	for _, bin := range required {
+		if _, err := exec.LookPath(bin); err != nil {
+			return fmt.Errorf("required networking tool '%s' not found; please install iptables on the target host", bin)
+		}
+	}
+	return nil
 }
 
 func ensureCommandAvailable(name string) error {
