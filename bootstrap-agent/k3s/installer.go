@@ -80,19 +80,19 @@ func Install(cfg InstallConfig) (*InstallResult, error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	serviceName := k3sServiceName(cfg.ServerMode)
 	if err := cmd.Run(); err != nil {
-		return &InstallResult{
-			Success: false,
-			Error:   fmt.Sprintf("k3s installation failed: %v", err),
-		}, err
+		if svcErr := waitForService(serviceName, 60*time.Second); svcErr == nil {
+			fmt.Printf("[WARN] k3s install command returned %v but service appears to be starting; continuing...\n", err)
+		} else {
+			return &InstallResult{
+				Success: false,
+				Error:   fmt.Sprintf("k3s installation failed: %v", err),
+			}, err
+		}
 	}
 
 	// Wait for k3s service to be active
-	serviceName := "k3s"
-	if !cfg.ServerMode {
-		serviceName = "k3s-agent"
-	}
-
 	if err := waitForService(serviceName, 60*time.Second); err != nil {
 		return &InstallResult{
 			Success: false,
@@ -175,15 +175,29 @@ func waitForService(serviceName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		cmd := exec.Command("systemctl", "is-active", serviceName)
-		if err := cmd.Run(); err == nil {
+		if isServiceActive(serviceName) {
 			return nil
 		}
-
 		time.Sleep(2 * time.Second)
 	}
 
 	return fmt.Errorf("service %s did not become active within %v", serviceName, timeout)
+}
+
+func isServiceActive(serviceName string) bool {
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		cmd := exec.Command("systemctl", "is-active", serviceName)
+		if err := cmd.Run(); err == nil {
+			return true
+		}
+	}
+	if _, err := exec.LookPath("rc-service"); err == nil {
+		cmd := exec.Command("rc-service", serviceName, "status")
+		if err := cmd.Run(); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // modeString returns human-readable mode string
@@ -192,6 +206,13 @@ func modeString(serverMode bool) string {
 		return "server"
 	}
 	return "agent"
+}
+
+func k3sServiceName(serverMode bool) string {
+	if serverMode {
+		return "k3s"
+	}
+	return "k3s-agent"
 }
 
 func shellCommand(script string) *exec.Cmd {
