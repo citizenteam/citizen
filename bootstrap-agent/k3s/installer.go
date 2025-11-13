@@ -64,7 +64,7 @@ func Install(cfg InstallConfig) (*InstallResult, error) {
 	}
 
 	// Execute installation script
-	cmd := exec.Command("bash", "-c", script)
+	cmd := shellCommand(script)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -122,7 +122,7 @@ func Uninstall(serverMode bool) error {
 		script = "/usr/local/bin/k3s-agent-uninstall.sh"
 	}
 
-	cmd := exec.Command("bash", "-c", script)
+	cmd := shellCommand(script)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -182,3 +182,10 @@ func modeString(serverMode bool) string {
 	return "agent"
 }
 
+func shellCommand(script string) *exec.Cmd {
+	shell := "bash"
+	if _, err := exec.LookPath(shell); err != nil {
+		shell = "sh"
+	}
+	return exec.Command(shell, "-c", script)
+}
