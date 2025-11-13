@@ -197,6 +197,11 @@ func isServiceActive(serviceName string) bool {
 			return true
 		}
 	}
+	if serviceName == "k3s" {
+		if _, err := os.Stat("/etc/rancher/k3s/k3s.yaml"); err == nil {
+			return true
+		}
+	}
 	return false
 }
 
