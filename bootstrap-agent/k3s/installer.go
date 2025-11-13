@@ -26,6 +26,12 @@ type InstallResult struct {
 
 // Install runs the k3s installation script
 func Install(cfg InstallConfig) (*InstallResult, error) {
+	if err := ensureCommandAvailable("curl"); err != nil {
+		return &InstallResult{Success: false, Error: err.Error()}, err
+	}
+	if err := ensureCommandAvailable("sh"); err != nil {
+		return &InstallResult{Success: false, Error: err.Error()}, err
+	}
 	var script string
 
 	if cfg.ServerMode {
@@ -188,4 +194,36 @@ func shellCommand(script string) *exec.Cmd {
 		shell = "sh"
 	}
 	return exec.Command(shell, "-c", script)
+}
+
+func ensureCommandAvailable(name string) error {
+	if _, err := exec.LookPath(name); err == nil {
+		return nil
+	}
+	installers := []struct {
+		cmd  string
+		args []string
+	}{
+		{"apt-get", []string{"update"}},
+		{"apt-get", []string{"install", "-y", name}},
+		{"yum", []string{"install", "-y", name}},
+		{"dnf", []string{"install", "-y", name}},
+		{"apk", []string{"add", "--no-cache", name}},
+	}
+	for i := 0; i < len(installers); i++ {
+		installer := installers[i]
+		if _, err := exec.LookPath(installer.cmd); err != nil {
+			continue
+		}
+		cmd := exec.Command(installer.cmd, installer.args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+		if _, err := exec.LookPath(name); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("required command '%s' not found; please install it manually", name)
 }
