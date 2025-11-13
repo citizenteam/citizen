@@ -172,15 +172,16 @@ func GetNodeToken() (string, error) {
 
 // waitForService waits for systemd service to be active
 func waitForService(serviceName string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
 	deadline := time.Now().Add(timeout)
-
 	for time.Now().Before(deadline) {
 		if isServiceActive(serviceName) {
 			return nil
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
-
 	return fmt.Errorf("service %s did not become active within %v", serviceName, timeout)
 }
 
@@ -198,11 +199,22 @@ func isServiceActive(serviceName string) bool {
 		}
 	}
 	if serviceName == "k3s" {
-		if _, err := os.Stat("/etc/rancher/k3s/k3s.yaml"); err == nil {
+		if _, err := os.Stat("/etc/rancher/k3s/k3s.yaml"); err == nil && isK3sProcessRunning() {
 			return true
 		}
 	}
 	return false
+}
+
+func isK3sProcessRunning() bool {
+	if _, err := exec.LookPath("pidof"); err == nil {
+		cmd := exec.Command("pidof", "k3s")
+		if err := cmd.Run(); err == nil {
+			return true
+		}
+	}
+	cmd := exec.Command("sh", "-c", "ps -ef | grep -v grep | grep -q k3s")
+	return cmd.Run() == nil
 }
 
 // modeString returns human-readable mode string
