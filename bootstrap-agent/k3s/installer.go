@@ -205,7 +205,43 @@ func ensureServiceSupervisor() error {
 	if _, err := exec.LookPath("rc-service"); err == nil {
 		return nil
 	}
+	if err := installOpenRC(); err == nil {
+		if _, err := exec.LookPath("rc-service"); err == nil {
+			return nil
+		}
+	}
 	return fmt.Errorf("k3s installer requires systemd or openrc; please install one of them and rerun provisioning")
+}
+
+func installOpenRC() error {
+	installers := []struct {
+		cmd  string
+		args []string
+	}{
+		{"apk", []string{"add", "--no-cache", "openrc"}},
+		{"apt-get", []string{"update"}},
+		{"apt-get", []string{"install", "-y", "openrc"}},
+		{"yum", []string{"install", "-y", "openrc"}},
+		{"dnf", []string{"install", "-y", "openrc"}},
+	}
+	for _, installer := range installers {
+		if _, err := exec.LookPath(installer.cmd); err != nil {
+			continue
+		}
+		cmd := exec.Command(installer.cmd, installer.args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+		if _, err := exec.LookPath("rc-service"); err == nil {
+			return nil
+		}
+	}
+	if _, err := exec.LookPath("rc-service"); err == nil {
+		return nil
+	}
+	return fmt.Errorf("failed to install openrc via available package managers")
 }
 
 func ensureCommandAvailable(name string) error {
