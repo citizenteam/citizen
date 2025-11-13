@@ -32,6 +32,9 @@ func Install(cfg InstallConfig) (*InstallResult, error) {
 	if err := ensureCommandAvailable("sh"); err != nil {
 		return &InstallResult{Success: false, Error: err.Error()}, err
 	}
+	if err := ensureServiceSupervisor(); err != nil {
+		return &InstallResult{Success: false, Error: err.Error()}, err
+	}
 	var script string
 
 	if cfg.ServerMode {
@@ -194,6 +197,15 @@ func shellCommand(script string) *exec.Cmd {
 		shell = "sh"
 	}
 	return exec.Command(shell, "-c", script)
+}
+func ensureServiceSupervisor() error {
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		return nil
+	}
+	if _, err := exec.LookPath("rc-service"); err == nil {
+		return nil
+	}
+	return fmt.Errorf("k3s installer requires systemd or openrc; please install one of them and rerun provisioning")
 }
 
 func ensureCommandAvailable(name string) error {
