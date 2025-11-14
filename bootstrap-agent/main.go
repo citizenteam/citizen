@@ -118,7 +118,7 @@ func main() {
 	mux.HandleFunc("/logs", srv.handleLogs)
 	mux.HandleFunc("/bootstrap/init", srv.withAuth(srv.handleInit))
 	mux.HandleFunc("/bootstrap/challenge/cleanup", srv.withAuth(srv.handleChallengeCleanup))
-	
+
 	// K3s endpoints
 	mux.HandleFunc("/k3s/install", srv.withAuth(srv.handleK3sInstall))
 	mux.HandleFunc("/k3s/uninstall", srv.withAuth(srv.handleK3sUninstall))
@@ -507,12 +507,14 @@ func (s *bootstrapServer) processK3sInit(req initRequest) error {
 
 	namespace := strings.TrimSpace(req.Metadata["k3s_manifest_namespace"])
 	waitApply := parseBool(req.Metadata["k3s_manifest_wait"])
+	kubeconfigPath := strings.TrimSpace(req.Metadata["k3s_kubeconfig_path"])
 
 	s.logf("📝 Applying k3s manifest (namespace=%s wait=%v)...", namespace, waitApply)
 	if err := k3s.ApplyManifest(k3s.ManifestConfig{
-		Content:   manifestContent,
-		Namespace: namespace,
-		Wait:      waitApply,
+		Content:    manifestContent,
+		Namespace:  namespace,
+		Wait:       waitApply,
+		Kubeconfig: kubeconfigPath,
 	}); err != nil {
 		return fmt.Errorf("apply k3s manifest: %w", err)
 	}

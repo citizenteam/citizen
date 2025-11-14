@@ -10,9 +10,10 @@ import (
 
 // ManifestConfig holds manifest application configuration
 type ManifestConfig struct {
-	Content   string // YAML content
-	Namespace string // Optional namespace
-	Wait      bool   // Wait for resources to be ready
+	Content    string // YAML content
+	Namespace  string // Optional namespace
+	Wait       bool   // Wait for resources to be ready
+	Kubeconfig string // Optional kubeconfig path
 }
 
 // ApplyManifest applies Kubernetes manifests using kubectl
@@ -31,10 +32,10 @@ func ApplyManifest(cfg ManifestConfig) error {
 
 	args := buildApplyArgs(cfg, tmpFile.Name(), false)
 
-	if err := runKubectlApply(args); err != nil {
+	if err := runKubectlApply(cfg.Kubeconfig, args); err != nil {
 		if shouldDisableValidation(err.Error()) {
 			args = buildApplyArgs(cfg, tmpFile.Name(), true)
-			if errRetry := runKubectlApply(args); errRetry != nil {
+			if errRetry := runKubectlApply(cfg.Kubeconfig, args); errRetry != nil {
 				return errRetry
 			}
 		} else {
@@ -44,7 +45,7 @@ func ApplyManifest(cfg ManifestConfig) error {
 
 	// Wait for resources if requested
 	if cfg.Wait {
-		if err := waitForManifest(tmpFile.Name(), cfg.Namespace); err != nil {
+		if err := waitForManifest(tmpFile.Name(), cfg.Namespace, cfg.Kubeconfig); err != nil {
 			return fmt.Errorf("manifest wait failed: %w", err)
 		}
 	}
@@ -63,8 +64,8 @@ func buildApplyArgs(cfg ManifestConfig, manifestPath string, disableValidation b
 	return args
 }
 
-func runKubectlApply(args []string) error {
-	cmd := exec.Command("kubectl", args...)
+func runKubectlApply(kubeconfig string, args []string) error {
+	cmd := kubectlCommand(kubeconfig, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("kubectl apply failed: %w\nOutput: %s", err, output)
@@ -77,6 +78,14 @@ func shouldDisableValidation(output string) bool {
 		return true
 	}
 	return false
+}
+
+func kubectlCommand(kubeconfig string, args ...string) *exec.Cmd {
+	cmd := exec.Command("kubectl", args...)
+	if kubeconfig != "" {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
+	}
+	return cmd
 }
 
 // ApplyManifestFile applies a manifest from file path
@@ -190,13 +199,13 @@ func GetPodStatus(namespace, selector string) (string, error) {
 }
 
 // waitForManifest waits for resources in manifest to be ready
-func waitForManifest(manifestPath, namespace string) error {
+func waitForManifest(manifestPath, namespace, kubeconfig string) error {
 	args := []string{"wait", "--for=condition=ready", "--timeout=300s", "-f", manifestPath}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 
-	cmd := exec.Command("kubectl", args...)
+	cmd := kubectlCommand(kubeconfig, args...)
 	if err := cmd.Run(); err != nil {
 		// Waiting might fail for some resource types, that's okay
 		return nil
