@@ -26,23 +26,74 @@ stringData:
   ENCRYPTION_KEY: "<REPLACE_ME>"
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: ssh-key
-  namespace: citizen-system
-type: Opaque
-stringData:
-  id_rsa.pub: |
-    # Replace with the Dokku public key if Dokku is still required
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: traefik-static
   namespace: citizen-system
 data:
   traefik.yml: |
-    # Paste the contents of citizen/docker/config/traefik.yml here.
+    # traefik.yml - Main Configuration v3.4 with HTTP Challenge
+    api:
+      dashboard: true
+
+
+    entryPoints:
+      web:
+        address: ":80"
+        # Required for HTTP challenge - keeping .well-known/acme-challenge/ path open
+      websecure:
+        address: ":443"
+        # 🎯 v3.4 HTTP/3 support (advertise field removed in v3.4)
+        http3: {}
+
+    providers:
+      file:
+        filename: /etc/traefik/dynamic_conf.yml
+        watch: true
+        # 🎯 v3.4 file provider (pollInterval field removed)
+
+    experimental:
+      localPlugins:
+        customresponse:
+          moduleName: github.com/citizenteam/traefik-custom-response
+
+    # 🎯 v3.4 Core configuration
+    core:
+      # Temporary for v2 syntax support
+      defaultRuleSyntax: v2
+
+    # Let's Encrypt configuration for HTTP Challenge
+    certificatesResolvers:
+      letsencrypt:
+        acme:
+          storage: /letsencrypt/acme.json
+          httpChallenge:
+            entryPoint: web
+          # Email will be provided via command line parameter
+          # For staging/testing:
+          # caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+
+    # Logging configuration - OUTPUT TO STDOUT for Docker logs visibility
+    log:
+      level: DEBUG  # Use DEBUG for troubleshooting
+      # filePath removed - logs will go to stdout (visible in docker logs)
+
+    accessLog:
+      # filePath removed - logs will go to stdout (visible in docker logs)
+      filters:
+        statusCodes:
+          - "200-299"
+          - "400-499"
+          - "500-599"
+
+    # 🎯 v3.4 Ping endpoint (restricted for security)
+    ping:
+      entryPoint: websecure
+
+    # Global configuration
+    global:
+      checkNewVersion: false
+      sendAnonymousUsage: false
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -234,10 +285,21 @@ spec:
         - name: api
           image: ghcr.io/citizen/platform-api:latest
           env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DATABASE_URL
             - name: DB_URL
-              value: postgres://$(DB_USER):$(DB_PASSWORD)@citizen-postgres:5432/$(DB_NAME)?sslmode=disable
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_URL
             - name: REDIS_URL
-              value: redis://default:$(REDIS_PASSWORD)@citizen-redis:6379/0
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_URL
             - name: ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
@@ -266,8 +328,6 @@ spec:
           ports:
             - containerPort: 3000
           volumeMounts:
-            - name: ssh-keys
-              mountPath: /ssh_keys
             - name: api-logs
               mountPath: /app/logs
           readinessProbe:
@@ -277,9 +337,6 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 30
       volumes:
-        - name: ssh-keys
-          secret:
-            secretName: ssh-key
         - name: api-logs
           persistentVolumeClaim:
             claimName: citizen-api-logs-pvc
@@ -465,7 +522,15 @@ spec:
           image: ghcr.io/citizen/traefik-watcher:v2
           env:
             - name: DATABASE_URL
-              value: postgres://$(DB_USER):$(DB_PASSWORD)@citizen-postgres:5432/$(DB_NAME)?sslmode=disable
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DATABASE_URL
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_URL
             - name: DB_USER
               valueFrom:
                 secretKeyRef:
