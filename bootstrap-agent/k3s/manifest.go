@@ -29,18 +29,17 @@ func ApplyManifest(cfg ManifestConfig) error {
 	}
 	tmpFile.Close()
 
-	// Build kubectl apply command
-	args := []string{"apply", "-f", tmpFile.Name()}
+	args := buildApplyArgs(cfg, tmpFile.Name(), false)
 
-	if cfg.Namespace != "" {
-		args = append(args, "-n", cfg.Namespace)
-	}
-
-	// Execute kubectl apply
-	cmd := exec.Command("kubectl", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("kubectl apply failed: %s\nOutput: %s", err, output)
+	if err := runKubectlApply(args); err != nil {
+		if shouldDisableValidation(err.Error()) {
+			args = buildApplyArgs(cfg, tmpFile.Name(), true)
+			if errRetry := runKubectlApply(args); errRetry != nil {
+				return errRetry
+			}
+		} else {
+			return err
+		}
 	}
 
 	// Wait for resources if requested
@@ -51,6 +50,33 @@ func ApplyManifest(cfg ManifestConfig) error {
 	}
 
 	return nil
+}
+
+func buildApplyArgs(cfg ManifestConfig, manifestPath string, disableValidation bool) []string {
+	args := []string{"apply", "-f", manifestPath}
+	if cfg.Namespace != "" {
+		args = append(args, "-n", cfg.Namespace)
+	}
+	if disableValidation {
+		args = append(args, "--validate=false")
+	}
+	return args
+}
+
+func runKubectlApply(args []string) error {
+	cmd := exec.Command("kubectl", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kubectl apply failed: %w\nOutput: %s", err, output)
+	}
+	return nil
+}
+
+func shouldDisableValidation(output string) bool {
+	if contains(output, "failed to download openapi") || contains(output, "connect: connection refused") {
+		return true
+	}
+	return false
 }
 
 // ApplyManifestFile applies a manifest from file path
@@ -213,4 +239,3 @@ func containsSubstring(s, substr string) bool {
 	}
 	return false
 }
-
