@@ -10,19 +10,17 @@ import (
 
 // initPlatformAdapter initializes the platform adapter based on configuration
 func initPlatformAdapter() error {
-	adapterType := getEnv("PLATFORM_ADAPTER", "dokku")
+	adapterType := getEnvOrDefault("PLATFORM_ADAPTER", "dokku")
 
 	log.Printf("🔧 Initializing platform adapter: %s", adapterType)
 
 	switch adapterType {
 	case "k3s":
 		return initK3sAdapter()
-
 	case "dokku":
 		// Dokku adapter is the default, already set in platform package
 		log.Println("✅ Using Dokku adapter (default)")
 		return nil
-
 	default:
 		return fmt.Errorf("unknown platform adapter: %s (supported: dokku, k3s)", adapterType)
 	}
@@ -31,7 +29,7 @@ func initPlatformAdapter() error {
 // initK3sAdapter initializes the k3s adapter
 func initK3sAdapter() error {
 	kubeconfig := os.Getenv("KUBECONFIG")
-	inCluster := getEnv("K3S_IN_CLUSTER", "false") == "true"
+	inCluster := getEnvOrDefault("K3S_IN_CLUSTER", "false") == "true"
 
 	var adapter platform.Adapter
 	var err error
@@ -55,9 +53,8 @@ func initK3sAdapter() error {
 	platform.SetAdapter(adapter)
 	log.Println("✅ K3s adapter initialized successfully")
 
-	// Test connection
-	apps, err := adapter.ListApps()
-	if err != nil {
+	// Test connection (best-effort)
+	if apps, err := adapter.ListApps(); err != nil {
 		log.Printf("⚠️  Warning: k3s adapter test failed: %v", err)
 	} else {
 		log.Printf("✅ K3s adapter test successful (%d apps found)", len(apps))
@@ -66,11 +63,10 @@ func initK3sAdapter() error {
 	return nil
 }
 
-// getEnv returns environment variable value or default
-func getEnv(key, defaultValue string) string {
+// getEnvOrDefault returns environment variable value or default
+func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue
 }
-
