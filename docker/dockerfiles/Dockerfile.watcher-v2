@@ -4,13 +4,13 @@ FROM golang:1.23-alpine AS builder
 WORKDIR /build
 
 # Copy go mod files
-COPY citizen/backend/go.mod citizen/backend/go.sum ./
+COPY backend/go.mod backend/go.sum ./
 
 # Download dependencies
 RUN go mod download
 
 # Copy source
-COPY citizen/backend/cmd/traefik-watcher ./cmd/traefik-watcher
+COPY backend/cmd/traefik-watcher ./cmd/traefik-watcher
 
 # Build binary
 RUN CGO_ENABLED=0 GOOS=linux go build \
@@ -39,4 +39,3 @@ RUN adduser -D -u 1000 watcher && \
 USER watcher
 
 ENTRYPOINT ["/app/traefik-watcher"]
-

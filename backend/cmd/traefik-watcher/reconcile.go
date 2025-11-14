@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"log"
@@ -114,7 +115,7 @@ func (w *Watcher) enrichWithKubernetesInfo(apps []AppInfo) error {
 
 		// Get service from Kubernetes
 		svc, err := w.k8sClient.CoreV1().Services(app.Namespace).Get(
-			metav1.Background(),
+			context.TODO(),
 			app.Name,
 			metav1.GetOptions{},
 		)
@@ -257,4 +258,3 @@ func (w *Watcher) writeConfig(config string) error {
 
 	return nil
 }
-

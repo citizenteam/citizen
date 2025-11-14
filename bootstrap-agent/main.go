@@ -85,6 +85,14 @@ type filePayload struct {
 	Mode     string `json:"mode,omitempty"`
 }
 
+type localBuildSpec struct {
+	Name       string            `json:"name"`
+	Image      string            `json:"image"`
+	Context    string            `json:"context"`
+	Dockerfile string            `json:"dockerfile"`
+	BuildArgs  map[string]string `json:"build_args,omitempty"`
+}
+
 type httpChallengeEntry struct {
 	Host      string `json:"host"`
 	Path      string `json:"path"`
@@ -414,6 +422,10 @@ func (s *bootstrapServer) processDockerInit(req initRequest) error {
 		}
 	}
 
+	if err := s.maybeBuildLocalImages(req.Metadata, "docker"); err != nil {
+		return err
+	}
+
 	if err := s.ensureSSHKeys(composePath); err != nil {
 		return fmt.Errorf("prepare ssh keys: %w", err)
 	}
@@ -484,6 +496,10 @@ func (s *bootstrapServer) processK3sInit(req initRequest) error {
 		s.logf("✅ k3s installation completed.")
 	} else {
 		s.logf("⏭️  Skipping k3s installation per metadata flag.")
+	}
+
+	if err := s.maybeBuildLocalImages(req.Metadata, "k3s"); err != nil {
+		return err
 	}
 
 	manifestContent := strings.TrimSpace(req.Metadata["k3s_manifest"])
@@ -686,6 +702,184 @@ func (s *bootstrapServer) ensureTraefikDynamicConfig(composePath string) error {
 		return fmt.Errorf("create traefik dynamic config %s: %w", confPath, err)
 	}
 	s.logf("📝 Ensured Traefik dynamic config file at %s", confPath)
+	return nil
+}
+
+func (s *bootstrapServer) maybeBuildLocalImages(metadata map[string]string, runtime string) error {
+	if len(metadata) == 0 || !parseBool(metadata["build_local_images"]) {
+		return nil
+	}
+
+	specPayload := strings.TrimSpace(metadata["build_specs"])
+	if specPayload == "" {
+		s.logf("⚠️  build_local_images requested but no build_specs provided.")
+		return nil
+	}
+
+	var specs []localBuildSpec
+	if err := json.Unmarshal([]byte(specPayload), &specs); err != nil {
+		return fmt.Errorf("parse build specs: %w", err)
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+
+	repoURL := strings.TrimSpace(metadata["git_repo"])
+	if repoURL == "" {
+		return fmt.Errorf("git_repo metadata required for local builds")
+	}
+	repoRef := strings.TrimSpace(metadata["git_ref"])
+	if repoRef == "" {
+		repoRef = "main"
+	}
+	jobID := strings.TrimSpace(metadata["job_id"])
+	if jobID == "" {
+		jobID = fmt.Sprintf("%d", time.Now().Unix())
+	}
+
+	cloneDir := filepath.Join(s.cfg.dataDir, "sources", jobID)
+	if err := os.RemoveAll(cloneDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("cleanup build dir %s: %w", cloneDir, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cloneDir), 0o750); err != nil {
+		return fmt.Errorf("prepare build dir: %w", err)
+	}
+
+	if err := s.cloneSourceRepo(repoURL, repoRef, cloneDir); err != nil {
+		return err
+	}
+
+	codeRoot := detectCodeRoot(cloneDir)
+	s.logf("🧱 Building %d image(s) from %s (runtime=%s)...", len(specs), codeRoot, runtime)
+
+	for _, spec := range specs {
+		if strings.TrimSpace(spec.Image) == "" {
+			continue
+		}
+		ctx := strings.TrimSpace(spec.Context)
+		if ctx == "" {
+			ctx = "."
+		}
+		ctxPath := filepath.Join(codeRoot, ctx)
+		dockerfile := filepath.Join(codeRoot, strings.TrimSpace(spec.Dockerfile))
+
+		if err := ensurePathExists(ctxPath); err != nil {
+			return fmt.Errorf("context path %s: %w", ctxPath, err)
+		}
+		if err := ensurePathExists(dockerfile); err != nil {
+			return fmt.Errorf("dockerfile %s: %w", dockerfile, err)
+		}
+
+		args := []string{"build", "-t", spec.Image, "-f", dockerfile}
+		for key, value := range spec.BuildArgs {
+			if strings.TrimSpace(key) == "" {
+				continue
+			}
+			args = append(args, "--build-arg", fmt.Sprintf("%s=%s", key, value))
+		}
+		args = append(args, ctxPath)
+
+		s.logf("🏗️  Building image %s (%s)...", spec.Image, spec.Name)
+		if err := s.executeCommand("docker", args, ""); err != nil {
+			return fmt.Errorf("docker build (%s): %w", spec.Image, err)
+		}
+
+		if strings.EqualFold(runtime, "k3s") {
+			if err := s.importImageIntoK3s(spec.Image); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *bootstrapServer) cloneSourceRepo(repoURL, repoRef, dest string) error {
+	s.logf("📥 Cloning repository %s (ref=%s)...", repoURL, repoRef)
+	if err := s.executeCommand("git", []string{"clone", "--depth", "1", "--branch", repoRef, repoURL, dest}, ""); err != nil {
+		return fmt.Errorf("git clone: %w", err)
+	}
+
+	submoduleFile := filepath.Join(dest, ".gitmodules")
+	if _, err := os.Stat(submoduleFile); err == nil {
+		s.logf("🔁 Initializing git submodules...")
+		if err := s.executeCommand("git", []string{"-C", dest, "submodule", "update", "--init", "--recursive"}, ""); err != nil {
+			return fmt.Errorf("git submodule update: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func detectCodeRoot(repoDir string) string {
+	candidate := filepath.Join(repoDir, "citizen")
+	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		return candidate
+	}
+	return repoDir
+}
+
+func ensurePathExists(path string) error {
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *bootstrapServer) executeCommand(name string, args []string, workdir string) error {
+	cmd := exec.Command(name, args...)
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
+	cmd.Env = os.Environ()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	s.logf("↪️  running: %s %s", name, strings.Join(args, " "))
+	if err := cmd.Run(); err != nil {
+		if out := strings.TrimSpace(stdout.String()); out != "" {
+			s.logf("%s stdout:\n%s", name, out)
+		}
+		if errOut := strings.TrimSpace(stderr.String()); errOut != "" {
+			s.logf("%s stderr:\n%s", name, errOut)
+		}
+		return err
+	}
+
+	if out := strings.TrimSpace(stdout.String()); out != "" {
+		s.logf("%s stdout:\n%s", name, out)
+	}
+	if errOut := strings.TrimSpace(stderr.String()); errOut != "" {
+		s.logf("%s stderr:\n%s", name, errOut)
+	}
+
+	return nil
+}
+
+func (s *bootstrapServer) importImageIntoK3s(image string) error {
+	tmpFile, err := os.CreateTemp("", "citizen-image-*.tar")
+	if err != nil {
+		return fmt.Errorf("create temp file for %s: %w", image, err)
+	}
+	defer os.Remove(tmpFile.Name())
+	_ = tmpFile.Close()
+
+	s.logf("📦 Saving image %s for k3s import...", image)
+	if err := s.executeCommand("docker", []string{"save", "-o", tmpFile.Name(), image}, ""); err != nil {
+		return fmt.Errorf("docker save %s: %w", image, err)
+	}
+
+	s.logf("📁 Importing %s into k3s containerd...", image)
+	if err := s.executeCommand("k3s", []string{"ctr", "images", "import", tmpFile.Name()}, ""); err != nil {
+		return fmt.Errorf("k3s ctr import %s: %w", image, err)
+	}
+
 	return nil
 }
 
