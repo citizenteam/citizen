@@ -308,7 +308,7 @@ cache/
 # BUILD & DISTRIBUTION
 # ============================================
 # Build outputs
-build/
+
 dist/
 out/
 target/

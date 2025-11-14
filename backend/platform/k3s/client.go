@@ -1,7 +1,6 @@
 package k3s
 
 import (
-	"context"
 	"fmt"
 
 	"k8s.io/client-go/kubernetes"
@@ -49,7 +48,6 @@ func NewClient(cfg ClientConfig) (*kubernetes.Clientset, error) {
 	}
 
 	// Test if client is working
-	ctx := context.Background()
 	_, err = clientset.Discovery().ServerVersion()
 	if err != nil {
 		return nil, fmt.Errorf("kubernetes connection test failed: %w", err)
