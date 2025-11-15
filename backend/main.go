@@ -256,38 +256,39 @@ func setupMiddleware(app *fiber.App) {
 
 // setupCORS configures CORS based on environment
 func setupCORS(app *fiber.App, isProduction bool) {
-	var corsOrigins string
-	var allowedMethods string
-	var allowedHeaders string
+	allowedMethods := "GET,POST,PUT,DELETE,OPTIONS"
+	allowedHeaders := "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie"
+	corsOrigins := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	if isProduction {
-		// Production: Subdomain support
-		mainDomain := os.Getenv("MAIN_DOMAIN")
-		if mainDomain == "" {
-			mainDomain = "localhost" // Fallback for testing
+	if corsOrigins == "" {
+		if isProduction {
+			mainDomain := os.Getenv("MAIN_DOMAIN")
+			if mainDomain == "" {
+				mainDomain = "localhost"
+			}
+			citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
+			if citizenAuthURL == "" {
+				citizenAuthURL = "https://ustun.tech"
+			}
+			corsOrigins = fmt.Sprintf("https://%s,https://*.%s,%s", mainDomain, mainDomain, citizenAuthURL)
+		} else {
+			corsOrigins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173"
+			allowedMethods = "GET,POST,PUT,DELETE,OPTIONS,PATCH,HEAD"
+			allowedHeaders = "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie,X-Forwarded-For,X-Real-IP,User-Agent,Referer"
 		}
+	}
 
-		// Get CitizenAuth URL for CORS
-		citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
-		if citizenAuthURL == "" {
-			citizenAuthURL = "https://ustun.tech"
-		}
-
-		corsOrigins = fmt.Sprintf("https://%s,https://*.%s,%s", mainDomain, mainDomain, citizenAuthURL)
-		allowedMethods = "GET,POST,PUT,DELETE,OPTIONS"
-		allowedHeaders = "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie"
-	} else {
-		// Development: Dynamic CORS policy for localhost subdomain support
-		corsOrigins = "*" // Allow all origins in development
-		allowedMethods = "GET,POST,PUT,DELETE,OPTIONS,PATCH,HEAD"
-		allowedHeaders = "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie,X-Forwarded-For,X-Real-IP,User-Agent,Referer"
+	allowCredentials := true
+	if corsOrigins == "*" {
+		// Fiber panics if credentials are allowed with wildcard origins.
+		allowCredentials = false
 	}
 
 	utils.StartupLog("CORS Origins: %s", corsOrigins)
 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     corsOrigins,
-		AllowCredentials: true,
+		AllowCredentials: allowCredentials,
 		AllowMethods:     allowedMethods,
 		AllowHeaders:     allowedHeaders,
 		ExposeHeaders:    "Set-Cookie",
