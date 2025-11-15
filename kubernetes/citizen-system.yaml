@@ -31,6 +31,9 @@ stringData:
   DB_HOST: "citizen-postgres"
   DB_PORT: "5432"
   REDIS_PASSWORD: "<REPLACE_ME>"
+  REDIS_HOST: "citizen-redis"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
   ENCRYPTION_KEY: "<REPLACE_ME>"
   DB_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
   DATABASE_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
@@ -354,6 +357,21 @@ spec:
                 secretKeyRef:
                   name: dotenv
                   key: REDIS_PASSWORD
+            - name: REDIS_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_HOST
+            - name: REDIS_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_PORT
+            - name: REDIS_DB
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_DB
           ports:
             - containerPort: 3000
           volumeMounts:
