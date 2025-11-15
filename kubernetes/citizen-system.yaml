@@ -27,6 +27,7 @@ stringData:
   DB_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
   DATABASE_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
   REDIS_URL: "redis://default:<REPLACE_ME>@citizen-redis:6379/0"
+  PLATFORM_ADAPTER: "k3s"
 ---
 apiVersion: v1
 kind: ConfigMap
