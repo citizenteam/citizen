@@ -356,7 +356,6 @@ func (w *Watcher) writeDomainRouters(sb *strings.Builder, host, prefix, serviceN
 
 	ssoBase := fmt.Sprintf("%s-sso", prefix)
 	appBase := fmt.Sprintf("%s-router", prefix)
-	wrote := false
 
 	if tlsEnabled {
 		sb.WriteString(fmt.Sprintf("    %s-http:\n", ssoBase))
