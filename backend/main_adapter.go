@@ -10,7 +10,7 @@ import (
 
 // initPlatformAdapter initializes the platform adapter based on configuration
 func initPlatformAdapter() error {
-	adapterType := getEnvOrDefault("PLATFORM_ADAPTER", "dokku")
+	adapterType := getEnvOrDefault("PLATFORM_ADAPTER", "k3s")
 
 	log.Printf("🔧 Initializing platform adapter: %s", adapterType)
 

@@ -38,7 +38,7 @@ type Config struct {
 func LoadConfig() (*Config, error) {
 	var missingVars []string
 
-	runtimeAdapter := strings.ToLower(getEnvWithDefault("PLATFORM_ADAPTER", "dokku"))
+	runtimeAdapter := strings.ToLower(getEnvWithDefault("PLATFORM_ADAPTER", "k3s"))
 	requiresSSH := runtimeAdapter == "" || runtimeAdapter == "dokku"
 
 	// Required environment variables check

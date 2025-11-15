@@ -78,7 +78,7 @@ func loadConfig() WatcherConfig {
 		KubeconfigPath: os.Getenv("KUBECONFIG"),
 		ConfigFilePath: getEnv("CONFIG_FILE", "/etc/traefik/dynamic_conf.yml"),
 		CheckInterval:  checkInterval,
-		UseKubernetes:  getEnv("PLATFORM_ADAPTER", "dokku") == "k3s",
+		UseKubernetes:  getEnv("PLATFORM_ADAPTER", "k3s") == "k3s",
 	}
 }
 
