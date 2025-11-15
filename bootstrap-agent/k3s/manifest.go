@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -82,9 +83,17 @@ func shouldDisableValidation(output string) bool {
 
 func kubectlCommand(kubeconfig string, args ...string) *exec.Cmd {
 	cmd := exec.Command("kubectl", args...)
-	if kubeconfig != "" {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
+	env := os.Environ()
+	kubeconfig = strings.TrimSpace(kubeconfig)
+	switch {
+	case kubeconfig != "":
+		env = append(env, fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
+	case kubeconfig == "":
+		if _, err := os.Stat("/etc/rancher/k3s/k3s.yaml"); err == nil {
+			env = append(env, "KUBECONFIG=/etc/rancher/k3s/k3s.yaml")
+		}
 	}
+	cmd.Env = env
 	return cmd
 }
 
