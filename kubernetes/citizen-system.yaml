@@ -28,6 +28,7 @@ stringData:
   DATABASE_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
   REDIS_URL: "redis://default:<REPLACE_ME>@citizen-redis:6379/0"
   PLATFORM_ADAPTER: "k3s"
+  K3S_IN_CLUSTER: "true"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -552,6 +553,8 @@ spec:
                   key: DB_NAME
             - name: PLATFORM_ADAPTER
               value: "k3s"
+            - name: K3S_IN_CLUSTER
+              value: "true"
             - name: CHECK_INTERVAL
               value: "30"
             - name: CONFIG_FILE

@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 )
 
 // initPlatformAdapter initializes the platform adapter based on configuration
 func initPlatformAdapter() error {
-	adapterType := getEnvOrDefault("PLATFORM_ADAPTER", "k3s")
+	adapterType := strings.ToLower(getEnvOrDefault("PLATFORM_ADAPTER", "k3s"))
 
 	log.Printf("🔧 Initializing platform adapter: %s", adapterType)
 
@@ -39,11 +40,13 @@ func initK3sAdapter() error {
 		adapter, err = k3s.NewK3sAdapterInCluster()
 	} else {
 		if kubeconfig == "" {
-			return fmt.Errorf("KUBECONFIG environment variable is required for k3s adapter")
+			log.Println("ℹ️  KUBECONFIG not set; attempting in-cluster configuration")
+			adapter, err = k3s.NewK3sAdapterInCluster()
+			inCluster = true
+		} else {
+			log.Printf("🔧 Initializing k3s adapter (kubeconfig: %s)", kubeconfig)
+			adapter, err = k3s.NewK3sAdapter(kubeconfig)
 		}
-
-		log.Printf("🔧 Initializing k3s adapter (kubeconfig: %s)", kubeconfig)
-		adapter, err = k3s.NewK3sAdapter(kubeconfig)
 	}
 
 	if err != nil {
