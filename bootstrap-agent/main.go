@@ -890,6 +890,7 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 
 	runtime := detectRuntime(metadata)
 	useK3s := runtime == "k3s"
+	kubeconfigPath := strings.TrimSpace(metadata["k3s_kubeconfig_path"])
 
 	apiContainer := strings.TrimSpace(metadata["api_container"])
 	httpChallengeURL := strings.TrimSpace(metadata["cf_http_verification_url"])
@@ -936,7 +937,7 @@ func (s *bootstrapServer) performPostActions(metadata map[string]string) error {
 	if httpChallengeURL != "" && httpChallengeBody != "" {
 		if useK3s {
 			s.logf("🧩 Applying Kubernetes HTTP challenge manifest for %s", httpChallengeURL)
-			if err := s.ensureK3sHTTPChallengeResponse(httpChallengeURL, httpChallengeBody); err != nil {
+			if err := s.ensureK3sHTTPChallengeResponse(httpChallengeURL, httpChallengeBody, kubeconfigPath); err != nil {
 				return err
 			}
 		} else {
@@ -1099,7 +1100,7 @@ func (s *bootstrapServer) ensureHTTPChallengeResponse(challengeURL, challengeBod
 	return nil
 }
 
-func (s *bootstrapServer) ensureK3sHTTPChallengeResponse(challengeURL, challengeBody string) error {
+func (s *bootstrapServer) ensureK3sHTTPChallengeResponse(challengeURL, challengeBody, kubeconfigPath string) error {
 	parsed, err := url.Parse(challengeURL)
 	if err != nil {
 		return fmt.Errorf("parse challenge url: %w", err)
@@ -1149,7 +1150,8 @@ spec:
 `, challengeName, body, challengeName, host, path, challengeName)
 
 	if err := k3s.ApplyManifest(k3s.ManifestConfig{
-		Content: manifest,
+		Content:    manifest,
+		Kubeconfig: kubeconfigPath,
 	}); err != nil {
 		return fmt.Errorf("apply k3s challenge manifest: %w", err)
 	}
