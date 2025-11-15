@@ -22,9 +22,8 @@ This directory contains a baseline manifest for running a single Citizen stack (
 
 4. **Secrets**
    - `dotenv` secret stores sensitive env vars (DB, Redis, CF token, encryption key, etc.).
-   - `ssh-key` secret stores the Dokku public key if Dokku remains installed for legacy workloads (optional).
 
-   Create them before applying the manifest:
+   Create it before applying the manifest:
    ```bash
    kubectl -n citizen-system create secret generic dotenv \
      --from-literal=CF_DNS_API_TOKEN=... \
@@ -34,9 +33,6 @@ This directory contains a baseline manifest for running a single Citizen stack (
      --from-literal=DB_PASSWORD=... \
      --from-literal=REDIS_PASSWORD=... \
      --from-literal=ENCRYPTION_KEY=...
-
-   kubectl -n citizen-system create secret generic ssh-key \
-     --from-file=id_rsa.pub=../ssh_keys/id_rsa.pub
    ```
 
 ## Deploy

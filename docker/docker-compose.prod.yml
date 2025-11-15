@@ -34,7 +34,6 @@ services:
     volumes:
       - citizen-dokku-data-prod:/mnt/dokku
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./ssh_keys/id_rsa.pub:/tmp/id_rsa.pub:ro
     networks:
       - citizen-network-prod
     environment:
@@ -44,10 +43,6 @@ services:
       /bin/bash -c "
       /sbin/my_init &
       sleep 10 &&
-      if [ -f /tmp/id_rsa.pub ]; then
-        dokku ssh-keys:remove citizen-api >/dev/null 2>&1 || true &&
-        dokku ssh-keys:add citizen-api /tmp/id_rsa.pub || true
-      fi &&
       dokku network:set --global attach-post-create docker_citizen-network-prod || true &&
       wait
       "
@@ -67,7 +62,6 @@ services:
     ports:
       - "3000:3000"  # Expose for direct access during development
     volumes:
-      - ./ssh_keys:/ssh_keys:ro
       - ./logs/api:/app/logs
     networks:
       - citizen-network-prod

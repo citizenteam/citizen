@@ -230,7 +230,6 @@ Features:
   - Resource limits & health checks
   - Structured JSON logging
 Security: Hardened containers, capability dropping, non-root users
-SSH Keys: /ssh_keys/id_rsa (appuser)
 Admin User: Interactive setup during installation
 ```
 

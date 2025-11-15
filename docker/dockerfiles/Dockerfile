@@ -87,7 +87,6 @@ FROM alpine:3.19 AS runtime-alpine
 # Install runtime dependencies
 RUN apk --no-cache add \
     ca-certificates \
-    openssh-client \
     tzdata \
     curl \
     && rm -rf /var/cache/apk/*
@@ -97,10 +96,9 @@ RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 
 # Create necessary directories
-RUN mkdir -p /app /home/appuser/.ssh /ssh_keys && \
-    chmod 700 /home/appuser/.ssh && \
-    chmod 700 /ssh_keys && \
-    chown -R appuser:appgroup /app /home/appuser /ssh_keys
+RUN mkdir -p /app /home/appuser && \
+    chmod 700 /home/appuser && \
+    chown -R appuser:appgroup /app /home/appuser
 
 WORKDIR /app
 
@@ -117,15 +115,10 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:3000/health || exit 1
 
-# Create production SSH keys setup at build time  
-RUN if [ -d "/ssh_keys" ]; then \
-        echo "Build-time SSH keys found"; \
-    fi
-
 # Install runtime tools and su-exec for user switching
 RUN apk add --no-cache curl su-exec
 
-# Copy entrypoint script that fixes SSH permissions then switches to appuser
+# Copy entrypoint script that drops privileges to appuser
 COPY docker/dockerfiles/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
@@ -133,5 +126,5 @@ RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["./main"]
 
-# Use Alpine for SSH client support in production
+# Use Alpine runtime for production
 FROM runtime-alpine AS final
