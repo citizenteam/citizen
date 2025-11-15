@@ -524,13 +524,17 @@ func (s *bootstrapServer) processK3sInit(req initRequest) error {
 	namespace := strings.TrimSpace(req.Metadata["k3s_manifest_namespace"])
 	waitApply := parseBool(req.Metadata["k3s_manifest_wait"])
 	kubeconfigPath := strings.TrimSpace(req.Metadata["k3s_kubeconfig_path"])
+	waitNamespace := strings.TrimSpace(req.Metadata["k3s_wait_namespace"])
+	waitDeployments := splitCSV(req.Metadata["k3s_wait_deployments"])
 
 	s.logf("📝 Applying k3s manifest (namespace=%s wait=%v)...", namespace, waitApply)
 	if err := k3s.ApplyManifest(k3s.ManifestConfig{
-		Content:    manifestContent,
-		Namespace:  namespace,
-		Wait:       waitApply,
-		Kubeconfig: kubeconfigPath,
+		Content:         manifestContent,
+		Namespace:       namespace,
+		Wait:            waitApply,
+		Kubeconfig:      kubeconfigPath,
+		WaitNamespace:   waitNamespace,
+		WaitDeployments: waitDeployments,
 	}); err != nil {
 		return fmt.Errorf("apply k3s manifest: %w", err)
 	}
@@ -1117,6 +1121,13 @@ func (s *bootstrapServer) ensureK3sHTTPChallengeResponse(challengeURL, challenge
 
 	challengeName := fmt.Sprintf("cf-challenge-%s", sanitizeK8sName(fmt.Sprintf("%x", sha256.Sum256([]byte(host+path)))))
 	body := escapeYAML(challengeBody)
+
+	if err := k3s.WaitForCRDs([]string{
+		"middlewares.traefik.io",
+		"ingressroutes.traefik.io",
+	}, kubeconfigPath, 3*time.Minute); err != nil {
+		return fmt.Errorf("wait for Traefik CRDs: %w", err)
+	}
 
 	manifest := fmt.Sprintf(`apiVersion: traefik.io/v1alpha1
 kind: Middleware

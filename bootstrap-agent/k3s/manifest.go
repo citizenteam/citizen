@@ -1,20 +1,25 @@
 package k3s
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
 
 // ManifestConfig holds manifest application configuration
 type ManifestConfig struct {
-	Content    string // YAML content
-	Namespace  string // Optional namespace
-	Wait       bool   // Wait for resources to be ready
-	Kubeconfig string // Optional kubeconfig path
+	Content         string        // YAML content
+	Namespace       string        // Optional namespace for kubectl apply
+	Wait            bool          // Wait for resources to be ready
+	Kubeconfig      string        // Optional kubeconfig path
+	WaitNamespace   string        // Namespace to monitor for readiness (defaults to Namespace)
+	WaitDeployments []string      // Specific deployments to wait for (defaults to all)
+	WaitTimeout     time.Duration // Optional timeout override
 }
 
 // ApplyManifest applies Kubernetes manifests using kubectl
@@ -46,7 +51,7 @@ func ApplyManifest(cfg ManifestConfig) error {
 
 	// Wait for resources if requested
 	if cfg.Wait {
-		if err := waitForManifest(tmpFile.Name(), cfg.Namespace, cfg.Kubeconfig); err != nil {
+		if err := waitForManifest(cfg); err != nil {
 			return fmt.Errorf("manifest wait failed: %w", err)
 		}
 	}
@@ -208,19 +213,21 @@ func GetPodStatus(namespace, selector string) (string, error) {
 }
 
 // waitForManifest waits for resources in manifest to be ready
-func waitForManifest(manifestPath, namespace, kubeconfig string) error {
-	args := []string{"wait", "--for=condition=ready", "--timeout=300s", "-f", manifestPath}
-	if namespace != "" {
-		args = append(args, "-n", namespace)
+func waitForManifest(cfg ManifestConfig) error {
+	namespace := strings.TrimSpace(cfg.WaitNamespace)
+	if namespace == "" {
+		namespace = strings.TrimSpace(cfg.Namespace)
 	}
-
-	cmd := kubectlCommand(kubeconfig, args...)
-	if err := cmd.Run(); err != nil {
-		// Waiting might fail for some resource types, that's okay
+	if namespace == "" {
 		return nil
 	}
 
-	return nil
+	timeout := cfg.WaitTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+
+	return waitForDeployments(namespace, cfg.WaitDeployments, cfg.Kubeconfig, timeout)
 }
 
 // WaitForDeployment waits for a deployment to be ready
@@ -256,4 +263,152 @@ func containsSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func waitForDeployments(namespace string, targets []string, kubeconfig string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	targetSet := make(map[string]struct{})
+	for _, t := range targets {
+		if trimmed := strings.TrimSpace(t); trimmed != "" {
+			targetSet[trimmed] = struct{}{}
+		}
+	}
+
+	for {
+		ready, pending, err := deploymentsReady(namespace, targetSet, kubeconfig)
+		if err == nil && ready {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("wait for deployments in namespace %s: %w", namespace, err)
+			}
+			if len(pending) > 0 {
+				return fmt.Errorf("timeout waiting for deployments: %s", strings.Join(pending, ", "))
+			}
+			return fmt.Errorf("timeout waiting for deployments in namespace %s", namespace)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func deploymentsReady(namespace string, targets map[string]struct{}, kubeconfig string) (bool, []string, error) {
+	args := []string{"get", "deployments", "-n", namespace, "-o", "json"}
+	cmd := kubectlCommand(kubeconfig, args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return false, nil, fmt.Errorf("kubectl get deployments: %w", err)
+	}
+
+	var resp struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Replicas *int32 `json:"replicas"`
+			} `json:"spec"`
+			Status struct {
+				ReadyReplicas     int32 `json:"readyReplicas"`
+				UpdatedReplicas   int32 `json:"updatedReplicas"`
+				AvailableReplicas int32 `json:"availableReplicas"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+
+	if err := json.Unmarshal(output, &resp); err != nil {
+		return false, nil, fmt.Errorf("parse deployment list: %w", err)
+	}
+
+	pending := make(map[string]struct{})
+	observed := make(map[string]bool)
+	checkAll := len(targets) == 0
+
+	for _, item := range resp.Items {
+		name := strings.TrimSpace(item.Metadata.Name)
+		if name == "" {
+			continue
+		}
+		if !checkAll {
+			if _, ok := targets[name]; !ok {
+				continue
+			}
+		}
+
+		desired := int32(1)
+		if item.Spec.Replicas != nil {
+			desired = *item.Spec.Replicas
+		}
+		if desired <= 0 {
+			observed[name] = true
+			continue
+		}
+
+		if item.Status.ReadyReplicas >= desired && item.Status.UpdatedReplicas >= desired && item.Status.AvailableReplicas >= desired {
+			observed[name] = true
+			continue
+		}
+
+		observed[name] = false
+		pending[name] = struct{}{}
+	}
+
+	if !checkAll {
+		for name := range targets {
+			ready, ok := observed[name]
+			if !ok || !ready {
+				pending[name] = struct{}{}
+			}
+		}
+	} else if len(resp.Items) == 0 {
+		return true, nil, nil
+	}
+
+	if len(pending) == 0 {
+		return true, nil, nil
+	}
+
+	names := make([]string, 0, len(pending))
+	for name := range pending {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return false, names, nil
+}
+
+// WaitForCRDs blocks until the requested CRDs exist or timeout expires.
+func WaitForCRDs(crdNames []string, kubeconfig string, timeout time.Duration) error {
+	pending := make(map[string]struct{})
+	for _, name := range crdNames {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			pending[trimmed] = struct{}{}
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for name := range pending {
+			cmd := kubectlCommand(kubeconfig, "get", "crd", name)
+			if err := cmd.Run(); err == nil {
+				delete(pending, name)
+			}
+		}
+		if len(pending) == 0 {
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
+
+	names := make([]string, 0, len(pending))
+	for name := range pending {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("timed out waiting for CRDs: %s", strings.Join(names, ", "))
 }
