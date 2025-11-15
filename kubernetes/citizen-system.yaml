@@ -35,6 +35,10 @@ stringData:
   REDIS_PORT: "6379"
   REDIS_DB: "0"
   ENCRYPTION_KEY: "<REPLACE_ME>"
+  CITIZENAUTH_URL: "https://citizenauth.example.com"
+  CITIZENAUTH_JWKS_URL: "https://citizenauth.example.com/api/v1/auth/jwks.json"
+  CITIZENAUTH_API_KEY: "<REPLACE_ME>"
+  CITIZENAUTH_WEBHOOK_SECRET: "<REPLACE_ME>"
   DB_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
   DATABASE_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
   REDIS_URL: "redis://default:<REPLACE_ME>@citizen-redis:6379/0"
@@ -356,6 +360,26 @@ spec:
                 secretKeyRef:
                   name: dotenv
                   key: REDIS_PASSWORD
+            - name: CITIZENAUTH_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: CITIZENAUTH_URL
+            - name: CITIZENAUTH_JWKS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: CITIZENAUTH_JWKS_URL
+            - name: CITIZENAUTH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: CITIZENAUTH_API_KEY
+            - name: CITIZENAUTH_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: CITIZENAUTH_WEBHOOK_SECRET
             - name: REDIS_HOST
               valueFrom:
                 secretKeyRef:
