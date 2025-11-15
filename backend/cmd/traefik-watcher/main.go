@@ -19,14 +19,15 @@ import (
 
 // WatcherConfig holds watcher configuration
 type WatcherConfig struct {
-	DBConnStr           string
-	KubeconfigPath      string
-	ConfigFilePath      string
-	CheckInterval       time.Duration
-	UseKubernetes       bool // If false, uses Docker mode (for backward compatibility)
-	DefaultDomain       string
-	DefaultServiceURL   string
-	DefaultRouterUseTLS bool
+	DBConnStr          string
+	KubeconfigPath     string
+	ConfigFilePath     string
+	CheckInterval      time.Duration
+	UseKubernetes      bool // If false, uses Docker mode (for backward compatibility)
+	PlatformDomain     string
+	PlatformServiceURL string
+	EnableTLS          bool
+	HTTPChallengeFile  string
 }
 
 // Watcher monitors both database and Kubernetes state
@@ -76,18 +77,34 @@ func main() {
 // loadConfig loads configuration from environment variables
 func loadConfig() WatcherConfig {
 	checkInterval := getEnvDuration("CHECK_INTERVAL", 30*time.Second)
-	defaultDomain := os.Getenv("DEFAULT_ROUTER_DOMAIN")
-	defaultServiceURL := os.Getenv("DEFAULT_ROUTER_SERVICE_URL")
+	defaultDomain := strings.TrimSpace(getEnv("DEFAULT_ROUTER_DOMAIN", ""))
+	if defaultDomain == "" {
+		defaultDomain = strings.TrimSpace(getEnv("LOGIN_HOST", ""))
+	}
+	if defaultDomain == "" {
+		defaultDomain = strings.TrimSpace(getEnv("APP_HOST", ""))
+	}
+	if defaultDomain == "" {
+		defaultDomain = strings.TrimSpace(getEnv("MAIN_DOMAIN", ""))
+	}
+
+	platformServiceURL := strings.TrimSpace(getEnv("DEFAULT_ROUTER_SERVICE_URL", ""))
+	if platformServiceURL == "" {
+		platformServiceURL = "http://citizen-platform-api:3000"
+	}
+
+	enableTLS := getEnvBool("DEFAULT_ROUTER_TLS", defaultDomain != "" && defaultDomain != "localhost")
 
 	return WatcherConfig{
-		DBConnStr:           getEnvRequired("DATABASE_URL"),
-		KubeconfigPath:      os.Getenv("KUBECONFIG"),
-		ConfigFilePath:      getEnv("CONFIG_FILE", "/etc/traefik/dynamic_conf.yml"),
-		CheckInterval:       checkInterval,
-		UseKubernetes:       getEnv("PLATFORM_ADAPTER", "k3s") == "k3s",
-		DefaultDomain:       defaultDomain,
-		DefaultServiceURL:   defaultServiceURL,
-		DefaultRouterUseTLS: getEnvBool("DEFAULT_ROUTER_TLS", true),
+		DBConnStr:          getEnvRequired("DATABASE_URL"),
+		KubeconfigPath:     os.Getenv("KUBECONFIG"),
+		ConfigFilePath:     getEnv("CONFIG_FILE", "/etc/traefik/dynamic_conf.yml"),
+		CheckInterval:      checkInterval,
+		UseKubernetes:      getEnv("PLATFORM_ADAPTER", "k3s") == "k3s",
+		PlatformDomain:     defaultDomain,
+		PlatformServiceURL: platformServiceURL,
+		EnableTLS:          enableTLS,
+		HTTPChallengeFile:  strings.TrimSpace(os.Getenv("HTTP_CHALLENGE_FILE")),
 	}
 }
 

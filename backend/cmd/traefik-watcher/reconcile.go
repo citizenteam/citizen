@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -13,9 +15,14 @@ import (
 )
 
 const (
-	defaultPlatformRouterName  = "citizen-platform"
-	defaultPlatformServiceName = "citizen-platform-service"
+	apiServiceName      = "api-service"
+	redirectServiceName = "redirect-service"
 )
+
+type challengeMiddleware struct {
+	Name string
+	Body string
+}
 
 // AppInfo holds application routing information
 type AppInfo struct {
@@ -155,97 +162,35 @@ func (w *Watcher) generateTraefikConfig(apps []AppInfo) string {
 
 	sb.WriteString("http:\n")
 	sb.WriteString("  routers:\n")
-	routersWritten := false
-
-	// Generate routers
+	routersWritten := w.writeBaseRouters(&sb)
 	for _, app := range apps {
-		if app.Domain == "" {
-			continue
+		if w.writeAppRouters(&sb, app) {
+			routersWritten = true
 		}
-
-		routerName := fmt.Sprintf("citizen-%s", app.Name)
-		serviceName := fmt.Sprintf("citizen-%s-service", app.Name)
-
-		// HTTP router (redirect to HTTPS if SSL enabled)
-		if app.SSLEnabled {
-			sb.WriteString(fmt.Sprintf("    %s-http:\n", routerName))
-			sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", app.Domain))
-			sb.WriteString("      entryPoints:\n")
-			sb.WriteString("        - web\n")
-			sb.WriteString("      middlewares:\n")
-			sb.WriteString("        - https-redirect\n")
-			sb.WriteString("\n")
-		}
-
-		// HTTPS router
-		sb.WriteString(fmt.Sprintf("    %s:\n", routerName))
-		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", app.Domain))
-		sb.WriteString("      entryPoints:\n")
-
-		if app.SSLEnabled {
-			sb.WriteString("        - websecure\n")
-			sb.WriteString("      tls:\n")
-			sb.WriteString("        certResolver: letsencrypt\n")
-		} else {
-			sb.WriteString("        - web\n")
-		}
-
-		sb.WriteString(fmt.Sprintf("      service: %s\n", serviceName))
-		sb.WriteString("\n")
+	}
+	challengeMiddlewares, challengeWritten := w.writeHTTPChallengeRouters(&sb)
+	if challengeWritten {
 		routersWritten = true
 	}
-
-	if w.hasDefaultRoute() {
-		w.writeDefaultRouter(&sb)
-		routersWritten = true
-	}
-
 	if !routersWritten {
 		sb.WriteString("    {}\n")
 	}
 
 	sb.WriteString("  services:\n")
-	servicesWritten := false
-
-	// Generate services
+	servicesWritten := w.writeBaseServices(&sb)
 	for _, app := range apps {
-		if app.Domain == "" {
-			continue
+		if w.writeAppService(&sb, app) {
+			servicesWritten = true
 		}
-
-		serviceName := fmt.Sprintf("citizen-%s-service", app.Name)
-
-		sb.WriteString(fmt.Sprintf("    %s:\n", serviceName))
-		sb.WriteString("      loadBalancer:\n")
-		sb.WriteString("        servers:\n")
-
-		// Use Service ClusterIP if available (k8s mode)
-		if app.ServiceIP != "" {
-			sb.WriteString(fmt.Sprintf("          - url: \"http://%s:%d\"\n", app.ServiceIP, app.Port))
-		} else {
-			// Fallback to container name (docker mode)
-			sb.WriteString(fmt.Sprintf("          - url: \"http://%s:%d\"\n", app.Name, app.Port))
-		}
-
-		sb.WriteString("\n")
-		servicesWritten = true
 	}
-
-	if w.hasDefaultRoute() {
-		w.writeDefaultService(&sb)
-		servicesWritten = true
-	}
-
 	if !servicesWritten {
 		sb.WriteString("    {}\n")
 	}
 
-	// Add middlewares
 	sb.WriteString("  middlewares:\n")
-	sb.WriteString("    https-redirect:\n")
-	sb.WriteString("      redirectScheme:\n")
-	sb.WriteString("        scheme: https\n")
-	sb.WriteString("        permanent: true\n")
+	w.writeMiddlewares(&sb, challengeMiddlewares)
+
+	w.writeTLSBlock(&sb)
 
 	return sb.String()
 }
@@ -286,49 +231,390 @@ func (w *Watcher) writeConfig(config string) error {
 	return nil
 }
 
-func (w *Watcher) hasDefaultRoute() bool {
-	return strings.TrimSpace(w.cfg.DefaultDomain) != "" && strings.TrimSpace(w.cfg.DefaultServiceURL) != ""
-}
-
-func (w *Watcher) writeDefaultRouter(sb *strings.Builder) {
-	routerName := defaultPlatformRouterName
-	serviceName := defaultPlatformServiceName
-	domain := strings.TrimSpace(w.cfg.DefaultDomain)
-
+func (w *Watcher) writeBaseRouters(sb *strings.Builder) bool {
+	domain := strings.TrimSpace(w.cfg.PlatformDomain)
 	if domain == "" {
-		return
+		return false
 	}
 
-	if w.cfg.DefaultRouterUseTLS {
-		sb.WriteString(fmt.Sprintf("    %s-http:\n", routerName))
-		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", domain))
-		sb.WriteString("      entryPoints:\n")
-		sb.WriteString("        - web\n")
-		sb.WriteString("      middlewares:\n")
-		sb.WriteString("        - https-redirect\n\n")
-	}
+	safeDomain := escapeBackticks(domain)
 
-	sb.WriteString(fmt.Sprintf("    %s:\n", routerName))
-	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", domain))
-	sb.WriteString("      entryPoints:\n")
-	if w.cfg.DefaultRouterUseTLS {
-		sb.WriteString("        - websecure\n")
-		sb.WriteString("      tls:\n")
-		sb.WriteString("        certResolver: letsencrypt\n")
+	if w.cfg.EnableTLS {
+		sb.WriteString("    main-http:\n")
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", safeDomain))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      middlewares:\n        - https-redirect\n")
+		sb.WriteString("      priority: 90\n\n")
+
+		w.writePlatformSecureRoutes(sb, safeDomain)
 	} else {
-		sb.WriteString("        - web\n")
+		sb.WriteString("    sso-http:\n")
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/sso/`)\"\n", safeDomain))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      middlewares:\n        - no-cache\n        - security-headers\n")
+		sb.WriteString("      priority: 130\n\n")
+
+		sb.WriteString("    auth-api-http:\n")
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api/v1/auth`)\"\n", safeDomain))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      middlewares:\n        - no-cache\n        - security-headers\n")
+		sb.WriteString("      priority: 120\n\n")
+
+		sb.WriteString("    protected-api-http:\n")
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api`)\"\n", safeDomain))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      middlewares:\n        - auth-api\n        - no-cache\n        - security-headers\n")
+		sb.WriteString("      priority: 110\n\n")
+
+		sb.WriteString("    main-root-http:\n")
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", safeDomain))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      middlewares:\n        - auth-api\n        - no-cache\n        - security-headers\n")
+		sb.WriteString("      priority: 100\n\n")
 	}
-	sb.WriteString(fmt.Sprintf("      service: %s\n\n", serviceName))
+
+	return true
 }
 
-func (w *Watcher) writeDefaultService(sb *strings.Builder) {
-	serviceURL := strings.TrimSpace(w.cfg.DefaultServiceURL)
-	if serviceURL == "" {
-		return
+func (w *Watcher) writePlatformSecureRoutes(sb *strings.Builder, safeDomain string) {
+	sb.WriteString("    sso-https:\n")
+	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/sso/`)\"\n", safeDomain))
+	sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+	sb.WriteString("      entryPoints:\n        - websecure\n")
+	sb.WriteString("      middlewares:\n        - no-cache\n        - security-headers\n")
+	sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
+	sb.WriteString("      priority: 130\n\n")
+
+	sb.WriteString("    auth-api-https:\n")
+	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api/v1/auth`)\"\n", safeDomain))
+	sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+	sb.WriteString("      entryPoints:\n        - websecure\n")
+	sb.WriteString("      middlewares:\n        - no-cache\n        - security-headers\n")
+	sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
+	sb.WriteString("      priority: 120\n\n")
+
+	sb.WriteString("    service-api-https:\n")
+	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api/v1/service`)\"\n", safeDomain))
+	sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+	sb.WriteString("      entryPoints:\n        - websecure\n")
+	sb.WriteString("      middlewares:\n        - no-cache\n        - security-headers\n")
+	sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
+	sb.WriteString("      priority: 115\n\n")
+
+	sb.WriteString("    protected-api-https:\n")
+	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api`)\"\n", safeDomain))
+	sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+	sb.WriteString("      entryPoints:\n        - websecure\n")
+	sb.WriteString("      middlewares:\n        - auth-api\n        - no-cache\n        - security-headers\n")
+	sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
+	sb.WriteString("      priority: 110\n\n")
+
+	sb.WriteString("    main-root-https:\n")
+	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", safeDomain))
+	sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+	sb.WriteString("      entryPoints:\n        - websecure\n")
+	sb.WriteString("      middlewares:\n        - auth-api\n        - no-cache\n        - security-headers\n")
+	sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
+	sb.WriteString("      priority: 100\n\n")
+}
+
+func (w *Watcher) writeAppRouters(sb *strings.Builder, app AppInfo) bool {
+	serviceName := w.serviceName(app.Name)
+	var wrote bool
+
+	if domain := strings.TrimSpace(w.cfg.PlatformDomain); domain != "" {
+		host := fmt.Sprintf("%s.%s", slugify(app.Name), domain)
+		if w.writeDomainRouters(sb, host, fmt.Sprintf("%s-subdomain", slugify(app.Name)), serviceName, w.cfg.EnableTLS) {
+			wrote = true
+		}
 	}
 
-	sb.WriteString(fmt.Sprintf("    %s:\n", defaultPlatformServiceName))
+	if custom := strings.TrimSpace(app.Domain); custom != "" {
+		if w.writeDomainRouters(sb, custom, fmt.Sprintf("%s-custom", slugify(app.Name)), serviceName, app.SSLEnabled || w.cfg.EnableTLS) {
+			wrote = true
+		}
+	}
+
+	return wrote
+}
+
+func (w *Watcher) writeDomainRouters(sb *strings.Builder, host, prefix, serviceName string, tlsEnabled bool) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	safeHost := escapeBackticks(host)
+	prefix = slugify(prefix)
+	if prefix == "" {
+		prefix = "app"
+	}
+
+	ssoBase := fmt.Sprintf("%s-sso", prefix)
+	appBase := fmt.Sprintf("%s-router", prefix)
+	wrote := false
+
+	if tlsEnabled {
+		sb.WriteString(fmt.Sprintf("    %s-http:\n", ssoBase))
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/sso/`)\"\n", safeHost))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      middlewares:\n        - redirect-to-https\n")
+		sb.WriteString("      priority: 60\n\n")
+
+		sb.WriteString(fmt.Sprintf("    %s-http:\n", appBase))
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", safeHost))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", serviceName))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      middlewares:\n        - redirect-to-https\n")
+		sb.WriteString("      priority: 40\n\n")
+
+		sb.WriteString(fmt.Sprintf("    %s-https:\n", ssoBase))
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/sso/`)\"\n", safeHost))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+		sb.WriteString("      entryPoints:\n        - websecure\n")
+		sb.WriteString("      middlewares:\n        - no-cache\n        - security-headers\n")
+		sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
+		sb.WriteString("      priority: 120\n\n")
+
+		sb.WriteString(fmt.Sprintf("    %s-https:\n", appBase))
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", safeHost))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", serviceName))
+		sb.WriteString("      entryPoints:\n        - websecure\n")
+		sb.WriteString("      middlewares:\n        - auth-api\n        - no-cache\n        - security-headers\n")
+		sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
+		sb.WriteString("      priority: 50\n\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("    %s:\n", ssoBase))
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/sso/`)\"\n", safeHost))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      middlewares:\n        - no-cache\n        - security-headers\n")
+		sb.WriteString("      priority: 60\n\n")
+
+		sb.WriteString(fmt.Sprintf("    %s:\n", appBase))
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", safeHost))
+		sb.WriteString(fmt.Sprintf("      service: %s\n", serviceName))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      middlewares:\n        - auth-api\n        - no-cache\n        - security-headers\n")
+		sb.WriteString("      priority: 50\n\n")
+	}
+
+	return true
+}
+
+func (w *Watcher) writeAppService(sb *strings.Builder, app AppInfo) bool {
+	if strings.TrimSpace(w.cfg.PlatformDomain) == "" && strings.TrimSpace(app.Domain) == "" {
+		return false
+	}
+
+	serviceName := w.serviceName(app.Name)
+	sb.WriteString(fmt.Sprintf("    %s:\n", serviceName))
+	sb.WriteString("      loadBalancer:\n")
+	sb.WriteString("        servers:\n")
+	if app.ServiceIP != "" {
+		sb.WriteString(fmt.Sprintf("          - url: \"http://%s:%d\"\n", app.ServiceIP, app.Port))
+	} else {
+		sb.WriteString(fmt.Sprintf("          - url: \"http://%s:%d\"\n", app.Name, app.Port))
+	}
+	sb.WriteString("\n")
+	return true
+}
+
+func (w *Watcher) serviceName(appName string) string {
+	return fmt.Sprintf("citizen-%s-service", slugify(appName))
+}
+
+func (w *Watcher) writeBaseServices(sb *strings.Builder) bool {
+	serviceURL := strings.TrimSpace(w.cfg.PlatformServiceURL)
+	if serviceURL == "" {
+		serviceURL = "http://citizen-platform-api:3000"
+	}
+
+	sb.WriteString(fmt.Sprintf("    %s:\n", apiServiceName))
 	sb.WriteString("      loadBalancer:\n")
 	sb.WriteString("        servers:\n")
 	sb.WriteString(fmt.Sprintf("          - url: \"%s\"\n\n", serviceURL))
+
+	sb.WriteString(fmt.Sprintf("    %s:\n", redirectServiceName))
+	sb.WriteString("      loadBalancer:\n")
+	sb.WriteString("        servers:\n")
+	sb.WriteString("          - url: \"http://127.0.0.1:80\"\n\n")
+
+	return true
+}
+
+func (w *Watcher) writeMiddlewares(sb *strings.Builder, challengeMW []challengeMiddleware) {
+	sb.WriteString("    https-redirect:\n")
+	sb.WriteString("      redirectScheme:\n")
+	sb.WriteString("        scheme: https\n")
+	sb.WriteString("        permanent: true\n\n")
+
+	authURL := strings.TrimRight(strings.TrimSpace(w.cfg.PlatformServiceURL), "/")
+	if authURL == "" {
+		authURL = "http://citizen-platform-api:3000"
+	}
+	authURL = authURL + "/api/v1/auth/validate"
+
+	sb.WriteString("    auth-api:\n")
+	sb.WriteString("      forwardAuth:\n")
+	sb.WriteString(fmt.Sprintf("        address: \"%s\"\n", authURL))
+	sb.WriteString("        trustForwardHeader: true\n")
+	sb.WriteString("        authRequestHeaders:\n")
+	sb.WriteString("          - \"Cookie\"\n")
+	sb.WriteString("          - \"Authorization\"\n")
+	sb.WriteString("        authResponseHeaders:\n")
+	sb.WriteString("          - \"X-Auth-User-ID\"\n")
+	sb.WriteString("          - \"X-Auth-Email\"\n")
+	sb.WriteString("          - \"X-Auth-Name\"\n")
+	sb.WriteString("          - \"X-Auth-Organization-ID\"\n\n")
+
+	sb.WriteString("    no-cache:\n")
+	sb.WriteString("      headers:\n")
+	sb.WriteString("        customResponseHeaders:\n")
+	sb.WriteString("          Cache-Control: \"no-store, no-cache, must-revalidate, private\"\n")
+	sb.WriteString("          Pragma: \"no-cache\"\n")
+	sb.WriteString("          Expires: \"0\"\n\n")
+
+	sb.WriteString("    security-headers:\n")
+	sb.WriteString("      headers:\n")
+	sb.WriteString("        customResponseHeaders:\n")
+	sb.WriteString("          X-Content-Type-Options: \"nosniff\"\n")
+	sb.WriteString("          X-Frame-Options: \"DENY\"\n")
+	sb.WriteString("          X-XSS-Protection: \"1; mode=block\"\n")
+	sb.WriteString("          Referrer-Policy: \"strict-origin-when-cross-origin\"\n")
+	sb.WriteString("        contentTypeNosniff: true\n")
+	sb.WriteString("        frameDeny: true\n")
+	sb.WriteString("        browserXssFilter: true\n\n")
+
+	for _, mw := range challengeMW {
+		sb.WriteString(fmt.Sprintf("    %s:\n", mw.Name))
+		sb.WriteString("      plugin:\n")
+		sb.WriteString("        customresponse:\n")
+		sb.WriteString("          statusCode: 200\n")
+		sb.WriteString("          contentType: text/plain\n")
+		sb.WriteString(fmt.Sprintf("          body: \"%s\"\n", yamlEscape(mw.Body)))
+		sb.WriteString("          allowedMethods:\n")
+		sb.WriteString("            - GET\n")
+		sb.WriteString("            - HEAD\n\n")
+	}
+}
+
+func (w *Watcher) writeTLSBlock(sb *strings.Builder) {
+	sb.WriteString("\ntls:\n")
+	sb.WriteString("  options:\n")
+	sb.WriteString("    default:\n")
+	sb.WriteString("      minVersion: VersionTLS12\n")
+	sb.WriteString("      cipherSuites:\n")
+	sb.WriteString("        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256\n")
+	sb.WriteString("        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384\n")
+	sb.WriteString("        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305\n")
+	sb.WriteString("        - TLS_AES_128_GCM_SHA256\n")
+	sb.WriteString("        - TLS_AES_256_GCM_SHA384\n")
+	sb.WriteString("        - TLS_CHACHA20_POLY1305_SHA256\n")
+}
+
+func (w *Watcher) writeHTTPChallengeRouters(sb *strings.Builder) ([]challengeMiddleware, bool) {
+	path := strings.TrimSpace(w.cfg.HTTPChallengeFile)
+	if path == "" {
+		return nil, false
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
+		return nil, false
+	}
+
+	var entries []struct {
+		Host string `json:"host"`
+		Path string `json:"path"`
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(data, &entries); err != nil {
+		log.Printf("⚠️  Failed to parse HTTP challenge file %s: %v", path, err)
+		return nil, false
+	}
+
+	seen := make(map[string]bool)
+	var challengeMW []challengeMiddleware
+	wrote := false
+
+	for _, entry := range entries {
+		host := strings.TrimSpace(entry.Host)
+		pathValue := strings.TrimSpace(entry.Path)
+		body := entry.Body
+		if host == "" || pathValue == "" || strings.TrimSpace(body) == "" {
+			continue
+		}
+		key := host + "|" + pathValue
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		slug := slugify(host)
+		hash := md5.Sum([]byte(host + pathValue))
+		routerName := fmt.Sprintf("cf-http-challenge-%s-%x", slug, hash[:4])
+		middlewareName := routerName + "-body"
+
+		sb.WriteString(fmt.Sprintf("    %s:\n", routerName))
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && Path(`%s`)\"\n", escapeBackticks(host), escapeBackticks(pathValue)))
+		sb.WriteString("      entryPoints:\n        - web\n")
+		sb.WriteString("      service: noop@internal\n")
+		sb.WriteString("      middlewares:\n")
+		sb.WriteString(fmt.Sprintf("        - \"%s\"\n", middlewareName))
+		sb.WriteString("      priority: 2000\n\n")
+
+		challengeMW = append(challengeMW, challengeMiddleware{
+			Name: middlewareName,
+			Body: body,
+		})
+		wrote = true
+	}
+
+	return challengeMW, wrote
+}
+
+func escapeBackticks(value string) string {
+	return strings.ReplaceAll(value, "`", "\\`")
+}
+
+func yamlEscape(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	value = strings.ReplaceAll(value, "\n", `\n`)
+	value = strings.ReplaceAll(value, "\r", `\r`)
+	return value
+}
+
+func slugify(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	prevDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			prevDash = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevDash = false
+		case r == '-' || r == '_' || r == '.' || r == ' ':
+			if !prevDash {
+				b.WriteRune('-')
+				prevDash = true
+			}
+		default:
+			// skip
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "app"
+	}
+	return slug
 }
