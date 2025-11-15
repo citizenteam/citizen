@@ -9,6 +9,12 @@ metadata:
   name: traefik
   namespace: citizen-system
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: citizen-backend
+  namespace: citizen-system
+---
 # Placeholder secret values. Replace with real credentials or create the secret manually.
 apiVersion: v1
 kind: Secret
@@ -22,6 +28,8 @@ stringData:
   DB_NAME: "citizen"
   DB_USER: "citizen"
   DB_PASSWORD: "<REPLACE_ME>"
+  DB_HOST: "citizen-postgres"
+  DB_PORT: "5432"
   REDIS_PASSWORD: "<REPLACE_ME>"
   ENCRYPTION_KEY: "<REPLACE_ME>"
   DB_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
@@ -286,6 +294,7 @@ spec:
       labels:
         app: citizen-platform-api
     spec:
+      serviceAccountName: citizen-backend
       containers:
         - name: api
           image: ghcr.io/citizen/platform-api:latest
@@ -300,6 +309,16 @@ spec:
                 secretKeyRef:
                   name: dotenv
                   key: DB_URL
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_PORT
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
@@ -502,6 +521,31 @@ subjects:
   name: traefik-watcher
   namespace: citizen-system
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: citizen-backend
+rules:
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["services", "pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: citizen-backend
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: citizen-backend
+subjects:
+- kind: ServiceAccount
+  name: citizen-backend
+  namespace: citizen-system
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -536,6 +580,16 @@ spec:
                 secretKeyRef:
                   name: dotenv
                   key: DB_URL
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_PORT
             - name: DB_USER
               valueFrom:
                 secretKeyRef:
