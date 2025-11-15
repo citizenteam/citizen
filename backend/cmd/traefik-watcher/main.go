@@ -98,7 +98,7 @@ func loadConfig() WatcherConfig {
 	return WatcherConfig{
 		DBConnStr:          getEnvRequired("DATABASE_URL"),
 		KubeconfigPath:     os.Getenv("KUBECONFIG"),
-		ConfigFilePath:     getEnv("CONFIG_FILE", "/etc/traefik/dynamic_conf.yml"),
+		ConfigFilePath:     getEnv("CONFIG_FILE", "/etc/traefik/dynamic/dynamic_conf.yml"),
 		CheckInterval:      checkInterval,
 		UseKubernetes:      getEnv("PLATFORM_ADAPTER", "k3s") == "k3s",
 		PlatformDomain:     defaultDomain,

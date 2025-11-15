@@ -64,7 +64,7 @@ data:
 
     providers:
       file:
-        filename: /etc/traefik/dynamic_conf.yml
+        filename: /etc/traefik/dynamic/dynamic_conf.yml
         watch: true
         # 🎯 v3.4 file provider (pollInterval field removed)
 
@@ -239,8 +239,7 @@ spec:
               mountPath: /etc/traefik/traefik.yml
               subPath: traefik.yml
             - name: dynamic-conf
-              mountPath: /etc/traefik/dynamic_conf.yml
-              subPath: dynamic_conf.yml
+              mountPath: /etc/traefik/dynamic
             - name: letsencrypt
               mountPath: /letsencrypt
             - name: logs
@@ -635,7 +634,7 @@ spec:
             - name: CHECK_INTERVAL
               value: "30"
             - name: CONFIG_FILE
-              value: /etc/traefik/dynamic_conf.yml
+              value: /etc/traefik/dynamic/dynamic_conf.yml
             - name: DEFAULT_ROUTER_DOMAIN
               valueFrom:
                 secretKeyRef:
@@ -647,7 +646,7 @@ spec:
               value: "true"
           volumeMounts:
             - name: dynamic-conf
-              mountPath: /etc/traefik
+              mountPath: /etc/traefik/dynamic
             - name: reload-signal
               mountPath: /tmp
             - name: watcher-logs
