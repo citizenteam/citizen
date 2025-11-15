@@ -1,25 +1,27 @@
 package handlers
 
 import (
-	"os"
-	"runtime"
-	"time"
 	"backend/database"
 	"backend/utils"
+	"fmt"
+	"os"
+	"runtime"
+	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
 
 // HealthStatus represents the overall health status
 type HealthStatus struct {
-	Status      string                 `json:"status"`
-	Timestamp   string                 `json:"timestamp"`
-	Environment string                 `json:"environment"`
-	Version     string                 `json:"version"`
-	Service     string                 `json:"service"`
-	Uptime      string                 `json:"uptime"`
+	Status      string                     `json:"status"`
+	Timestamp   string                     `json:"timestamp"`
+	Environment string                     `json:"environment"`
+	Version     string                     `json:"version"`
+	Service     string                     `json:"service"`
+	Uptime      string                     `json:"uptime"`
 	Components  map[string]ComponentHealth `json:"components"`
-	Metrics     SystemMetrics          `json:"metrics"`
+	Metrics     SystemMetrics              `json:"metrics"`
 }
 
 // ComponentHealth represents health status of individual components
@@ -33,9 +35,9 @@ type ComponentHealth struct {
 
 // SystemMetrics contains system performance metrics
 type SystemMetrics struct {
-	Memory    MemoryMetrics `json:"memory"`
-	Goroutines int          `json:"goroutines"`
-	GCRuns    uint32        `json:"gc_runs"`
+	Memory     MemoryMetrics `json:"memory"`
+	Goroutines int           `json:"goroutines"`
+	GCRuns     uint32        `json:"gc_runs"`
 }
 
 // MemoryMetrics contains memory usage information
@@ -52,7 +54,7 @@ var startTime = time.Now()
 // HealthCheck returns comprehensive health status of the application
 func HealthCheck(c *fiber.Ctx) error {
 	utils.RequestDebugLog(c.Method(), c.Path(), "Health check requested")
-	
+
 	now := time.Now()
 	environment := os.Getenv("ENVIRONMENT")
 	if environment == "" {
@@ -108,7 +110,7 @@ func HealthCheck(c *fiber.Ctx) error {
 // checkDatabaseHealth performs comprehensive database health check
 func checkDatabaseHealth() ComponentHealth {
 	now := time.Now().UTC().Format(time.RFC3339)
-	
+
 	if database.DB == nil {
 		return ComponentHealth{
 			Status:    "unhealthy",
@@ -143,11 +145,11 @@ func checkDatabaseHealth() ComponentHealth {
 // checkRedisHealth performs comprehensive Redis health check
 func checkRedisHealth() ComponentHealth {
 	now := time.Now().UTC().Format(time.RFC3339)
-	
+
 	if !database.IsRedisAvailable() {
 		return ComponentHealth{
-			Status:    "degraded",
-			Message:   "Redis not available - using fallback mode",
+			Status:  "degraded",
+			Message: "Redis not available - using fallback mode",
 			Details: map[string]interface{}{
 				"fallback_mode": true,
 			},
@@ -159,9 +161,9 @@ func checkRedisHealth() ComponentHealth {
 	err := database.HealthCheck()
 	if err != nil {
 		return ComponentHealth{
-			Status:    "degraded",
-			Message:   "Redis health check failed - fallback mode active",
-			Error:     err.Error(),
+			Status:  "degraded",
+			Message: "Redis health check failed - fallback mode active",
+			Error:   err.Error(),
 			Details: map[string]interface{}{
 				"fallback_mode": true,
 			},
@@ -183,10 +185,20 @@ func checkRedisHealth() ComponentHealth {
 // checkSSHHealth performs SSH connectivity check
 func checkSSHHealth() ComponentHealth {
 	now := time.Now().UTC().Format(time.RFC3339)
-	
-	// SSH is not critical for basic API functionality
-	// This is more of an informational check
-	
+
+	runtimeAdapter := strings.ToLower(strings.TrimSpace(os.Getenv("PLATFORM_ADAPTER")))
+	if runtimeAdapter == "" {
+		runtimeAdapter = "dokku"
+	}
+
+	if runtimeAdapter != "dokku" {
+		return ComponentHealth{
+			Status:    "not_applicable",
+			Message:   fmt.Sprintf("SSH disabled (adapter=%s)", runtimeAdapter),
+			LastCheck: now,
+		}
+	}
+
 	sshHost := os.Getenv("SSH_HOST")
 	if sshHost == "" {
 		return ComponentHealth{
@@ -199,8 +211,8 @@ func checkSSHHealth() ComponentHealth {
 	// For now, just return configured status
 	// A more comprehensive check could be implemented later
 	return ComponentHealth{
-		Status:    "configured",
-		Message:   "SSH connection configured",
+		Status:  "configured",
+		Message: "SSH connection configured",
 		Details: map[string]interface{}{
 			"ssh_host": sshHost,
 		},
@@ -235,7 +247,7 @@ func bToMb(b uint64) uint64 {
 func DetailedHealthCheck(c *fiber.Ctx) error {
 	// This could be protected by admin auth in the future
 	utils.RequestDebugLog(c.Method(), c.Path(), "Detailed health check requested")
-	
+
 	detailed := fiber.Map{
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 		"service":   "citizen-backend",
@@ -257,12 +269,12 @@ func DetailedHealthCheck(c *fiber.Ctx) error {
 
 	// Add environment info
 	detailed["environment"] = fiber.Map{
-		"ENVIRONMENT":   os.Getenv("ENVIRONMENT"),
-		"LOG_LEVEL":     os.Getenv("LOG_LEVEL"),
-		"LOG_FORMAT":    os.Getenv("LOG_FORMAT"),
-		"MAIN_DOMAIN":   os.Getenv("MAIN_DOMAIN"),
-		"REDIS_HOST":    os.Getenv("REDIS_HOST"),
-		"DB_HOST":       os.Getenv("DB_HOST"),
+		"ENVIRONMENT": os.Getenv("ENVIRONMENT"),
+		"LOG_LEVEL":   os.Getenv("LOG_LEVEL"),
+		"LOG_FORMAT":  os.Getenv("LOG_FORMAT"),
+		"MAIN_DOMAIN": os.Getenv("MAIN_DOMAIN"),
+		"REDIS_HOST":  os.Getenv("REDIS_HOST"),
+		"DB_HOST":     os.Getenv("DB_HOST"),
 	}
 
 	return c.Status(fiber.StatusOK).JSON(detailed)
@@ -273,7 +285,7 @@ func ReadinessCheck(c *fiber.Ctx) error {
 	// Simple readiness check - database must be available
 	if database.DB == nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-			"ready": false,
+			"ready":  false,
 			"reason": "database not available",
 		})
 	}
@@ -282,14 +294,14 @@ func ReadinessCheck(c *fiber.Ctx) error {
 	err := database.HealthCheck()
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-			"ready": false,
+			"ready":  false,
 			"reason": "database not ready",
-			"error": err.Error(),
+			"error":  err.Error(),
 		})
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"ready": true,
+		"ready":     true,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -298,9 +310,9 @@ func ReadinessCheck(c *fiber.Ctx) error {
 func LivenessCheck(c *fiber.Ctx) error {
 	// Very basic liveness check
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"alive": true,
+		"alive":     true,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"service": "citizen-backend",
+		"service":   "citizen-backend",
 	})
 }
 
@@ -311,14 +323,14 @@ func RedisStatus(c *fiber.Ctx) error {
 			true,
 			"Redis not available - fallback mode active",
 			fiber.Map{
-				"available": false,
+				"available":     false,
 				"fallback_mode": true,
 			},
 		))
 	}
 
 	stats := database.GetRedisStats()
-	
+
 	return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
 		true,
 		"Redis status",
@@ -360,13 +372,13 @@ func ClearRedisTestData(c *fiber.Ctx) error {
 		}
 		totalDeleted += deleted
 	}
-	
+
 	return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
 		true,
 		"Test data cleanup completed",
 		fiber.Map{
 			"deleted_keys": totalDeleted,
-			"patterns": patterns,
+			"patterns":     patterns,
 		},
 	))
-} 
+}

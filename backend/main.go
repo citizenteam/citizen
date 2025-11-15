@@ -64,6 +64,10 @@ func main() {
 		utils.ErrorLog("Platform adapter initialization failed: %v", err)
 		log.Fatalf("Platform adapter initialization failed: %v", err)
 	}
+	runtimeAdapter := strings.ToLower(strings.TrimSpace(os.Getenv("PLATFORM_ADAPTER")))
+	if runtimeAdapter == "" {
+		runtimeAdapter = "dokku"
+	}
 
 	// Start database connection (check skip flag)
 	if os.Getenv("SKIP_DB_PING") != "true" {
@@ -117,17 +121,21 @@ func main() {
 		utils.WarnLog("SKIP_DB_PING=true - Database connection skipped")
 	}
 
-	// Test SSH connection (non-blocking)
-	go func() {
-		utils.StartupLog("Testing SSH connection...")
-		err := utils.SSHConnect()
-		if err != nil {
-			utils.WarnLog("SSH connection failed during startup: %v", err)
-			utils.InfoLog("SSH connection will be retried on first API call")
-		} else {
-			utils.StartupLog("SSH connection established successfully")
-		}
-	}()
+	if runtimeAdapter == "dokku" {
+		// Test SSH connection (non-blocking)
+		go func() {
+			utils.StartupLog("Testing SSH connection...")
+			err := utils.SSHConnect()
+			if err != nil {
+				utils.WarnLog("SSH connection failed during startup: %v", err)
+				utils.InfoLog("SSH connection will be retried on first API call")
+			} else {
+				utils.StartupLog("SSH connection established successfully")
+			}
+		}()
+	} else {
+		utils.StartupLog("Skipping SSH connection; runtime adapter=%s", runtimeAdapter)
+	}
 
 	// Start Fiber application
 	utils.StartupLog("Initializing web server...")
