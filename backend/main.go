@@ -66,7 +66,7 @@ func main() {
 	}
 	runtimeAdapter := strings.ToLower(strings.TrimSpace(os.Getenv("PLATFORM_ADAPTER")))
 	if runtimeAdapter == "" {
-		runtimeAdapter = "dokku"
+		runtimeAdapter = "k3s"
 	}
 
 	// Start database connection (check skip flag)
