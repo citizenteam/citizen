@@ -319,6 +319,11 @@ spec:
                 secretKeyRef:
                   name: dotenv
                   key: DB_PORT
+            - name: DB_SSL_MODE
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_SSL_MODE
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
