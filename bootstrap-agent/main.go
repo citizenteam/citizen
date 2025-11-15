@@ -1122,6 +1122,10 @@ func (s *bootstrapServer) ensureK3sHTTPChallengeResponse(challengeURL, challenge
 	challengeName := fmt.Sprintf("cf-challenge-%s", sanitizeK8sName(fmt.Sprintf("%x", sha256.Sum256([]byte(host+path)))))
 	body := escapeYAML(challengeBody)
 
+	if err := k3s.EnsureTraefikCRDs(kubeconfigPath); err != nil {
+		return fmt.Errorf("ensure Traefik CRDs: %w", err)
+	}
+
 	if err := k3s.WaitForCRDs([]string{
 		"middlewares.traefik.io",
 		"ingressroutes.traefik.io",

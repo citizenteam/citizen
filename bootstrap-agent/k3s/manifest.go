@@ -265,6 +265,28 @@ func containsSubstring(s, substr string) bool {
 	return false
 }
 
+func missingCRDs(names []string, kubeconfig string) ([]string, error) {
+	var missing []string
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+
+		cmd := kubectlCommand(kubeconfig, "get", "crd", name)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			lower := strings.ToLower(string(output))
+			if strings.Contains(lower, "not found") {
+				missing = append(missing, name)
+				continue
+			}
+			return nil, fmt.Errorf("kubectl get crd %s: %w\nOutput: %s", name, err, output)
+		}
+	}
+	return missing, nil
+}
+
 func waitForDeployments(namespace string, targets []string, kubeconfig string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(5 * time.Second)
@@ -379,36 +401,61 @@ func deploymentsReady(namespace string, targets map[string]struct{}, kubeconfig 
 	return false, names, nil
 }
 
+// EnsureTraefikCRDs applies the embedded Traefik CRDs if any are missing.
+func EnsureTraefikCRDs(kubeconfig string) error {
+	required := []string{
+		"middlewares.traefik.io",
+		"ingressroutes.traefik.io",
+		"ingressroutetcps.traefik.io",
+		"ingressrouteudps.traefik.io",
+		"middlewaretcps.traefik.io",
+		"traefikservices.traefik.io",
+		"tlsoptions.traefik.io",
+		"tlsstores.traefik.io",
+		"serverstransports.traefik.io",
+		"serverstransporttcps.traefik.io",
+	}
+
+	missing, err := missingCRDs(required, kubeconfig)
+	if err != nil {
+		return err
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(embeddedTraefikCRDs) == "" {
+		return fmt.Errorf("embedded Traefik CRDs missing; cannot install (missing: %s)", strings.Join(missing, ", "))
+	}
+
+	if err := ApplyManifest(ManifestConfig{
+		Content:    embeddedTraefikCRDs,
+		Kubeconfig: kubeconfig,
+	}); err != nil {
+		return fmt.Errorf("apply Traefik CRDs: %w", err)
+	}
+
+	return nil
+}
+
 // WaitForCRDs blocks until the requested CRDs exist or timeout expires.
 func WaitForCRDs(crdNames []string, kubeconfig string, timeout time.Duration) error {
-	pending := make(map[string]struct{})
-	for _, name := range crdNames {
-		if trimmed := strings.TrimSpace(name); trimmed != "" {
-			pending[trimmed] = struct{}{}
-		}
-	}
-	if len(pending) == 0 {
+	if len(crdNames) == 0 {
 		return nil
 	}
 
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		for name := range pending {
-			cmd := kubectlCommand(kubeconfig, "get", "crd", name)
-			if err := cmd.Run(); err == nil {
-				delete(pending, name)
-			}
+	for {
+		missing, err := missingCRDs(crdNames, kubeconfig)
+		if err != nil {
+			return err
 		}
-		if len(pending) == 0 {
+		if len(missing) == 0 {
 			return nil
+		}
+		if time.Now().After(deadline) {
+			sort.Strings(missing)
+			return fmt.Errorf("timed out waiting for CRDs: %s", strings.Join(missing, ", "))
 		}
 		time.Sleep(5 * time.Second)
 	}
-
-	names := make([]string, 0, len(pending))
-	for name := range pending {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return fmt.Errorf("timed out waiting for CRDs: %s", strings.Join(names, ", "))
 }
