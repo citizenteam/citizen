@@ -12,6 +12,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	defaultPlatformRouterName  = "citizen-platform"
+	defaultPlatformServiceName = "citizen-platform-service"
+)
+
 // AppInfo holds application routing information
 type AppInfo struct {
 	Name       string
@@ -150,6 +155,7 @@ func (w *Watcher) generateTraefikConfig(apps []AppInfo) string {
 
 	sb.WriteString("http:\n")
 	sb.WriteString("  routers:\n")
+	routersWritten := false
 
 	// Generate routers
 	for _, app := range apps {
@@ -186,9 +192,20 @@ func (w *Watcher) generateTraefikConfig(apps []AppInfo) string {
 
 		sb.WriteString(fmt.Sprintf("      service: %s\n", serviceName))
 		sb.WriteString("\n")
+		routersWritten = true
+	}
+
+	if w.hasDefaultRoute() {
+		w.writeDefaultRouter(&sb)
+		routersWritten = true
+	}
+
+	if !routersWritten {
+		sb.WriteString("    {}\n")
 	}
 
 	sb.WriteString("  services:\n")
+	servicesWritten := false
 
 	// Generate services
 	for _, app := range apps {
@@ -211,6 +228,16 @@ func (w *Watcher) generateTraefikConfig(apps []AppInfo) string {
 		}
 
 		sb.WriteString("\n")
+		servicesWritten = true
+	}
+
+	if w.hasDefaultRoute() {
+		w.writeDefaultService(&sb)
+		servicesWritten = true
+	}
+
+	if !servicesWritten {
+		sb.WriteString("    {}\n")
 	}
 
 	// Add middlewares
@@ -257,4 +284,51 @@ func (w *Watcher) writeConfig(config string) error {
 	}
 
 	return nil
+}
+
+func (w *Watcher) hasDefaultRoute() bool {
+	return strings.TrimSpace(w.cfg.DefaultDomain) != "" && strings.TrimSpace(w.cfg.DefaultServiceURL) != ""
+}
+
+func (w *Watcher) writeDefaultRouter(sb *strings.Builder) {
+	routerName := defaultPlatformRouterName
+	serviceName := defaultPlatformServiceName
+	domain := strings.TrimSpace(w.cfg.DefaultDomain)
+
+	if domain == "" {
+		return
+	}
+
+	if w.cfg.DefaultRouterUseTLS {
+		sb.WriteString(fmt.Sprintf("    %s-http:\n", routerName))
+		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", domain))
+		sb.WriteString("      entryPoints:\n")
+		sb.WriteString("        - web\n")
+		sb.WriteString("      middlewares:\n")
+		sb.WriteString("        - https-redirect\n\n")
+	}
+
+	sb.WriteString(fmt.Sprintf("    %s:\n", routerName))
+	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`)\"\n", domain))
+	sb.WriteString("      entryPoints:\n")
+	if w.cfg.DefaultRouterUseTLS {
+		sb.WriteString("        - websecure\n")
+		sb.WriteString("      tls:\n")
+		sb.WriteString("        certResolver: letsencrypt\n")
+	} else {
+		sb.WriteString("        - web\n")
+	}
+	sb.WriteString(fmt.Sprintf("      service: %s\n\n", serviceName))
+}
+
+func (w *Watcher) writeDefaultService(sb *strings.Builder) {
+	serviceURL := strings.TrimSpace(w.cfg.DefaultServiceURL)
+	if serviceURL == "" {
+		return
+	}
+
+	sb.WriteString(fmt.Sprintf("    %s:\n", defaultPlatformServiceName))
+	sb.WriteString("      loadBalancer:\n")
+	sb.WriteString("        servers:\n")
+	sb.WriteString(fmt.Sprintf("          - url: \"%s\"\n\n", serviceURL))
 }

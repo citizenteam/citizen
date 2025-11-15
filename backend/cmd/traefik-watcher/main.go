@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,11 +19,14 @@ import (
 
 // WatcherConfig holds watcher configuration
 type WatcherConfig struct {
-	DBConnStr      string
-	KubeconfigPath string
-	ConfigFilePath string
-	CheckInterval  time.Duration
-	UseKubernetes  bool // If false, uses Docker mode (for backward compatibility)
+	DBConnStr           string
+	KubeconfigPath      string
+	ConfigFilePath      string
+	CheckInterval       time.Duration
+	UseKubernetes       bool // If false, uses Docker mode (for backward compatibility)
+	DefaultDomain       string
+	DefaultServiceURL   string
+	DefaultRouterUseTLS bool
 }
 
 // Watcher monitors both database and Kubernetes state
@@ -37,7 +41,7 @@ func main() {
 	log.Println("🚀 Citizen Traefik Watcher v2 starting...")
 
 	cfg := loadConfig()
-	
+
 	watcher, err := NewWatcher(cfg)
 	if err != nil {
 		log.Fatalf("❌ Failed to initialize watcher: %v", err)
@@ -72,13 +76,18 @@ func main() {
 // loadConfig loads configuration from environment variables
 func loadConfig() WatcherConfig {
 	checkInterval := getEnvDuration("CHECK_INTERVAL", 30*time.Second)
-	
+	defaultDomain := os.Getenv("DEFAULT_ROUTER_DOMAIN")
+	defaultServiceURL := os.Getenv("DEFAULT_ROUTER_SERVICE_URL")
+
 	return WatcherConfig{
-		DBConnStr:      getEnvRequired("DATABASE_URL"),
-		KubeconfigPath: os.Getenv("KUBECONFIG"),
-		ConfigFilePath: getEnv("CONFIG_FILE", "/etc/traefik/dynamic_conf.yml"),
-		CheckInterval:  checkInterval,
-		UseKubernetes:  getEnv("PLATFORM_ADAPTER", "k3s") == "k3s",
+		DBConnStr:           getEnvRequired("DATABASE_URL"),
+		KubeconfigPath:      os.Getenv("KUBECONFIG"),
+		ConfigFilePath:      getEnv("CONFIG_FILE", "/etc/traefik/dynamic_conf.yml"),
+		CheckInterval:       checkInterval,
+		UseKubernetes:       getEnv("PLATFORM_ADAPTER", "k3s") == "k3s",
+		DefaultDomain:       defaultDomain,
+		DefaultServiceURL:   defaultServiceURL,
+		DefaultRouterUseTLS: getEnvBool("DEFAULT_ROUTER_TLS", true),
 	}
 }
 
@@ -203,3 +212,18 @@ func watcherMode(useK8s bool) string {
 	return "docker/dokku"
 }
 
+func getEnvBool(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
+}

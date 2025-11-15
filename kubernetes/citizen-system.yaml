@@ -636,6 +636,15 @@ spec:
               value: "30"
             - name: CONFIG_FILE
               value: /etc/traefik/dynamic_conf.yml
+            - name: DEFAULT_ROUTER_DOMAIN
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: APP_HOST
+            - name: DEFAULT_ROUTER_SERVICE_URL
+              value: "http://citizen-platform-api:3000"
+            - name: DEFAULT_ROUTER_TLS
+              value: "true"
           volumeMounts:
             - name: dynamic-conf
               mountPath: /etc/traefik
