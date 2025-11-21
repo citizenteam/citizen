@@ -280,7 +280,7 @@ func setupCORS(app *fiber.App, isProduction bool) {
 			}
 			corsOrigins = fmt.Sprintf("https://%s,https://*.%s,%s", mainDomain, mainDomain, citizenAuthURL)
 		} else {
-			corsOrigins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173"
+			corsOrigins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,https://ustun.tech"
 			allowedMethods = "GET,POST,PUT,DELETE,OPTIONS,PATCH,HEAD"
 			allowedHeaders = "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie,X-Forwarded-For,X-Real-IP,User-Agent,Referer"
 		}
