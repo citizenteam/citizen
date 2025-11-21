@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -262,11 +263,18 @@ func setupCORS(app *fiber.App, isProduction bool) {
 
 	if corsOrigins == "" {
 		if isProduction {
-			mainDomain := os.Getenv("MAIN_DOMAIN")
+			mainDomain := sanitizeDomain(os.Getenv("MAIN_DOMAIN"))
+			if mainDomain == "" {
+				mainDomain = autoDetectMainDomain()
+				if mainDomain != "" {
+					utils.StartupLog("Detected MAIN_DOMAIN from CitizenAuth configuration: %s", mainDomain)
+				}
+			}
 			if mainDomain == "" {
 				mainDomain = "localhost"
+				utils.WarnLog("MAIN_DOMAIN is not configured; falling back to localhost for CORS. Set MAIN_DOMAIN or CORS_ALLOWED_ORIGINS to allow dashboard access from custom domains.")
 			}
-			citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
+			citizenAuthURL := strings.TrimSpace(os.Getenv("CITIZENAUTH_URL"))
 			if citizenAuthURL == "" {
 				citizenAuthURL = "https://ustun.tech"
 			}
@@ -293,6 +301,47 @@ func setupCORS(app *fiber.App, isProduction bool) {
 		AllowHeaders:     allowedHeaders,
 		ExposeHeaders:    "Set-Cookie",
 	}))
+}
+
+func autoDetectMainDomain() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	instance, err := database.GetActiveCitizenauthInstance(ctx)
+	if err != nil {
+		if errors.Is(err, database.ErrCitizenauthInstanceNotFound) {
+			utils.WarnLog("CORS: no CitizenAuth instance found to infer MAIN_DOMAIN")
+		} else {
+			utils.WarnLog("CORS: failed to load CitizenAuth instance for MAIN_DOMAIN: %v", err)
+		}
+		return ""
+	}
+
+	if instance.Domain == nil || strings.TrimSpace(*instance.Domain) == "" {
+		utils.WarnLog("CORS: active CitizenAuth instance missing domain value")
+		return ""
+	}
+
+	domain := sanitizeDomain(*instance.Domain)
+	if domain == "" {
+		utils.WarnLog("CORS: invalid domain value received from CitizenAuth instance: %s", *instance.Domain)
+	}
+	return domain
+}
+
+func sanitizeDomain(value string) string {
+	domain := strings.TrimSpace(value)
+	if domain == "" {
+		return ""
+	}
+	if strings.HasPrefix(domain, "https://") {
+		domain = strings.TrimPrefix(domain, "https://")
+	} else if strings.HasPrefix(domain, "http://") {
+		domain = strings.TrimPrefix(domain, "http://")
+	}
+	domain = strings.TrimPrefix(domain, "//")
+	domain = strings.Trim(domain, "/")
+	return domain
 }
 
 // customErrorHandler handles errors in a structured way
