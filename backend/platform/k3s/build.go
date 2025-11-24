@@ -164,7 +164,7 @@ func (k *K3sAdapter) buildJobEnv(appName, gitURL, branch, imageRef, builderType 
 
 func buildJobScript() string {
 	return strings.TrimSpace(`
-set -euo pipefail
+set -eu
 
 echo "Starting build for ${APP_NAME}"
 echo "Source: ${GIT_URL}@${GIT_BRANCH}"
