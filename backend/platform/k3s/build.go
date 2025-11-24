@@ -26,6 +26,11 @@ func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef, builderTy
 
 	envVars := k.buildJobEnv(appName, gitURL, branch, imageRef, builderType)
 
+	image := k.builderImage
+	if normalizeBuilderType(builderType) == "dockerfile" && strings.TrimSpace(k.dockerBuilderImage) != "" {
+		image = k.dockerBuilderImage
+	}
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
@@ -51,7 +56,7 @@ func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef, builderTy
 					Containers: []corev1.Container{
 						{
 							Name:    "builder",
-							Image:   k.builderImage,
+							Image:   image,
 							Command: []string{"sh", "-c"},
 							Args: []string{
 								buildJobScript(),

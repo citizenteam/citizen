@@ -26,15 +26,16 @@ type K3sAdapter struct {
 	client *kubernetes.Clientset
 	ctx    context.Context
 
-	namespacePrefix  string
-	builderNamespace string
-	builderImage     string
-	registryURL      string
-	registryUser     string
-	registryPassword string
-	defaultAppImage  string
-	defaultAppPort   int32
-	buildTimeout     time.Duration
+	namespacePrefix    string
+	builderNamespace   string
+	builderImage       string
+	dockerBuilderImage string
+	registryURL        string
+	registryUser       string
+	registryPassword   string
+	defaultAppImage    string
+	defaultAppPort     int32
+	buildTimeout       time.Duration
 }
 
 // NewK3sAdapter creates a new k3s adapter instance
@@ -64,17 +65,18 @@ func NewK3sAdapterInCluster() (platform.Adapter, error) {
 
 func newAdapterFromClient(client *kubernetes.Clientset) platform.Adapter {
 	return &K3sAdapter{
-		client:           client,
-		ctx:              context.Background(),
-		namespacePrefix:  envOrDefault("K3S_NAMESPACE_PREFIX", "citizen-app"),
-		builderNamespace: envOrDefault("K3S_BUILDER_NAMESPACE", "citizen-builder"),
-		builderImage:     envOrDefault("K3S_BUILDER_IMAGE", "ghcr.io/railwayapp/nixpacks:latest"),
-		registryURL:      envOrDefault("K3S_REGISTRY_URL", "ghcr.io/citizen"),
-		registryUser:     os.Getenv("K3S_REGISTRY_USER"),
-		registryPassword: os.Getenv("K3S_REGISTRY_PASSWORD"),
-		defaultAppImage:  envOrDefault("K3S_DEFAULT_APP_IMAGE", "docker.io/library/nginx:stable-alpine"),
-		defaultAppPort:   envToInt32("K3S_DEFAULT_APP_PORT", 3000),
-		buildTimeout:     durationOrDefault("K3S_BUILD_TIMEOUT", 20*time.Minute),
+		client:             client,
+		ctx:                context.Background(),
+		namespacePrefix:    envOrDefault("K3S_NAMESPACE_PREFIX", "citizen-app"),
+		builderNamespace:   envOrDefault("K3S_BUILDER_NAMESPACE", "citizen-builder"),
+		builderImage:       envOrDefault("K3S_BUILDER_IMAGE", "ghcr.io/railwayapp/nixpacks:latest"),
+		dockerBuilderImage: envOrDefault("K3S_DOCKER_BUILDER_IMAGE", "docker:25.0.5-git"),
+		registryURL:        envOrDefault("K3S_REGISTRY_URL", "ghcr.io/citizen"),
+		registryUser:       os.Getenv("K3S_REGISTRY_USER"),
+		registryPassword:   os.Getenv("K3S_REGISTRY_PASSWORD"),
+		defaultAppImage:    envOrDefault("K3S_DEFAULT_APP_IMAGE", "docker.io/library/nginx:stable-alpine"),
+		defaultAppPort:     envToInt32("K3S_DEFAULT_APP_PORT", 3000),
+		buildTimeout:       durationOrDefault("K3S_BUILD_TIMEOUT", 20*time.Minute),
 	}
 }
 
