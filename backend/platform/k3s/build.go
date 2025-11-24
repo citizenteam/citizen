@@ -24,6 +24,8 @@ func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef, builderTy
 	backoffLimit := pointer.Int32(1)
 	ttl := pointer.Int32(3600)
 	socketType := corev1.HostPathSocket
+	containerdSocketPath := "/run/k3s/containerd/containerd.sock"
+	containerdSocketFallback := "/run/containerd/containerd.sock"
 
 	envVars := k.buildJobEnv(appName, gitURL, branch, imageRef, builderType)
 
@@ -72,6 +74,14 @@ func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef, builderTy
 									Name:      "workspace",
 									MountPath: "/workspace",
 								},
+								{
+									Name:      "containerd-sock",
+									MountPath: containerdSocketPath,
+								},
+								{
+									Name:      "containerd-sock-fallback",
+									MountPath: containerdSocketFallback,
+								},
 							},
 						},
 					},
@@ -89,6 +99,24 @@ func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef, builderTy
 							Name: "workspace",
 							VolumeSource: corev1.VolumeSource{
 								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: "containerd-sock",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: containerdSocketPath,
+									Type: &socketType,
+								},
+							},
+						},
+						{
+							Name: "containerd-sock-fallback",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: containerdSocketFallback,
+									Type: &socketType,
+								},
 							},
 						},
 					},
@@ -209,7 +237,25 @@ docker tag "${IMAGE_NAME}" "${IMAGE_REF}"
 if [ "${push_image}" = "true" ]; then
   docker push "${IMAGE_REF}"
 else
-  echo "PUSH_IMAGE=false - skipping docker push"
+  echo "PUSH_IMAGE=false - skipping docker push, attempting to import into containerd"
+  # Try to ensure ctr exists
+  if ! command -v ctr >/dev/null 2>&1; then
+    if command -v apk >/dev/null 2>&1; then
+      apk add --no-cache containerd-ctr >/dev/null || true
+    fi
+  fi
+
+  ctr_sock="/run/k3s/containerd/containerd.sock"
+  if [ ! -S "${ctr_sock}" ] && [ -S "/run/containerd/containerd.sock" ]; then
+    ctr_sock="/run/containerd/containerd.sock"
+  fi
+
+  if command -v ctr >/dev/null 2>&1 && [ -S "${ctr_sock}" ]; then
+    echo "Importing image into containerd namespace k8s.io via ${ctr_sock}"
+    docker save "${IMAGE_REF}" | ctr --address "${ctr_sock}" -n k8s.io images import -
+  else
+    echo "Warning: containerd socket not found or ctr unavailable; image will only exist in Docker daemon"
+  fi
 fi
 
 echo "Build completed for ${APP_NAME}"

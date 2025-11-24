@@ -1684,12 +1684,23 @@ func GetLiveBuildLogs(c *fiber.Ctx) error {
 		buildLogs = "No build logs available yet..."
 	}
 
+	appLogs, appErr := platform.GetAdapter().GetAppLogs(appName, 200, false)
+	if appErr != nil {
+		fmt.Printf("[LOGS] Failed to get app logs: %v\n", appErr)
+	}
+
+	combinedLogs := buildLogs
+	if strings.TrimSpace(appLogs) != "" {
+		combinedLogs += "\n\n----- Application logs -----\n" + appLogs
+	}
+
 	return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
 		true,
 		"Build logs retrieved successfully",
 		fiber.Map{
-			"logs":           buildLogs,
+			"logs":           combinedLogs,
 			"has_build_logs": buildLogs != "",
+			"has_app_logs":   strings.TrimSpace(appLogs) != "",
 			"timestamp":      time.Now().Unix(),
 		},
 	))
