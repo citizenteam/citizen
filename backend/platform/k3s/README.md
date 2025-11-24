@@ -119,7 +119,7 @@ Spec:
 - `K3S_DEFAULT_APP_PORT`: Default service port (default `3000`)
 - `K3S_DEFAULT_APP_IMAGE`: Placeholder image used when bootstrapping deployments
 - `K3S_BUILDER_NAMESPACE`: Namespace where build jobs run (default `citizen-builder`)
-- `K3S_BUILDER_IMAGE`: Builder container image (default `nixpacks/nixpacks:latest`)
+- `K3S_BUILDER_IMAGE`: Builder container image (default `ghcr.io/railwayapp/nixpacks:latest`)
 - `K3S_REGISTRY_URL`: Base registry URL for pushing images
 - `K3S_REGISTRY_USER` / `K3S_REGISTRY_PASSWORD`: Registry credentials injected into build jobs
 - `K3S_BUILD_TIMEOUT`: Override build job timeout (e.g. `25m`)

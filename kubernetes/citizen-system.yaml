@@ -380,6 +380,8 @@ spec:
                 secretKeyRef:
                   name: dotenv
                   key: CITIZENAUTH_WEBHOOK_SECRET
+            - name: K3S_BUILDER_IMAGE
+              value: "ghcr.io/railwayapp/nixpacks:latest"
             - name: REDIS_HOST
               valueFrom:
                 secretKeyRef:

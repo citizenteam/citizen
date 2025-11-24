@@ -13,7 +13,7 @@ import (
 )
 
 // submitBuildJob creates a Kubernetes Job that clones the repo, builds and pushes the image
-func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef string) (string, error) {
+func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef, builderType string) (string, error) {
 	namespace := k.builderNamespaceOrDefault()
 	if namespace == "" {
 		return "", fmt.Errorf("builder namespace is not configured")
@@ -24,7 +24,7 @@ func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef string) (s
 	ttl := pointer.Int32(3600)
 	socketType := corev1.HostPathSocket
 
-	envVars := k.buildJobEnv(appName, gitURL, branch, imageRef)
+	envVars := k.buildJobEnv(appName, gitURL, branch, imageRef, builderType)
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -140,7 +140,7 @@ func (k *K3sAdapter) waitForJobCompletion(namespace, jobName string, timeout tim
 	}
 }
 
-func (k *K3sAdapter) buildJobEnv(appName, gitURL, branch, imageRef string) []corev1.EnvVar {
+func (k *K3sAdapter) buildJobEnv(appName, gitURL, branch, imageRef, builderType string) []corev1.EnvVar {
 	envVars := []corev1.EnvVar{
 		{Name: "APP_NAME", Value: appName},
 		{Name: "IMAGE_NAME", Value: sanitizeImageComponent(appName)},
@@ -148,6 +148,8 @@ func (k *K3sAdapter) buildJobEnv(appName, gitURL, branch, imageRef string) []cor
 		{Name: "GIT_BRANCH", Value: branch},
 		{Name: "IMAGE_REF", Value: imageRef},
 		{Name: "REGISTRY_URL", Value: k.registryURLOrDefault()},
+		{Name: "BUILDER_TYPE", Value: normalizeBuilderType(builderType)},
+		{Name: "DOCKERFILE_PATH", Value: "Dockerfile"},
 	}
 
 	if k.registryUser != "" {
@@ -177,8 +179,18 @@ if [ -n "${REGISTRY_USERNAME:-}" ]; then
   echo "${REGISTRY_PASSWORD:-}" | docker login -u "${REGISTRY_USERNAME}" --password-stdin "${REGISTRY_URL}"
 fi
 
-echo "Building image ${IMAGE_REF}"
-nixpacks build . --name "${IMAGE_NAME}"
+builder="${BUILDER_TYPE:-nixpacks}"
+echo "Using builder: ${builder}"
+
+if [ "${builder}" = "dockerfile" ]; then
+  dockerfile_path="${DOCKERFILE_PATH:-Dockerfile}"
+  echo "Building via Dockerfile (${dockerfile_path})"
+  docker build -t "${IMAGE_NAME}" -f "${dockerfile_path}" .
+else
+  echo "Building via Nixpacks"
+  nixpacks build . --name "${IMAGE_NAME}"
+fi
+
 docker tag "${IMAGE_NAME}" "${IMAGE_REF}"
 docker push "${IMAGE_REF}"
 

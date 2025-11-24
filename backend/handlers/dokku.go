@@ -426,6 +426,17 @@ func DeployApp(c *fiber.Ctx) error {
 		))
 	}
 
+	builderType := strings.TrimSpace(deployData.Builder)
+	if builderType != "" {
+		if _, err := platform.GetAdapter().SetBuilder(appName, builderType); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false,
+				"Invalid builder type: "+err.Error(),
+				nil,
+			))
+		}
+	}
+
 	// 🔑 Get user ID for GitHub authentication
 	var userID *int
 	if userIDValue := c.Locals("user_id"); userIDValue != nil {
@@ -614,6 +625,9 @@ func DeployApp(c *fiber.Ctx) error {
 		Status:     "deployed",
 		LastDeploy: time.Now(),
 	}
+	if builderType != "" {
+		newDeployment.Builder = builderType
+	}
 
 	// Add port info if detected
 	if portInfo != nil {
@@ -643,6 +657,9 @@ func DeployApp(c *fiber.Ctx) error {
 		"branch":                 deployData.GitBranch,
 		"output":                 output,
 		"port_detection_message": portSetMessage,
+	}
+	if builderType != "" {
+		responseData["builder"] = builderType
 	}
 
 	if portInfo != nil {

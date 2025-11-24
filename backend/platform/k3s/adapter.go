@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	buildpackAnnotationKey = "citizen.dev/buildpacks"
-	builderAnnotationKey   = "citizen.dev/builder"
+	buildpackAnnotationKey   = "citizen.dev/buildpacks"
+	builderAnnotationKey     = "citizen.dev/builder"
+	defaultBuilderType       = "nixpacks"
+	builderDockerfilePathKey = "citizen.dev/dockerfile-path"
 )
 
 // K3sAdapter implements platform adapter interface using Kubernetes/k3s
@@ -66,7 +68,7 @@ func newAdapterFromClient(client *kubernetes.Clientset) platform.Adapter {
 		ctx:              context.Background(),
 		namespacePrefix:  envOrDefault("K3S_NAMESPACE_PREFIX", "citizen-app"),
 		builderNamespace: envOrDefault("K3S_BUILDER_NAMESPACE", "citizen-builder"),
-		builderImage:     envOrDefault("K3S_BUILDER_IMAGE", "nixpacks/nixpacks:latest"),
+		builderImage:     envOrDefault("K3S_BUILDER_IMAGE", "ghcr.io/railwayapp/nixpacks:latest"),
 		registryURL:      envOrDefault("K3S_REGISTRY_URL", "ghcr.io/citizen"),
 		registryUser:     os.Getenv("K3S_REGISTRY_USER"),
 		registryPassword: os.Getenv("K3S_REGISTRY_PASSWORD"),
@@ -208,8 +210,9 @@ func (k *K3sAdapter) DeployFromGit(appName, gitURL, branch string, userID *int) 
 		return "", err
 	}
 
+	builderType := k.resolveBuilderType(appName)
 	imageRef := k.imageReference(appName, branch)
-	jobName, err := k.submitBuildJob(appName, gitURL, branch, imageRef)
+	jobName, err := k.submitBuildJob(appName, gitURL, branch, imageRef, builderType)
 	if err != nil {
 		return "", err
 	}
@@ -398,6 +401,7 @@ func (k *K3sAdapter) GetBuildpackReport(appName string) (map[string]interface{},
 
 // SetBuilder sets builder type (nixpacks, dockerfile, etc.)
 func (k *K3sAdapter) SetBuilder(appName, builderType string) (string, error) {
+	builderType = strings.ToLower(strings.TrimSpace(builderType))
 	if builderType == "" {
 		return "", fmt.Errorf("builder type is required")
 	}
@@ -415,14 +419,15 @@ func (k *K3sAdapter) GetBuilderReport(appName string) (map[string]interface{}, e
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return map[string]interface{}{
-				"builder": "nixpacks",
-				"source":  "default",
+				"builder":          defaultBuilderType,
+				"resolved_builder": defaultBuilderType,
+				"source":           "default",
 			}, nil
 		}
 		return nil, fmt.Errorf("failed to fetch deployment: %w", err)
 	}
 
-	builder := "nixpacks"
+	builder := defaultBuilderType
 	source := "default"
 	if deploy.Annotations != nil {
 		if val, ok := deploy.Annotations[builderAnnotationKey]; ok && val != "" {
@@ -432,9 +437,35 @@ func (k *K3sAdapter) GetBuilderReport(appName string) (map[string]interface{}, e
 	}
 
 	return map[string]interface{}{
-		"builder": builder,
-		"source":  source,
+		"builder":          builder,
+		"resolved_builder": normalizeBuilderType(builder),
+		"source":           source,
 	}, nil
+}
+
+func (k *K3sAdapter) resolveBuilderType(appName string) string {
+	deploy, err := k.client.AppsV1().Deployments(k.appNamespace(appName)).Get(k.ctx, appName, metav1.GetOptions{})
+	if err != nil {
+		return defaultBuilderType
+	}
+	if deploy.Annotations != nil {
+		if val, ok := deploy.Annotations[builderAnnotationKey]; ok && strings.TrimSpace(val) != "" {
+			return normalizeBuilderType(val)
+		}
+	}
+	return defaultBuilderType
+}
+
+func normalizeBuilderType(value string) string {
+	v := strings.ToLower(strings.TrimSpace(value))
+	switch v {
+	case "dockerfile":
+		return "dockerfile"
+	case "nixpacks", "pack", "buildpack":
+		return "nixpacks"
+	default:
+		return defaultBuilderType
+	}
 }
 
 // =============================================================================
