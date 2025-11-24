@@ -146,6 +146,16 @@ func (k *K3sAdapter) SetPort(appName string, port string) (string, error) {
 		return "", err
 	}
 
+	if err := k.ensureDeploymentExists(ns, appName, k.defaultAppPort, map[string]string{
+		"PORT": fmt.Sprintf("%d", k.defaultAppPort),
+	}); err != nil {
+		return "", err
+	}
+
+	if err := k.updateDeploymentPort(ns, appName, port); err != nil {
+		return "", err
+	}
+
 	return k.updateServicePort(ns, appName, port)
 }
 
