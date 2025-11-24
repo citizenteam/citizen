@@ -384,6 +384,8 @@ spec:
               value: "ghcr.io/railwayapp/nixpacks:latest"
             - name: K3S_DOCKER_BUILDER_IMAGE
               value: "docker:25.0.5-git"
+            - name: K3S_PUSH_IMAGES
+              value: "false"
             - name: REDIS_HOST
               valueFrom:
                 secretKeyRef:

@@ -2,6 +2,7 @@ package k3s
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -146,15 +147,21 @@ func (k *K3sAdapter) waitForJobCompletion(namespace, jobName string, timeout tim
 }
 
 func (k *K3sAdapter) buildJobEnv(appName, gitURL, branch, imageRef, builderType string) []corev1.EnvVar {
+	registryURL := ""
+	if k.pushImages {
+		registryURL = k.registryURLOrDefault()
+	}
+
 	envVars := []corev1.EnvVar{
 		{Name: "APP_NAME", Value: appName},
 		{Name: "IMAGE_NAME", Value: sanitizeImageComponent(appName)},
 		{Name: "GIT_URL", Value: gitURL},
 		{Name: "GIT_BRANCH", Value: branch},
 		{Name: "IMAGE_REF", Value: imageRef},
-		{Name: "REGISTRY_URL", Value: k.registryURLOrDefault()},
+		{Name: "REGISTRY_URL", Value: registryURL},
 		{Name: "BUILDER_TYPE", Value: normalizeBuilderType(builderType)},
 		{Name: "DOCKERFILE_PATH", Value: "Dockerfile"},
+		{Name: "PUSH_IMAGE", Value: strconv.FormatBool(k.pushImages)},
 	}
 
 	if k.registryUser != "" {
@@ -179,7 +186,9 @@ mkdir -p /workspace/src
 git clone --depth=1 --branch "${GIT_BRANCH}" "${GIT_URL}" /workspace/src
 cd /workspace/src
 
-if [ -n "${REGISTRY_USERNAME:-}" ]; then
+push_image="${PUSH_IMAGE:-true}"
+
+if [ "${push_image}" = "true" ] && [ -n "${REGISTRY_USERNAME:-}" ]; then
   echo "Logging into ${REGISTRY_URL}"
   echo "${REGISTRY_PASSWORD:-}" | docker login -u "${REGISTRY_USERNAME}" --password-stdin "${REGISTRY_URL}"
 fi
@@ -197,7 +206,11 @@ else
 fi
 
 docker tag "${IMAGE_NAME}" "${IMAGE_REF}"
-docker push "${IMAGE_REF}"
+if [ "${push_image}" = "true" ]; then
+  docker push "${IMAGE_REF}"
+else
+  echo "PUSH_IMAGE=false - skipping docker push"
+fi
 
 echo "Build completed for ${APP_NAME}"
 `) + "\n"

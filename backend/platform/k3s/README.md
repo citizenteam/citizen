@@ -121,6 +121,7 @@ Spec:
 - `K3S_BUILDER_NAMESPACE`: Namespace where build jobs run (default `citizen-builder`)
 - `K3S_BUILDER_IMAGE`: Builder container image (default `ghcr.io/railwayapp/nixpacks:latest`)
 - `K3S_DOCKER_BUILDER_IMAGE`: Image used when `builder=dockerfile` (default `docker:25.0.5-git`)
+- `K3S_PUSH_IMAGES`: When set to `false`, skip pushing to registry and keep images local (default `true`)
 - `K3S_REGISTRY_URL`: Base registry URL for pushing images
 - `K3S_REGISTRY_USER` / `K3S_REGISTRY_PASSWORD`: Registry credentials injected into build jobs
 - `K3S_BUILD_TIMEOUT`: Override build job timeout (e.g. `25m`)

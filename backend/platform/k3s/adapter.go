@@ -33,6 +33,7 @@ type K3sAdapter struct {
 	registryURL        string
 	registryUser       string
 	registryPassword   string
+	pushImages         bool
 	defaultAppImage    string
 	defaultAppPort     int32
 	buildTimeout       time.Duration
@@ -74,6 +75,7 @@ func newAdapterFromClient(client *kubernetes.Clientset) platform.Adapter {
 		registryURL:        envOrDefault("K3S_REGISTRY_URL", "ghcr.io/citizen"),
 		registryUser:       os.Getenv("K3S_REGISTRY_USER"),
 		registryPassword:   os.Getenv("K3S_REGISTRY_PASSWORD"),
+		pushImages:         boolEnvOrDefault("K3S_PUSH_IMAGES", true),
 		defaultAppImage:    envOrDefault("K3S_DEFAULT_APP_IMAGE", "docker.io/library/nginx:stable-alpine"),
 		defaultAppPort:     envToInt32("K3S_DEFAULT_APP_PORT", 3000),
 		buildTimeout:       durationOrDefault("K3S_BUILD_TIMEOUT", 20*time.Minute),
@@ -533,6 +535,18 @@ func durationOrDefault(key string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+func boolEnvOrDefault(key string, fallback bool) bool {
+	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+		switch strings.ToLower(val) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	return fallback
+}
+
 func (k *K3sAdapter) registryURLOrDefault() string {
 	if strings.TrimSpace(k.registryURL) != "" {
 		return strings.TrimRight(k.registryURL, "/")
@@ -548,7 +562,10 @@ func (k *K3sAdapter) builderNamespaceOrDefault() string {
 }
 
 func (k *K3sAdapter) imageReference(appName, branch string) string {
-	repository := fmt.Sprintf("%s/%s", k.registryURLOrDefault(), sanitizeImageComponent(appName))
+	repository := sanitizeImageComponent(appName)
+	if k.pushImages {
+		repository = fmt.Sprintf("%s/%s", k.registryURLOrDefault(), repository)
+	}
 	tag := sanitizeImageTag(fmt.Sprintf("%s-%d", branch, time.Now().Unix()))
 	return fmt.Sprintf("%s:%s", repository, tag)
 }
