@@ -1,6 +1,7 @@
 package k3s
 
 import (
+	"backend/platform"
 	"fmt"
 	"sort"
 	"strconv"
@@ -253,6 +254,9 @@ func (k *K3sAdapter) rolloutRestart(namespace, appName string) (string, error) {
 func (k *K3sAdapter) getDeploymentInfo(namespace, appName string) (map[string]interface{}, error) {
 	deploy, err := k.client.AppsV1().Deployments(namespace).Get(k.ctx, appName, metav1.GetOptions{})
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: %s", platform.ErrAppNotFound, appName)
+		}
 		return nil, fmt.Errorf("deployment get failed: %w", err)
 	}
 
@@ -269,6 +273,9 @@ func (k *K3sAdapter) getDeploymentInfo(namespace, appName string) (map[string]in
 	if len(deploy.Spec.Template.Spec.Containers) > 0 {
 		info["image"] = deploy.Spec.Template.Spec.Containers[0].Image
 	}
+
+	info["running"] = deploy.Status.ReadyReplicas > 0
+	info["deployed"] = deploy.Status.UpdatedReplicas > 0 || deploy.Status.AvailableReplicas > 0
 
 	return info, nil
 }
@@ -302,6 +309,9 @@ func (k *K3sAdapter) getDeploymentEvents(namespace, appName string) (string, err
 func (k *K3sAdapter) updateDeploymentEnv(namespace, appName string, envVars map[string]string) (string, error) {
 	deploy, err := k.client.AppsV1().Deployments(namespace).Get(k.ctx, appName, metav1.GetOptions{})
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("%w: %s", platform.ErrAppNotFound, appName)
+		}
 		return "", fmt.Errorf("deployment get failed: %w", err)
 	}
 
@@ -341,6 +351,9 @@ func (k *K3sAdapter) updateDeploymentEnv(namespace, appName string, envVars map[
 func (k *K3sAdapter) deleteDeploymentEnv(namespace, appName, key string) (string, error) {
 	deploy, err := k.client.AppsV1().Deployments(namespace).Get(k.ctx, appName, metav1.GetOptions{})
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("%w: %s", platform.ErrAppNotFound, appName)
+		}
 		return "", fmt.Errorf("deployment get failed: %w", err)
 	}
 
@@ -371,6 +384,9 @@ func (k *K3sAdapter) deleteDeploymentEnv(namespace, appName, key string) (string
 func (k *K3sAdapter) getDeploymentEnv(namespace, appName string) (map[string]string, error) {
 	deploy, err := k.client.AppsV1().Deployments(namespace).Get(k.ctx, appName, metav1.GetOptions{})
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: %s", platform.ErrAppNotFound, appName)
+		}
 		return nil, fmt.Errorf("deployment get failed: %w", err)
 	}
 

@@ -114,6 +114,12 @@ func (k *K3sAdapter) CreateApp(appName string) (string, error) {
 		return "", err
 	}
 
+	if err := k.ensureDeploymentExists(ns, appName, k.defaultAppPort, map[string]string{
+		"PORT": fmt.Sprintf("%d", k.defaultAppPort),
+	}); err != nil {
+		return "", err
+	}
+
 	return fmt.Sprintf("App namespace initialized: %s", ns), nil
 }
 

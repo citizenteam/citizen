@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"errors"
 	"sync"
 )
 
@@ -58,6 +59,9 @@ type Adapter interface {
 var (
 	adapterMu sync.RWMutex
 	adapter   Adapter = newDokkuAdapter()
+
+	// ErrAppNotFound indicates that the requested application does not exist on the runtime.
+	ErrAppNotFound = errors.New("app not found")
 )
 
 // GetAdapter returns the currently configured platform adapter.

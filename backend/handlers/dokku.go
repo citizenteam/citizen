@@ -10,11 +10,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
 )
 
 // ListApps lists all Citizen apps
@@ -116,6 +118,19 @@ func CreateApp(c *fiber.Ctx) error {
 		if updateErr := api.Deployments.UpdateDeploymentDomain(context.Background(), appName, domainResp.Domain); updateErr != nil {
 			fmt.Printf("[WARN] Failed to persist deployment domain for %s: %v\n", appName, updateErr)
 		}
+	}
+
+	// Seed deployment metadata so the UI has context before the first deploy
+	placeholderDeployment := &models.AppDeployment{
+		AppName: appName,
+		Status:  "pending",
+		Port:    5000,
+	}
+	if domainResp != nil {
+		placeholderDeployment.Domain = domainResp.Domain
+	}
+	if err := database.SaveAppDeployment(placeholderDeployment); err != nil {
+		fmt.Printf("[WARN] Failed to seed deployment metadata for %s: %v\n", appName, err)
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(utils.NewCitizenResponse(
@@ -744,19 +759,139 @@ func SetEnv(c *fiber.Ctx) error {
 // GetAppInfo gets the information of an app
 func GetAppInfo(c *fiber.Ctx) error {
 	appName := c.Params("app_name")
-	info, err := platform.GetAdapter().GetAppInfo(appName)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+	if appName == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,
-			fmt.Sprintf("Failed to get app information: %v", err),
+			"App name is required",
 			nil,
 		))
+	}
+
+	ctx := context.Background()
+
+	var deployment *models.AppDeployment
+	dep, depErr := api.Deployments.GetDeploymentByAppName(ctx, appName)
+	if depErr != nil {
+		if !errors.Is(depErr, pgx.ErrNoRows) {
+			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+				false,
+				fmt.Sprintf("Failed to load deployment metadata: %v", depErr),
+				nil,
+			))
+		}
+	} else {
+		deployment = dep
+	}
+
+	runtimeInfo, runtimeErr := platform.GetAdapter().GetAppInfo(appName)
+	if runtimeErr != nil && !errors.Is(runtimeErr, platform.ErrAppNotFound) {
+		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+			false,
+			fmt.Sprintf("Failed to get runtime state: %v", runtimeErr),
+			nil,
+		))
+	}
+	if errors.Is(runtimeErr, platform.ErrAppNotFound) {
+		runtimeInfo = nil
+	}
+
+	customDomains, _ := api.Settings.GetCustomDomains(ctx, appName)
+	domainSet := make(map[string]struct{})
+	var domains []string
+	addDomain := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, exists := domainSet[value]; exists {
+			return
+		}
+		domainSet[value] = struct{}{}
+		domains = append(domains, value)
+	}
+	if deployment != nil {
+		addDomain(deployment.Domain)
+	}
+	for _, domain := range customDomains {
+		addDomain(domain)
+	}
+
+	port := 5000
+	if deployment != nil && deployment.Port > 0 {
+		port = deployment.Port
+	}
+
+	response := fiber.Map{
+		"app_name":       appName,
+		"custom_domains": customDomains,
+		"port":           port,
+		"ports":          fiber.Map{"http": fmt.Sprintf("%d", port)},
+		"running":        false,
+		"deployed":       false,
+		"status":         "pending",
+	}
+
+	if deployment != nil {
+		if deployment.Status != "" {
+			response["status"] = deployment.Status
+		}
+		if deployment.GitURL != "" {
+			response["git_url"] = deployment.GitURL
+		}
+		if deployment.GitBranch != "" {
+			response["git_branch"] = deployment.GitBranch
+		}
+		if deployment.GitCommit != "" {
+			response["git_commit"] = deployment.GitCommit
+		}
+		if deployment.Builder != "" {
+			response["builder"] = deployment.Builder
+		}
+		if deployment.Buildpack != "" {
+			response["buildpack"] = deployment.Buildpack
+		}
+		if deployment.PortSource != "" {
+			response["port_source"] = deployment.PortSource
+		}
+		if !deployment.LastDeploy.IsZero() {
+			response["last_deploy"] = deployment.LastDeploy
+		}
+	}
+
+	if runtimeInfo != nil {
+		response["runtime"] = runtimeInfo
+		if runtimeDomains := stringSliceFromInterface(runtimeInfo["domains"]); len(runtimeDomains) > 0 {
+			for _, domain := range runtimeDomains {
+				addDomain(domain)
+			}
+		}
+		if portsVal, ok := runtimeInfo["ports"]; ok {
+			response["ports"] = portsVal
+		}
+		if running, ok := runtimeInfo["running"].(bool); ok {
+			response["running"] = running
+		} else if hasPositiveValue(runtimeInfo["ready_replicas"]) || hasPositiveValue(runtimeInfo["available_replicas"]) {
+			response["running"] = true
+		}
+		if deployed, ok := runtimeInfo["deployed"].(bool); ok {
+			response["deployed"] = deployed
+		} else if hasPositiveValue(runtimeInfo["updated_replicas"]) {
+			response["deployed"] = true
+		}
+	} else if response["status"] == "deployed" {
+		response["deployed"] = true
+	}
+
+	response["domains"] = domains
+
+	if publicSetting, err := api.Settings.GetAppPublicSetting(ctx, appName); err == nil && publicSetting != nil {
+		response["is_public"] = publicSetting.IsPublic
 	}
 
 	return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
 		true,
 		"App information retrieved successfully",
-		info,
+		response,
 	))
 }
 
@@ -1387,6 +1522,13 @@ func GetEnv(c *fiber.Ctx) error {
 	// Get environment variables
 	envVars, err := platform.GetAdapter().GetEnv(appName)
 	if err != nil {
+		if errors.Is(err, platform.ErrAppNotFound) {
+			return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
+				true,
+				"App has no deployment yet; environment variables are not set",
+				fiber.Map{},
+			))
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
 			"An error occurred while getting environment variables: "+err.Error(),
@@ -1462,6 +1604,49 @@ func GetAppActivities(c *fiber.Ctx) error {
 			"total":      len(formattedActivities),
 		},
 	))
+}
+
+func stringSliceFromInterface(value interface{}) []string {
+	switch v := value.(type) {
+	case []string:
+		return v
+	case []interface{}:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
+				result = append(result, str)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func hasPositiveValue(value interface{}) bool {
+	switch n := value.(type) {
+	case int:
+		return n > 0
+	case int32:
+		return n > 0
+	case int64:
+		return n > 0
+	case uint:
+		return n > 0
+	case uint32:
+		return n > 0
+	case uint64:
+		return n > 0
+	case float32:
+		return n > 0
+	case float64:
+		return n > 0
+	case json.Number:
+		if f, err := n.Float64(); err == nil {
+			return f > 0
+		}
+	}
+	return false
 }
 
 // GetLiveBuildLogs gets only build/deploy output (simplified)

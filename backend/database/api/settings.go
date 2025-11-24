@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"backend/models"
+	"github.com/jackc/pgx/v5"
 )
 
 // SettingsAPI provides settings-related database operations
@@ -46,6 +48,9 @@ func (s *SettingsAPI) GetAppPublicSetting(ctx context.Context, appName string) (
 		&setting.CreatedAt, &setting.UpdatedAt,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &models.AppPublicSetting{AppName: appName, IsPublic: false}, nil
+		}
 		return nil, fmt.Errorf("failed to get app public setting: %w", err)
 	}
 
@@ -302,4 +307,4 @@ func (s *SettingsAPI) GetAllActiveCustomDomains(ctx context.Context) ([]models.A
 	}
 
 	return domains, nil
-} 
+}
