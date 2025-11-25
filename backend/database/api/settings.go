@@ -18,12 +18,12 @@ func (s *SettingsAPI) CreateAppPublicSetting(ctx context.Context, setting *model
 	}
 
 	query := `
-		INSERT INTO app_public_settings (app_name, is_public, created_at, updated_at)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO app_public_settings (app_name, is_public, custom_domain, ssl_enabled, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id`
 
 	now := GetCurrentTimestamp()
-	err := QueryRow(ctx, query, setting.AppName, setting.IsPublic, now, now).Scan(&setting.ID)
+	err := QueryRow(ctx, query, setting.AppName, setting.IsPublic, setting.CustomDomain, setting.SSLEnabled, now, now).Scan(&setting.ID)
 	if err != nil {
 		return fmt.Errorf("failed to create app public setting: %w", err)
 	}
@@ -38,13 +38,13 @@ func (s *SettingsAPI) GetAppPublicSetting(ctx context.Context, appName string) (
 	}
 
 	query := `
-		SELECT id, app_name, is_public, created_at, updated_at
+		SELECT id, app_name, is_public, COALESCE(custom_domain, '') as custom_domain, COALESCE(ssl_enabled, false) as ssl_enabled, created_at, updated_at
 		FROM app_public_settings 
 		WHERE app_name = $1`
 
 	setting := &models.AppPublicSetting{}
 	err := QueryRow(ctx, query, appName).Scan(
-		&setting.ID, &setting.AppName, &setting.IsPublic,
+		&setting.ID, &setting.AppName, &setting.IsPublic, &setting.CustomDomain, &setting.SSLEnabled,
 		&setting.CreatedAt, &setting.UpdatedAt,
 	)
 	if err != nil {
@@ -97,11 +97,43 @@ func (s *SettingsAPI) UpsertAppPublicSetting(ctx context.Context, appName string
 		}
 	} else {
 		// Create new
-		query := `INSERT INTO app_public_settings (app_name, is_public, created_at, updated_at) VALUES ($1, $2, $3, $4)`
+		query := `INSERT INTO app_public_settings (app_name, is_public, custom_domain, ssl_enabled, created_at, updated_at) VALUES ($1, $2, '', false, $3, $4)`
 		_, err := Exec(ctx, query, appName, isPublic, now, now)
 		if err != nil {
 			return fmt.Errorf("failed to create app public setting: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// UpsertPublicCustomDomain sets or updates the primary custom domain for an app
+func (s *SettingsAPI) UpsertPublicCustomDomain(ctx context.Context, appName, domain string, sslEnabled bool) error {
+	if err := ValidateArgs(appName, domain, sslEnabled); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	// Check if setting exists
+	var exists bool
+	checkQuery := `SELECT EXISTS(SELECT 1 FROM app_public_settings WHERE app_name = $1)`
+	if err := QueryRow(ctx, checkQuery, appName).Scan(&exists); err != nil {
+		return fmt.Errorf("failed to check existing public setting: %w", err)
+	}
+
+	now := GetCurrentTimestamp()
+	if exists {
+		query := `UPDATE app_public_settings SET custom_domain = $2, ssl_enabled = $3, updated_at = $4 WHERE app_name = $1`
+		if _, err := Exec(ctx, query, appName, domain, sslEnabled, now); err != nil {
+			return fmt.Errorf("failed to update public custom domain: %w", err)
+		}
+		return nil
+	}
+
+	query := `
+		INSERT INTO app_public_settings (app_name, is_public, custom_domain, ssl_enabled, created_at, updated_at)
+		VALUES ($1, false, $2, $3, $4, $4)`
+	if _, err := Exec(ctx, query, appName, domain, sslEnabled, now); err != nil {
+		return fmt.Errorf("failed to create public custom domain: %w", err)
 	}
 
 	return nil

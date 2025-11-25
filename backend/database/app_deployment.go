@@ -12,13 +12,19 @@ import (
 // SaveAppDeployment saves or updates app deployment information using the new API
 func SaveAppDeployment(deployment *models.AppDeployment) error {
 	ctx := context.Background()
-	
+
 	// Use the new API for upsert operation
 	err := api.Deployments.UpsertDeployment(ctx, deployment)
 	if err != nil {
 		return fmt.Errorf("failed to save app deployment: %w", err)
 	}
-	
+
+	if deployment.Domain != "" {
+		if err := api.Settings.UpsertPublicCustomDomain(ctx, deployment.AppName, deployment.Domain, false); err != nil {
+			log.Printf("[DB] ⚠️ Failed to sync public domain for %s: %v", deployment.AppName, err)
+		}
+	}
+
 	log.Printf("[DB] ✅ App deployment saved: %s", deployment.AppName)
 	return nil
 }
@@ -42,7 +48,7 @@ func DeleteAppDeployment(appName string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	log.Printf("[DB] ✅ App deployment deleted: %s", appName)
 	return nil
 }
@@ -54,7 +60,7 @@ func DeleteAllAppData(appName string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	log.Printf("[DB] ✅ All app data deleted: %s", appName)
 	return nil
 }
@@ -66,7 +72,7 @@ func UpdateAppDeploymentStatus(appName, status string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	log.Printf("[DB] ✅ App deployment status updated: %s -> %s", appName, status)
 	return nil
-} 
+}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -26,13 +27,14 @@ type challengeMiddleware struct {
 
 // AppInfo holds application routing information
 type AppInfo struct {
-	Name       string
-	Namespace  string
-	Domain     string
-	Port       int
-	SSLEnabled bool
-	Status     string
-	ServiceIP  string
+	Name          string
+	Namespace     string
+	Domain        string   // primary domain (app_public_settings.custom_domain)
+	CustomDomains []string // all active custom domains
+	Port          int
+	SSLEnabled    bool
+	Status        string
+	ServiceIP     string
 }
 
 // reconcile is the main reconciliation loop
@@ -88,10 +90,13 @@ func (w *Watcher) fetchAppsFromDB() ([]AppInfo, error) {
 			COALESCE(d.port, 3000) as port,
 			d.status,
 			COALESCE(s.custom_domain, '') as custom_domain,
-			COALESCE(s.ssl_enabled, false) as ssl_enabled
+			COALESCE(s.ssl_enabled, false) as ssl_enabled,
+			COALESCE(array_agg(cd.domain) FILTER (WHERE cd.domain IS NOT NULL AND cd.is_active = true), '{}') as custom_domains
 		FROM app_deployments d
 		LEFT JOIN app_public_settings s ON d.app_name = s.app_name
+		LEFT JOIN app_custom_domains cd ON cd.app_name = d.app_name
 		WHERE d.status = 'deployed'
+		GROUP BY d.app_name, d.port, d.status, s.custom_domain, s.ssl_enabled
 		ORDER BY d.app_name
 	`
 
@@ -104,10 +109,13 @@ func (w *Watcher) fetchAppsFromDB() ([]AppInfo, error) {
 	var apps []AppInfo
 	for rows.Next() {
 		var app AppInfo
-		if err := rows.Scan(&app.Name, &app.Port, &app.Status, &app.Domain, &app.SSLEnabled); err != nil {
+		var customDomains []string
+		if err := rows.Scan(&app.Name, &app.Port, &app.Status, &app.Domain, &app.SSLEnabled, pq.Array(&customDomains)); err != nil {
 			log.Printf("⚠️  Failed to scan row: %v", err)
 			continue
 		}
+
+		app.CustomDomains = dedupeDomains(append([]string{app.Domain}, customDomains...))
 
 		// Set namespace for k8s mode
 		if w.k8sClient != nil {
@@ -326,17 +334,34 @@ func (w *Watcher) writePlatformSecureRoutes(sb *strings.Builder, safeDomain stri
 func (w *Watcher) writeAppRouters(sb *strings.Builder, app AppInfo) bool {
 	serviceName := w.serviceName(app.Name)
 	var wrote bool
+	seen := map[string]bool{}
 
 	if domain := strings.TrimSpace(w.cfg.PlatformDomain); domain != "" {
 		host := fmt.Sprintf("%s.%s", slugify(app.Name), domain)
 		if w.writeDomainRouters(sb, host, fmt.Sprintf("%s-subdomain", slugify(app.Name)), serviceName, w.cfg.EnableTLS) {
 			wrote = true
 		}
+		seen[host] = true
 	}
 
+	// Primary custom domain first (kept for backward compatibility)
 	if custom := strings.TrimSpace(app.Domain); custom != "" {
-		if w.writeDomainRouters(sb, custom, fmt.Sprintf("%s-custom", slugify(app.Name)), serviceName, app.SSLEnabled || w.cfg.EnableTLS) {
+		if !seen[custom] && w.writeDomainRouters(sb, custom, fmt.Sprintf("%s-custom", slugify(app.Name)), serviceName, app.SSLEnabled || w.cfg.EnableTLS) {
 			wrote = true
+			seen[custom] = true
+		}
+	}
+
+	// Additional custom domains
+	for idx, host := range app.CustomDomains {
+		host = strings.TrimSpace(host)
+		if host == "" || seen[host] {
+			continue
+		}
+		prefix := fmt.Sprintf("%s-custom-%d", slugify(app.Name), idx+1)
+		if w.writeDomainRouters(sb, host, prefix, serviceName, app.SSLEnabled || w.cfg.EnableTLS) {
+			wrote = true
+			seen[host] = true
 		}
 	}
 
@@ -407,7 +432,7 @@ func (w *Watcher) writeDomainRouters(sb *strings.Builder, host, prefix, serviceN
 }
 
 func (w *Watcher) writeAppService(sb *strings.Builder, app AppInfo) bool {
-	if strings.TrimSpace(w.cfg.PlatformDomain) == "" && strings.TrimSpace(app.Domain) == "" {
+	if strings.TrimSpace(w.cfg.PlatformDomain) == "" && strings.TrimSpace(app.Domain) == "" && len(app.CustomDomains) == 0 {
 		return false
 	}
 
@@ -501,6 +526,23 @@ func (w *Watcher) writeMiddlewares(sb *strings.Builder, challengeMW []challengeM
 		sb.WriteString("            - GET\n")
 		sb.WriteString("            - HEAD\n\n")
 	}
+}
+
+func dedupeDomains(domains []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(domains))
+	for _, d := range domains {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		if _, ok := seen[d]; ok {
+			continue
+		}
+		seen[d] = struct{}{}
+		out = append(out, d)
+	}
+	return out
 }
 
 func (w *Watcher) writeTLSBlock(sb *strings.Builder) {

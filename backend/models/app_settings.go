@@ -16,11 +16,13 @@ type AppCustomDomain struct {
 
 // AppPublicSetting represents public app setting
 type AppPublicSetting struct {
-	ID        int       `json:"id"`
-	AppName   string    `json:"app_name"`
-	IsPublic  bool      `json:"is_public"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           int       `json:"id"`
+	AppName      string    `json:"app_name"`
+	IsPublic     bool      `json:"is_public"`
+	CustomDomain string    `json:"custom_domain,omitempty"`
+	SSLEnabled   bool      `json:"ssl_enabled"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // SetCustomDomainRequest represents request for setting custom domain
@@ -33,4 +35,4 @@ type SetCustomDomainRequest struct {
 type SetPublicAppRequest struct {
 	AppName  string `json:"app_name"`
 	IsPublic bool   `json:"is_public"`
-} 
+}

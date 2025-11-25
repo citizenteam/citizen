@@ -122,19 +122,24 @@ func (d *DeploymentAPI) UpsertDeployment(ctx context.Context, deployment *models
 
 	// Check if deployment exists
 	var existingID int
+	var existingDomain string
 	var deletedAt *time.Time
-	checkQuery := `SELECT id, deleted_at FROM app_deployments WHERE app_name = $1`
-	err := QueryRow(ctx, checkQuery, deployment.AppName).Scan(&existingID, &deletedAt)
-	
+	checkQuery := `SELECT id, domain, deleted_at FROM app_deployments WHERE app_name = $1`
+	err := QueryRow(ctx, checkQuery, deployment.AppName).Scan(&existingID, &existingDomain, &deletedAt)
+
 	if err != nil && err != pgx.ErrNoRows {
 		return fmt.Errorf("failed to check existing deployment: %w", err)
 	}
-	
+
 	if err == pgx.ErrNoRows {
 		// Create new deployment
 		return d.CreateDeployment(ctx, deployment)
 	} else {
 		// Update existing deployment (restore if soft deleted)
+		if deployment.Domain == "" {
+			deployment.Domain = existingDomain
+		}
+
 		query := `
 			UPDATE app_deployments 
 			SET domain = $2, port = $3, builder = $4, buildpack = $5, git_url = $6, git_branch = $7, 
@@ -151,7 +156,7 @@ func (d *DeploymentAPI) UpsertDeployment(ctx context.Context, deployment *models
 		if err != nil {
 			return fmt.Errorf("failed to update deployment: %w", err)
 		}
-		
+
 		deployment.ID = uint(existingID)
 		return nil
 	}
@@ -334,7 +339,7 @@ func (d *DeploymentAPI) DeleteAllAppData(ctx context.Context, appName string) er
 	// Use transaction to ensure all deletions succeed or fail together
 	return Transaction(ctx, func(tx pgx.Tx) error {
 		now := GetCurrentTimestamp()
-		
+
 		// 1. Soft delete app_deployments
 		_, err := tx.Exec(ctx, `UPDATE app_deployments SET deleted_at = $2 WHERE app_name = $1 AND deleted_at IS NULL`, appName, now)
 		if err != nil {
@@ -431,4 +436,4 @@ func (d *DeploymentAPI) CountDeploymentsByStatus(ctx context.Context, status str
 	}
 
 	return count, nil
-} 
+}

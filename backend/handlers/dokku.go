@@ -118,6 +118,9 @@ func CreateApp(c *fiber.Ctx) error {
 		if updateErr := api.Deployments.UpdateDeploymentDomain(context.Background(), appName, domainResp.Domain); updateErr != nil {
 			fmt.Printf("[WARN] Failed to persist deployment domain for %s: %v\n", appName, updateErr)
 		}
+		if err := api.Settings.UpsertPublicCustomDomain(context.Background(), appName, domainResp.Domain, false); err != nil {
+			fmt.Printf("[WARN] Failed to persist public domain for %s: %v\n", appName, err)
+		}
 	}
 
 	// Seed deployment metadata so the UI has context before the first deploy
@@ -888,11 +891,12 @@ func GetAppInfo(c *fiber.Ctx) error {
 		response["deployed"] = true
 	}
 
-	response["domains"] = domains
-
 	if publicSetting, err := api.Settings.GetAppPublicSetting(ctx, appName); err == nil && publicSetting != nil {
+		addDomain(publicSetting.CustomDomain)
 		response["is_public"] = publicSetting.IsPublic
 	}
+
+	response["domains"] = domains
 
 	return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
 		true,

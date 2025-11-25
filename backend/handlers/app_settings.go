@@ -124,7 +124,9 @@ func SetCustomDomain(c *fiber.Ctx) error {
 	}
 
 	// First check if the domain already exists in the database
-	existingDbDomains, err := api.Settings.GetCustomDomains(context.Background(), appName)
+	ctx := context.Background()
+
+	existingDbDomains, err := api.Settings.GetCustomDomains(ctx, appName)
 	if err == nil {
 		for _, existingDomain := range existingDbDomains {
 			if existingDomain == body.Domain {
@@ -162,10 +164,14 @@ func SetCustomDomain(c *fiber.Ctx) error {
 	}
 
 	// STEP 1.1: Also update the domain field in app_deployments table (for traefik watcher)
-	updateErr := api.Deployments.UpdateDeploymentDomain(context.Background(), appName, body.Domain)
+	updateErr := api.Deployments.UpdateDeploymentDomain(ctx, appName, body.Domain)
 	if updateErr != nil {
 		fmt.Printf("[WARN] app_deployments domain update failed for %s - %s: %v\n", appName, body.Domain, updateErr)
 		// This error is not critical, just log and continue
+	}
+
+	if err := api.Settings.UpsertPublicCustomDomain(ctx, appName, body.Domain, false); err != nil {
+		fmt.Printf("[WARN] Failed to persist primary custom domain for %s: %v\n", appName, err)
 	}
 
 	// STEP 2: Add domain to Citizen
@@ -295,8 +301,10 @@ func RemoveCustomDomain(c *fiber.Ctx) error {
 		))
 	}
 
+	ctx := context.Background()
+
 	// STEP 2: Remove domain from database
-	err = api.Settings.DeleteCustomDomain(context.Background(), appName, data.Domain)
+	err = api.Settings.DeleteCustomDomain(ctx, appName, data.Domain)
 	if err != nil {
 		// If deletion from database fails, add back to Citizen (rollback)
 		if _, addBackErr := platform.GetAdapter().AddDomain(appName, data.Domain); addBackErr != nil {
@@ -311,10 +319,25 @@ func RemoveCustomDomain(c *fiber.Ctx) error {
 	}
 
 	// STEP 2.1: Also clear the domain field in app_deployments table (for traefik watcher)
-	updateErr := api.Deployments.UpdateDeploymentDomain(context.Background(), appName, "")
+	updateErr := api.Deployments.UpdateDeploymentDomain(ctx, appName, "")
 	if updateErr != nil {
 		fmt.Printf("[WARN] app_deployments domain clear failed for %s: %v\n", appName, updateErr)
 		// This error is not critical, just log and continue
+	}
+
+	// STEP 2.2: Update primary domain in app_public_settings to first remaining (or clear)
+	remainingDomains, listErr := api.Settings.GetCustomDomains(ctx, appName)
+	if listErr != nil {
+		fmt.Printf("[WARN] Failed to reload remaining domains for %s: %v\n", appName, listErr)
+	}
+
+	nextPrimary := ""
+	if len(remainingDomains) > 0 {
+		nextPrimary = remainingDomains[0]
+	}
+
+	if err := api.Settings.UpsertPublicCustomDomain(ctx, appName, nextPrimary, false); err != nil {
+		fmt.Printf("[WARN] Failed to update primary custom domain for %s: %v\n", appName, err)
 	}
 
 	// STEP 3: Send Traefik signal (optional, continues even if error)
