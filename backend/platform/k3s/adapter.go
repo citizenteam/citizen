@@ -176,9 +176,12 @@ func (k *K3sAdapter) RemoveDomain(appName, domain string) (string, error) {
 
 // DetectPortFromGitRepo detects port from git repo
 func (k *K3sAdapter) DetectPortFromGitRepo(gitURL, gitBranch string, userID *int) (*platform.ConfigPort, error) {
-	// Port detection logic is shared via utils package
-	// This will be called by handlers before deployment
-	// Returns default port if detection fails
+	builder := k.resolveBuilderTypeFromAnnotation()
+	if builder == "dockerfile" {
+		// For Dockerfile builds, default to EXPOSE 80 if we can't parse the file yet.
+		return &platform.ConfigPort{Port: 80, Source: "dockerfile-default"}, nil
+	}
+	// Default fallback
 	return &platform.ConfigPort{Port: 3000, Source: "default"}, nil
 }
 
@@ -467,6 +470,11 @@ func (k *K3sAdapter) resolveBuilderType(appName string) string {
 			return normalizeBuilderType(val)
 		}
 	}
+	return defaultBuilderType
+}
+
+func (k *K3sAdapter) resolveBuilderTypeFromAnnotation() string {
+	// Used before we know the app name/namespace context (port detection happens early)
 	return defaultBuilderType
 }
 
