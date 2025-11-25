@@ -489,7 +489,7 @@ func DeployApp(c *fiber.Ctx) error {
 	}
 
 	// If Dockerfile builder and no explicit port yet, default to 80
-	if portInfo == nil && builderLower == "dockerfile" && (currentPort == 0 || currentPort == k3sDefaultAppPort) {
+	if portInfo == nil && builderLower == "dockerfile" && (currentPort == 0 || currentPort == 3000) {
 		portInfo = &platform.ConfigPort{Port: 80, Source: "dockerfile-default"}
 	}
 
