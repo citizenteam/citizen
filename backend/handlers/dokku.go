@@ -630,12 +630,6 @@ func DeployApp(c *fiber.Ctx) error {
 		newDeployment.PortSource = portInfo.Source
 	}
 
-	// Save the full deploy output for build logs
-	if output != "" {
-		// Store the full deploy output in deployment_logs field (TEXT field)
-		newDeployment.DeploymentLogs = output
-	}
-
 	// Save to database
 	if dbErr := database.SaveAppDeployment(newDeployment); dbErr != nil {
 		fmt.Printf("[DB] ⚠️ Failed to save deployment info: %v\n", dbErr)
