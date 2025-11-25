@@ -477,6 +477,7 @@ func DeployApp(c *fiber.Ctx) error {
 	// Get current port from database
 	var currentPort int
 	var currentPortSource string
+	builderLower := strings.ToLower(builderType)
 
 	deployment, err := api.Deployments.GetDeploymentByAppName(context.Background(), appName)
 	if err == nil && deployment.Status == "deployed" {
@@ -487,74 +488,68 @@ func DeployApp(c *fiber.Ctx) error {
 		fmt.Printf("[PORT DETECTION] 📊 No current port in database, will set if detected\n")
 	}
 
-	// Try to detect port from config files (WITH GITHUB TOKEN)
-	if configPort, err := platform.GetAdapter().DetectPortFromGitRepo(deployData.GitURL, deployData.GitBranch, userID); err == nil {
-		portInfo = configPort
-		fmt.Printf("[PORT DETECTION] ✅ Port detected: %d from %s\n", configPort.Port, configPort.Source)
+	// If Dockerfile builder and no explicit port yet, default to 80
+	if portInfo == nil && builderLower == "dockerfile" && (currentPort == 0 || currentPort == k3sDefaultAppPort) {
+		portInfo = &platform.ConfigPort{Port: 80, Source: "dockerfile-default"}
+	}
 
-		// Check if port changed
-		if currentPort != 0 && currentPort == configPort.Port {
-			portSetMessage = fmt.Sprintf("✅ Port %d unchanged from %s (skipping re-config)", configPort.Port, configPort.Source)
-			fmt.Printf("[PORT DETECTION] ↻ Port %d unchanged, skipping re-configuration\n", configPort.Port)
+	// Try to detect port from config files (WITH GITHUB TOKEN)
+	if portInfo == nil {
+		if configPort, err := platform.GetAdapter().DetectPortFromGitRepo(deployData.GitURL, deployData.GitBranch, userID); err == nil {
+			portInfo = configPort
+			fmt.Printf("[PORT DETECTION] ✅ Port detected: %d from %s\n", configPort.Port, configPort.Source)
 		} else {
-			fmt.Printf("[PORT DETECTION] 🔄 Port changed from %d to %d, updating configuration\n", currentPort, configPort.Port)
+			fmt.Printf("[PORT DETECTION] ⚠️ Config file detection failed: %v\n", err)
+		}
+	}
+
+	// Try to detect port from config files (WITH GITHUB TOKEN)
+	if portInfo == nil {
+		if configPort, err := platform.GetAdapter().DetectPortFromGitRepo(deployData.GitURL, deployData.GitBranch, userID); err == nil {
+			portInfo = configPort
+			fmt.Printf("[PORT DETECTION] ✅ Port detected: %d from %s\n", configPort.Port, configPort.Source)
+		} else {
+			fmt.Printf("[PORT DETECTION] ⚠️ Config file detection failed: %v\n", err)
+		}
+	}
+
+	// Try to extract port from package.json as fallback (WITH GITHUB TOKEN)
+	if portInfo == nil {
+		if pkgPort, pkgErr := platform.GetAdapter().ExtractPortFromPackageJson(deployData.GitURL, deployData.GitBranch, userID); pkgErr == nil {
+			portInfo = pkgPort
+			fmt.Printf("[PORT DETECTION] ✅ Port detected from package.json: %d from %s\n", pkgPort.Port, pkgPort.Source)
+		} else {
+			portSetMessage = "ℹ️ No port configuration found in config files, using existing/default port mapping"
+			fmt.Printf("[PORT DETECTION] ℹ️ No port found in any config file, using existing/default\n")
+		}
+	}
+
+	if portInfo != nil {
+		// Check if port changed
+		if currentPort != 0 && currentPort == portInfo.Port {
+			portSetMessage = fmt.Sprintf("✅ Port %d unchanged from %s (skipping re-config)", portInfo.Port, portInfo.Source)
+			fmt.Printf("[PORT DETECTION] ↻ Port %d unchanged, skipping re-configuration\n", portInfo.Port)
+		} else {
+			fmt.Printf("[PORT DETECTION] 🔄 Port changed from %d to %d, updating configuration\n", currentPort, portInfo.Port)
 
 			// 1. Set PORT environment variable so app runs on detected port
 			portEnv := map[string]string{
-				"PORT": fmt.Sprintf("%d", configPort.Port),
+				"PORT": fmt.Sprintf("%d", portInfo.Port),
 			}
 			if _, envErr := platform.GetAdapter().SetEnv(appName, portEnv); envErr != nil {
 				fmt.Printf("[PORT DETECTION] ⚠️ Failed to set PORT environment variable: %v\n", envErr)
 			} else {
-				fmt.Printf("[PORT DETECTION] ✅ PORT environment variable set to %d\n", configPort.Port)
+				fmt.Printf("[PORT DETECTION] ✅ PORT environment variable set to %d\n", portInfo.Port)
 			}
 
 			// 2. Set port mapping so nginx routes to correct port
-			if _, portErr := platform.GetAdapter().SetPort(appName, fmt.Sprintf("%d", configPort.Port)); portErr == nil {
-				portSetMessage = fmt.Sprintf("✅ Port %d auto-configured from %s (both env & mapping)", configPort.Port, configPort.Source)
-				fmt.Printf("[PORT DETECTION] ✅ Port %d successfully set in Citizen (mapping)\n", configPort.Port)
+			if _, portErr := platform.GetAdapter().SetPort(appName, fmt.Sprintf("%d", portInfo.Port)); portErr == nil {
+				portSetMessage = fmt.Sprintf("✅ Port %d auto-configured from %s (both env & mapping)", portInfo.Port, portInfo.Source)
+				fmt.Printf("[PORT DETECTION] ✅ Port %d successfully set in Citizen (mapping)\n", portInfo.Port)
 			} else {
-				portSetMessage = fmt.Sprintf("⚠️ Port %d detected from %s, env set but mapping failed: %v", configPort.Port, configPort.Source, portErr)
-				fmt.Printf("[PORT DETECTION] ❌ Failed to set port %d mapping in Citizen: %v\n", configPort.Port, portErr)
+				portSetMessage = fmt.Sprintf("⚠️ Port %d detected from %s, env set but mapping failed: %v", portInfo.Port, portInfo.Source, portErr)
+				fmt.Printf("[PORT DETECTION] ❌ Failed to set port %d mapping in Citizen: %v\n", portInfo.Port, portErr)
 			}
-		}
-	} else {
-		fmt.Printf("[PORT DETECTION] ⚠️ Config file detection failed: %v\n", err)
-
-		// Try to extract port from package.json as fallback (WITH GITHUB TOKEN)
-		if pkgPort, pkgErr := platform.GetAdapter().ExtractPortFromPackageJson(deployData.GitURL, deployData.GitBranch, userID); pkgErr == nil {
-			portInfo = pkgPort
-			fmt.Printf("[PORT DETECTION] ✅ Port detected from package.json: %d from %s\n", pkgPort.Port, pkgPort.Source)
-
-			// Check if port changed
-			if currentPort != 0 && currentPort == pkgPort.Port {
-				portSetMessage = fmt.Sprintf("✅ Port %d unchanged from %s (skipping re-config)", pkgPort.Port, pkgPort.Source)
-				fmt.Printf("[PORT DETECTION] ↻ Port %d unchanged, skipping re-configuration\n", pkgPort.Port)
-			} else {
-				fmt.Printf("[PORT DETECTION] 🔄 Port changed from %d to %d, updating configuration\n", currentPort, pkgPort.Port)
-
-				// 1. Set PORT environment variable so app runs on detected port
-				portEnv := map[string]string{
-					"PORT": fmt.Sprintf("%d", pkgPort.Port),
-				}
-				if _, envErr := platform.GetAdapter().SetEnv(appName, portEnv); envErr != nil {
-					fmt.Printf("[PORT DETECTION] ⚠️ Failed to set PORT environment variable: %v\n", envErr)
-				} else {
-					fmt.Printf("[PORT DETECTION] ✅ PORT environment variable set to %d\n", pkgPort.Port)
-				}
-
-				// 2. Set port mapping so nginx routes to correct port
-				if _, portErr := platform.GetAdapter().SetPort(appName, fmt.Sprintf("%d", pkgPort.Port)); portErr == nil {
-					portSetMessage = fmt.Sprintf("✅ Port %d auto-configured from %s (both env & mapping)", pkgPort.Port, pkgPort.Source)
-					fmt.Printf("[PORT DETECTION] ✅ Port %d successfully set in Citizen (mapping)\n", pkgPort.Port)
-				} else {
-					portSetMessage = fmt.Sprintf("⚠️ Port %d detected from %s, env set but mapping failed: %v", pkgPort.Port, pkgPort.Source, portErr)
-					fmt.Printf("[PORT DETECTION] ❌ Failed to set port %d mapping in Citizen: %v\n", pkgPort.Port, portErr)
-				}
-			}
-		} else {
-			portSetMessage = "ℹ️ No port configuration found in config files, using existing/default port mapping"
-			fmt.Printf("[PORT DETECTION] ℹ️ No port found in any config file, using existing/default\n")
 		}
 	}
 
