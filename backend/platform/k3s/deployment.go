@@ -486,56 +486,63 @@ func (k *K3sAdapter) updateDeploymentPort(namespace, appName, portStr string) er
 	}
 	port32 := int32(port)
 
-	deploy, err := k.client.AppsV1().Deployments(namespace).Get(k.ctx, appName, metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		deploy, err := k.client.AppsV1().Deployments(namespace).Get(k.ctx, appName, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("deployment get failed: %w", err)
 		}
-		return fmt.Errorf("deployment get failed: %w", err)
-	}
 
-	if len(deploy.Spec.Template.Spec.Containers) == 0 {
-		return fmt.Errorf("no containers found in deployment")
-	}
-
-	container := &deploy.Spec.Template.Spec.Containers[0]
-	// Update first container port
-	if len(container.Ports) > 0 {
-		container.Ports[0].ContainerPort = port32
-	} else {
-		container.Ports = []corev1.ContainerPort{{
-			ContainerPort: port32,
-			Name:          "http",
-			Protocol:      corev1.ProtocolTCP,
-		}}
-	}
-
-	// Update probes
-	if container.LivenessProbe != nil && container.LivenessProbe.HTTPGet != nil {
-		container.LivenessProbe.HTTPGet.Port = intstr.FromInt(int(port32))
-	}
-	if container.ReadinessProbe != nil && container.ReadinessProbe.HTTPGet != nil {
-		container.ReadinessProbe.HTTPGet.Port = intstr.FromInt(int(port32))
-	}
-
-	// Update PORT env
-	updatedEnv := false
-	for i, env := range container.Env {
-		if env.Name == "PORT" {
-			container.Env[i].Value = fmt.Sprintf("%d", port32)
-			updatedEnv = true
-			break
+		if len(deploy.Spec.Template.Spec.Containers) == 0 {
+			return fmt.Errorf("no containers found in deployment")
 		}
-	}
-	if !updatedEnv {
-		container.Env = append(container.Env, corev1.EnvVar{Name: "PORT", Value: fmt.Sprintf("%d", port32)})
-	}
 
-	if _, err := k.client.AppsV1().Deployments(namespace).Update(k.ctx, deploy, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("deployment update failed: %w", err)
-	}
+		container := &deploy.Spec.Template.Spec.Containers[0]
+		// Update first container port
+		if len(container.Ports) > 0 {
+			container.Ports[0].ContainerPort = port32
+		} else {
+			container.Ports = []corev1.ContainerPort{{
+				ContainerPort: port32,
+				Name:          "http",
+				Protocol:      corev1.ProtocolTCP,
+			}}
+		}
 
-	return nil
+		// Update probes
+		if container.LivenessProbe != nil && container.LivenessProbe.HTTPGet != nil {
+			container.LivenessProbe.HTTPGet.Port = intstr.FromInt(int(port32))
+		}
+		if container.ReadinessProbe != nil && container.ReadinessProbe.HTTPGet != nil {
+			container.ReadinessProbe.HTTPGet.Port = intstr.FromInt(int(port32))
+		}
+
+		// Update PORT env
+		updatedEnv := false
+		for i, env := range container.Env {
+			if env.Name == "PORT" {
+				container.Env[i].Value = fmt.Sprintf("%d", port32)
+				updatedEnv = true
+				break
+			}
+		}
+		if !updatedEnv {
+			container.Env = append(container.Env, corev1.EnvVar{Name: "PORT", Value: fmt.Sprintf("%d", port32)})
+		}
+
+		if _, err := k.client.AppsV1().Deployments(namespace).Update(k.ctx, deploy, metav1.UpdateOptions{}); err != nil {
+			if apierrors.IsConflict(err) {
+				lastErr = err
+				continue
+			}
+			return fmt.Errorf("deployment update failed: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("deployment update failed after retries: %w", lastErr)
 }
 
 // ensureService creates a service if it doesn't exist
