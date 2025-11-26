@@ -263,6 +263,8 @@ func ListGitHubRepositories(c *fiber.Ctx) error {
 		))
 	}
 
+	page := c.QueryInt("page", 1)
+
 	// If GitHub App (manifest) is installed, prefer installation token
 	appRepos, appErr := utils.GetInstallationRepositories(page)
 	if appErr == nil {
