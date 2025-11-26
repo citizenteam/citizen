@@ -881,7 +881,6 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 		},
 	}
 
-	body, _ := json.Marshal(manifest)
 	// We will POST the manifest via a local redirect helper to avoid CSP issues in browsers.
 	manifestURL := fmt.Sprintf("%s/api/v1/github/app/manifest/redirect?state=%s", baseURL, url.QueryEscape(state))
 
