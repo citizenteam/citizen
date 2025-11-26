@@ -882,7 +882,8 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 	}
 
 	body, _ := json.Marshal(manifest)
-	manifestURL := fmt.Sprintf("https://github.com/settings/apps/new?manifest=%s", url.QueryEscape(string(body)))
+	// We will POST the manifest via a local redirect helper to avoid CSP issues in browsers.
+	manifestURL := fmt.Sprintf("%s/api/v1/github/app/manifest/redirect?state=%s", baseURL, url.QueryEscape(state))
 
 	return c.JSON(utils.NewCitizenResponse(
 		true,
@@ -892,6 +893,56 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 			"state":        state,
 		},
 	))
+}
+
+// GitHubManifestRedirect renders an auto-submitting form to POST manifest to GitHub
+func GitHubManifestRedirect(c *fiber.Ctx) error {
+	state := c.Query("state")
+	if state == "" {
+		return c.Status(fiber.StatusBadRequest).SendString("Missing state")
+	}
+
+	baseURL := c.BaseURL()
+	webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
+	redirectURL := fmt.Sprintf("%s/api/v1/github/app/manifest/callback?state=%s", baseURL, url.QueryEscape(state))
+
+	manifest := map[string]interface{}{
+		"name":         fmt.Sprintf("citizen-%d", time.Now().Unix()),
+		"description": "Citizen deployment integration",
+		"url":          baseURL,
+		"redirect_url": redirectURL,
+		"public":       false,
+		"default_events": []string{
+			"push",
+		},
+		"default_permissions": map[string]string{
+			"contents":      "read",
+			"metadata":      "read",
+			"pull_requests": "read",
+		},
+		"hook_attributes": map[string]string{
+			"url":          webhookURL,
+			"content_type": "json",
+		},
+	}
+
+	body, _ := json.Marshal(manifest)
+	action := fmt.Sprintf("https://github.com/settings/apps/new?state=%s", url.QueryEscape(state))
+
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<body onload="document.forms[0].submit()">
+<form action="%s" method="post">
+  <input type="hidden" name="manifest" value='%s'>
+  <noscript>
+    <p>Click continue to register the GitHub App.</p>
+    <button type="submit">Continue</button>
+  </noscript>
+</form>
+</body>
+</html>`, action, htmlEscapeSingleQuotes(string(body)))
+
+	return c.Type("html").SendString(html)
 }
 
 // GitHubManifestCallback handles GitHub redirect after App creation
@@ -1178,6 +1229,11 @@ func generateSecureSecret() string {
 	bytes := make([]byte, 32)
 	rand.Read(bytes)
 	return hex.EncodeToString(bytes)
+}
+
+// htmlEscapeSingleQuotes escapes single quotes for embedding JSON in HTML attribute
+func htmlEscapeSingleQuotes(s string) string {
+	return strings.ReplaceAll(s, "'", "&#39;")
 }
 
 // saveGitHubConfigToDB saves GitHub configuration to database (encrypted)
