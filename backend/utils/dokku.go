@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"os"
 
 	"backend/database/api"
@@ -765,6 +766,14 @@ func GetLogInfo(appName string) (map[string]interface{}, error) {
 
 // SetupGitAuthForRepo sets up Git authentication for private repositories using GitHub token
 func SetupGitAuthForRepo(appName string, gitURL string, userID *int) error {
+	// If a GitHub App installation token is available, we'll inject it per-deploy instead of configuring dokku git:auth
+	if strings.Contains(gitURL, "github.com") {
+		if _, err := GetGitHubInstallationToken(); err == nil {
+			fmt.Printf("[GIT AUTH] Using GitHub App installation token; skipping persistent git:auth\n")
+			return nil
+		}
+	}
+
 	// If userID is not provided, assume public repo
 	if userID == nil {
 		fmt.Printf("[GIT AUTH] No userID provided, skipping git auth setup (assuming public repo)\n")
@@ -818,6 +827,17 @@ func DeployFromGit(appName, gitURL, branch string, userID *int) (string, error) 
 
 	fmt.Printf("[DEPLOY] 🚀 Starting deployment: %s from %s:%s\n", appName, gitURL, branch)
 
+	authGitURL := gitURL
+	if strings.Contains(gitURL, "github.com") {
+		if tokenResp, err := GetGitHubInstallationToken(); err == nil && tokenResp != nil {
+			if parsed, parseErr := url.Parse(gitURL); parseErr == nil {
+				parsed.User = url.UserPassword("x-access-token", tokenResp.Token)
+				authGitURL = parsed.String()
+				fmt.Printf("[DEPLOY] Using GitHub App installation token for clone\n")
+			}
+		}
+	}
+
 	// 🔑 Setup Git authentication for private repositories
 	if err := SetupGitAuthForRepo(appName, gitURL, userID); err != nil {
 		fmt.Printf("[DEPLOY] ⚠️ Git auth setup failed (continuing anyway): %v\n", err)
@@ -825,7 +845,7 @@ func DeployFromGit(appName, gitURL, branch string, userID *int) (string, error) 
 	}
 
 	// Use git:sync command with branch specification and --build flag for immediate build
-	result, err := CitizenCommand("git:sync", "--build", appName, gitURL, branch)
+	result, err := CitizenCommand("git:sync", "--build", appName, authGitURL, branch)
 	
 	// 🚀 Signal Traefik Watcher for immediate route regeneration
 	if err == nil {

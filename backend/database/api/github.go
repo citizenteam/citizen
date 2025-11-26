@@ -252,22 +252,29 @@ type GitHubConfig struct {
 	ClientSecret  string
 	WebhookSecret string
 	RedirectURI   string
+	AppID         *int64
+	AppSlug       *string
+	AppName       *string
+	PrivateKey    *string
+	InstallationID *int64
 	CreatedAt     time.Time
 }
 
 // GetGitHubConfig retrieves GitHub config (without secrets)
 func (g *GitHubAPI) GetGitHubConfig(ctx context.Context) (*GitHubConfig, error) {
 	query := `
-		SELECT client_id, redirect_uri, created_at
+		SELECT client_id, redirect_uri, app_slug, app_name, installation_id, created_at
 		FROM github_config
 		WHERE is_active = true
 		ORDER BY updated_at DESC
 		LIMIT 1`
 
 	var clientID, redirectURI string
+	var appSlug, appName *string
+	var installationID *int64
 	var createdAt time.Time
 
-	err := QueryRow(ctx, query).Scan(&clientID, &redirectURI, &createdAt)
+	err := QueryRow(ctx, query).Scan(&clientID, &redirectURI, &appSlug, &appName, &installationID, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitHub config: %w", err)
 	}
@@ -275,6 +282,9 @@ func (g *GitHubAPI) GetGitHubConfig(ctx context.Context) (*GitHubConfig, error) 
 	return &GitHubConfig{
 		ClientID:    clientID,
 		RedirectURI: redirectURI,
+		AppSlug:     appSlug,
+		AppName:     appName,
+		InstallationID: installationID,
 		CreatedAt:   createdAt,
 	}, nil
 }
@@ -282,15 +292,19 @@ func (g *GitHubAPI) GetGitHubConfig(ctx context.Context) (*GitHubConfig, error) 
 // GetGitHubConfigFull retrieves full GitHub config (with secrets)
 func (g *GitHubAPI) GetGitHubConfigFull(ctx context.Context) (*GitHubConfig, error) {
 	query := `
-		SELECT client_id, client_secret, webhook_secret, redirect_uri
+		SELECT client_id, client_secret, webhook_secret, redirect_uri, app_id, app_slug, app_name, private_key, installation_id
 		FROM github_config
 		WHERE is_active = true
 		ORDER BY updated_at DESC
 		LIMIT 1`
 
 	var clientID, clientSecret, webhookSecret, redirectURI string
+	var appID *int64
+	var appSlug, appName *string
+	var privateKey *string
+	var installationID *int64
 
-	err := QueryRow(ctx, query).Scan(&clientID, &clientSecret, &webhookSecret, &redirectURI)
+	err := QueryRow(ctx, query).Scan(&clientID, &clientSecret, &webhookSecret, &redirectURI, &appID, &appSlug, &appName, &privateKey, &installationID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitHub config: %w", err)
 	}
@@ -300,11 +314,16 @@ func (g *GitHubAPI) GetGitHubConfigFull(ctx context.Context) (*GitHubConfig, err
 		ClientSecret:  clientSecret,
 		WebhookSecret: webhookSecret,
 		RedirectURI:   redirectURI,
+		AppID:         appID,
+		AppSlug:       appSlug,
+		AppName:       appName,
+		PrivateKey:    privateKey,
+		InstallationID: installationID,
 	}, nil
 }
 
 // SaveGitHubConfig saves GitHub configuration to database
-func (g *GitHubAPI) SaveGitHubConfig(ctx context.Context, clientID, clientSecret, webhookSecret, redirectURI string) error {
+func (g *GitHubAPI) SaveGitHubConfig(ctx context.Context, clientID, clientSecret, webhookSecret, redirectURI string, appID *int64, appSlug, appName *string, privateKey *string, installationID *int64) error {
 	if err := ValidateArgs(clientID, clientSecret, webhookSecret, redirectURI); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
@@ -313,14 +332,27 @@ func (g *GitHubAPI) SaveGitHubConfig(ctx context.Context, clientID, clientSecret
 		WITH deactivated AS (
 			UPDATE github_config SET is_active = false WHERE is_active = true
 		)
-		INSERT INTO github_config (client_id, client_secret, webhook_secret, redirect_uri, is_active)
-		VALUES ($1, $2, $3, $4, true)`
+		INSERT INTO github_config (client_id, client_secret, webhook_secret, redirect_uri, app_id, app_slug, app_name, private_key, installation_id, is_active)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)`
 
-	_, err := Exec(ctx, query, clientID, clientSecret, webhookSecret, redirectURI)
+	_, err := Exec(ctx, query, clientID, clientSecret, webhookSecret, redirectURI, appID, appSlug, appName, privateKey, installationID)
 	if err != nil {
 		return fmt.Errorf("failed to save GitHub config: %w", err)
 	}
 
+	return nil
+}
+
+// UpdateGitHubInstallationID updates installation id for active GitHub app config
+func (g *GitHubAPI) UpdateGitHubInstallationID(ctx context.Context, installationID int64) error {
+	query := `
+		UPDATE github_config 
+		SET installation_id = $1, updated_at = CURRENT_TIMESTAMP
+		WHERE is_active = true`
+
+	if _, err := Exec(ctx, query, installationID); err != nil {
+		return fmt.Errorf("failed to update installation id: %w", err)
+	}
 	return nil
 }
 

@@ -386,7 +386,7 @@ func loadGitHubConfigFromDB() {
 	utils.DatabaseDebugLog("Loading GitHub config from database...")
 
 	// Try to load config from database
-	clientID, clientSecret, redirectURI, webhookSecret, err := handlers.LoadGitHubConfigFromDB()
+	clientID, clientSecret, redirectURI, webhookSecret, appID, appSlug, appName, privateKey, installationID, err := handlers.LoadGitHubConfigFromDB()
 	if err != nil {
 		utils.DatabaseDebugLog("No GitHub config found in database: %v", err)
 		return
@@ -397,6 +397,10 @@ func loadGitHubConfigFromDB() {
 	if err != nil {
 		utils.ErrorLog("Failed to setup GitHub OAuth from database: %v", err)
 		return
+	}
+
+	if appID != nil && privateKey != nil {
+		utils.SetupGitHubApp(*appID, appSlug, privateKey, installationID, appName)
 	}
 
 	utils.StartupLog("GitHub configuration loaded from database")

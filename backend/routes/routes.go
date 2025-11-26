@@ -164,6 +164,7 @@ func SetupRoutes(app *fiber.App) {
 		githubProtected.Post("/config", handlers.SetupGitHubConfig)
 		githubProtected.Get("/config", handlers.GetGitHubConfig)
 		githubProtected.Delete("/config", handlers.DeleteGitHubConfig)
+		githubProtected.Post("/app/manifest/start", handlers.StartGitHubManifest)
 
 		// GitHub OAuth endpoints
 		githubProtected.Get("/auth/init", handlers.GitHubAuthInit)
@@ -178,6 +179,8 @@ func SetupRoutes(app *fiber.App) {
 
 	// GitHub webhook endpoint (public - no auth required)
 	github.Post("/webhook", handlers.GitHubWebhookHandler)
+	github.Get("/app/manifest/callback", handlers.GitHubManifestCallback)
+	github.Get("/app/install/callback", handlers.GitHubInstallCallback)
 
 	// ===== CITIZENAUTH INTEGRATION ENDPOINTS =====
 

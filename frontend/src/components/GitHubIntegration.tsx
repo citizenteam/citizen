@@ -26,6 +26,9 @@ interface GitHubConfig {
   redirect_uri: string;
   is_active: boolean;
   configured_at: string;
+  app_slug?: string | null;
+  app_name?: string | null;
+  installation_id?: number | null;
 }
 
 interface GitHubConfigResponse {
@@ -34,6 +37,9 @@ interface GitHubConfigResponse {
   redirect_uri?: string;
   is_active?: boolean;
   configured_at?: string;
+  app_slug?: string | null;
+  app_name?: string | null;
+  installation_id?: number | null;
 }
 
 export default function GitHubIntegration({ appName, onRepositoryConnect }: GitHubIntegrationProps) {
@@ -93,6 +99,18 @@ export default function GitHubIntegration({ appName, onRepositoryConnect }: GitH
     }
   }, [githubConnected, appName]);
 
+  // Listen for manifest/install callbacks
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'github-app-install-success') {
+        checkGitHubStatus();
+        loadRepositories();
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
   const checkConnectedRepository = async () => {
     try {
       const response = await request({ url: '/github/connections' });
@@ -125,8 +143,9 @@ export default function GitHubIntegration({ appName, onRepositoryConnect }: GitH
     try {
       const response = await request({ url: '/github/status' });
       if (response) {
-        setGithubConfigured(response.github_configured);
-        setGithubConnected(response.github_connected);
+        const connectedViaApp = Boolean(response.github_installation_id);
+        setGithubConfigured(response.github_configured || connectedViaApp);
+        setGithubConnected(response.github_connected || connectedViaApp);
         setGithubUsername(response.github_username);
       }
     } catch (error) {
@@ -279,7 +298,10 @@ export default function GitHubIntegration({ appName, onRepositoryConnect }: GitH
           client_id: response.client_id || '',
           redirect_uri: response.redirect_uri || '',
           is_active: response.is_active || false,
-          configured_at: response.configured_at || ''
+          configured_at: response.configured_at || '',
+          app_slug: response.app_slug || null,
+          app_name: response.app_name || null,
+          installation_id: response.installation_id ?? null,
         });
       }
     } catch (error) {
@@ -955,6 +977,7 @@ function GitHubConfigSetup() {
   const [showSetup, setShowSetup] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [manifestLoading, setManifestLoading] = useState(false);
   const [formData, setFormData] = useState({
     client_id: '',
     client_secret: '',
@@ -985,6 +1008,34 @@ function GitHubConfigSetup() {
   useEffect(() => {
     loadConfig();
   }, []);
+
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'github-app-install-success') {
+        loadConfig();
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  const startManifestFlow = async () => {
+    try {
+      setManifestLoading(true);
+      const response = await request({ url: '/github/app/manifest/start', method: 'POST' }) as any;
+      if (response?.manifest_url) {
+        const win = window.open(response.manifest_url, 'github-app-setup', 'width=900,height=900');
+        if (!win) {
+          alert('Please allow popups to complete GitHub App setup.');
+        }
+      }
+    } catch (error) {
+      errorLog('Failed to start manifest flow:', error);
+      alert('GitHub App manifest başlatılamadı.');
+    } finally {
+      setManifestLoading(false);
+    }
+  };
 
   const handleSetup = async (e: Event) => {
     e.preventDefault();
@@ -1082,54 +1133,81 @@ function GitHubConfigSetup() {
             {config ? 'GitHub OAuth is configured and ready' : 'Configure GitHub OAuth for repository integration'}
           </p>
         </div>
-        {config && (
-          <div className="flex gap-2">
-            <button
-              onClick={() => setShowSetup(true)}
-              style={{
-                padding: '8px 12px',
-                backgroundColor: 'rgba(100, 116, 139, 0.2)',
-                color: '#cbd5e1',
-                borderRadius: '8px',
-                border: '1px solid #475569',
-                fontSize: '14px',
-                fontWeight: '500',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease'
-              }}
-              onMouseEnter={(e) => {
-                (e.target as HTMLElement).style.backgroundColor = 'rgba(100, 116, 139, 0.3)';
-              }}
-              onMouseLeave={(e) => {
-                (e.target as HTMLElement).style.backgroundColor = 'rgba(100, 116, 139, 0.2)';
-              }}
-            >
-              Update
-            </button>
-            <button
-              onClick={handleDelete}
-              style={{
-                padding: '8px 12px',
-                backgroundColor: 'rgba(239, 68, 68, 0.2)',
-                color: '#fca5a5',
-                borderRadius: '8px',
-                border: '1px solid #dc2626',
-                fontSize: '14px',
-                fontWeight: '500',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease'
-              }}
-              onMouseEnter={(e) => {
-                (e.target as HTMLElement).style.backgroundColor = 'rgba(239, 68, 68, 0.3)';
-              }}
-              onMouseLeave={(e) => {
-                (e.target as HTMLElement).style.backgroundColor = 'rgba(239, 68, 68, 0.2)';
-              }}
-            >
-              Delete
-            </button>
-          </div>
-        )}
+        <div className="flex gap-2">
+          <button
+            onClick={startManifestFlow}
+            disabled={manifestLoading}
+            style={{
+              padding: '8px 12px',
+              backgroundColor: manifestLoading ? 'rgba(34, 197, 94, 0.2)' : 'rgba(34, 197, 94, 0.15)',
+              color: '#bbf7d0',
+              borderRadius: '8px',
+              border: '1px solid rgba(34, 197, 94, 0.3)',
+              fontSize: '14px',
+              fontWeight: '500',
+              cursor: manifestLoading ? 'not-allowed' : 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+            onMouseEnter={(e) => {
+              if (!manifestLoading) {
+                (e.target as HTMLElement).style.backgroundColor = 'rgba(34, 197, 94, 0.25)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              (e.target as HTMLElement).style.backgroundColor = manifestLoading ? 'rgba(34, 197, 94, 0.2)' : 'rgba(34, 197, 94, 0.15)';
+            }}
+          >
+            {manifestLoading ? 'Opening...' : 'Create GitHub App (One-click)'}
+          </button>
+          {config && (
+            <>
+              <button
+                onClick={() => setShowSetup(true)}
+                style={{
+                  padding: '8px 12px',
+                  backgroundColor: 'rgba(100, 116, 139, 0.2)',
+                  color: '#cbd5e1',
+                  borderRadius: '8px',
+                  border: '1px solid #475569',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease'
+                }}
+                onMouseEnter={(e) => {
+                  (e.target as HTMLElement).style.backgroundColor = 'rgba(100, 116, 139, 0.3)';
+                }}
+                onMouseLeave={(e) => {
+                  (e.target as HTMLElement).style.backgroundColor = 'rgba(100, 116, 139, 0.2)';
+                }}
+              >
+                Update
+              </button>
+              <button
+                onClick={handleDelete}
+                style={{
+                  padding: '8px 12px',
+                  backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                  color: '#fca5a5',
+                  borderRadius: '8px',
+                  border: '1px solid #dc2626',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease'
+                }}
+                onMouseEnter={(e) => {
+                  (e.target as HTMLElement).style.backgroundColor = 'rgba(239, 68, 68, 0.3)';
+                }}
+                onMouseLeave={(e) => {
+                  (e.target as HTMLElement).style.backgroundColor = 'rgba(239, 68, 68, 0.2)';
+                }}
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {config ? (
@@ -1148,6 +1226,18 @@ function GitHubConfigSetup() {
               <p style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>Redirect URI</p>
               <p style={{ fontSize: '14px', color: '#f8fafc', fontFamily: 'monospace', wordBreak: 'break-all' }}>{config.redirect_uri}</p>
             </div>
+            {config.app_slug && (
+              <div>
+                <p style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>GitHub App</p>
+                <p style={{ fontSize: '14px', color: '#f8fafc' }}>{config.app_name || config.app_slug}</p>
+              </div>
+            )}
+            {typeof config.installation_id === 'number' && (
+              <div>
+                <p style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>Installation ID</p>
+                <p style={{ fontSize: '14px', color: '#f8fafc' }}>{config.installation_id}</p>
+              </div>
+            )}
             <div>
               <p style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>Configured</p>
               <p style={{ fontSize: '14px', color: '#f8fafc' }}>{new Date(config.configured_at).toLocaleDateString()}</p>

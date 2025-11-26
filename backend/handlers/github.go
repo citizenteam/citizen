@@ -4,10 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"backend/database"
@@ -18,6 +23,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
+
+var manifestStates = newStateStore()
 
 // GitHubAuthInit initiates GitHub OAuth flow
 func GitHubAuthInit(c *fiber.Ctx) error {
@@ -256,6 +263,21 @@ func ListGitHubRepositories(c *fiber.Ctx) error {
 		))
 	}
 
+	// If GitHub App (manifest) is installed, prefer installation token
+	appRepos, appErr := utils.GetInstallationRepositories(page)
+	if appErr == nil {
+		return c.JSON(utils.NewCitizenResponse(
+			true,
+			"Repositories fetched successfully",
+			fiber.Map{
+				"repositories": appRepos,
+				"page":         page,
+				"total":        len(appRepos),
+				"github_app":   true,
+			},
+		))
+	}
+
 	// Get user's GitHub access token from database
 	accessToken, err := api.GitHub.GetUserGitHubAccessToken(c.Context(), userID.(int))
 
@@ -348,24 +370,28 @@ func ConnectRepository(c *fiber.Ctx) error {
 		connectData.DeployBranch = "main"
 	}
 
-	// Get user's GitHub access token from database
-	accessToken, err := api.GitHub.GetUserGitHubAccessToken(c.Context(), userID.(int))
-
-	if err != nil {
-		log.Printf("[GITHUB] Failed to get user GitHub access token: %v", err)
-		return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-			false,
-			"GitHub not connected or access token not found",
-			nil,
-		))
-	}
-
-	if accessToken == "" {
-		return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-			false,
-			"GitHub access token is empty",
-			nil,
-		))
+	// Get token via GitHub App installation if available, otherwise fall back to user token
+	var accessToken string
+	if tokenResp, err := utils.GetGitHubInstallationToken(); err == nil && tokenResp != nil {
+		accessToken = tokenResp.Token
+	} else {
+		token, err := api.GitHub.GetUserGitHubAccessToken(c.Context(), userID.(int))
+		if err != nil {
+			log.Printf("[GITHUB] Failed to get user GitHub access token: %v", err)
+			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
+				false,
+				"GitHub not connected or access token not found",
+				nil,
+			))
+		}
+		if token == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
+				false,
+				"GitHub access token is empty",
+				nil,
+			))
+		}
+		accessToken = token
 	}
 
 	// Get repository details from GitHub
@@ -475,8 +501,14 @@ func DisconnectRepository(c *fiber.Ctx) error {
 	webhookID := repoConnection.WebhookID
 	fullName := repoConnection.FullName
 
-	// Get user's GitHub access token
+	// Get user's GitHub access token or fall back to installation token
 	accessToken, err := api.GitHub.GetUserGitHubAccessToken(c.Context(), userID.(int))
+	if (err != nil || accessToken == "") {
+		if tokenResp, instErr := utils.GetGitHubInstallationToken(); instErr == nil {
+			accessToken = tokenResp.Token
+			err = nil
+		}
+	}
 
 	if err == nil && accessToken != "" && webhookID != nil {
 		// Delete webhook if exists
@@ -798,6 +830,11 @@ func GetGitHubStatus(c *fiber.Ctx) error {
 	githubConnected := user.GitHubConnected
 	githubUsername := user.GitHubUsername
 	githubID := user.GitHubID
+	appID, appSlug, appName, _, installationID := utils.GetGitHubAppConfig()
+
+	if !githubConnected && installationID != nil {
+		githubConnected = true
+	}
 
 	return c.JSON(utils.NewCitizenResponse(
 		true,
@@ -807,8 +844,155 @@ func GetGitHubStatus(c *fiber.Ctx) error {
 			"github_connected":  githubConnected,
 			"github_username":   githubUsername,
 			"github_id":         githubID,
+			"github_app_id":     appID,
+			"github_app_slug":   appSlug,
+			"github_app_name":   appName,
+			"github_installation_id": installationID,
 		},
 	))
+}
+
+// StartGitHubManifest kicks off GitHub App manifest flow (instance-owned app)
+func StartGitHubManifest(c *fiber.Ctx) error {
+	state := generateSecureSecret()
+	manifestStates.add(state)
+
+	baseURL := c.BaseURL()
+	webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
+	redirectURL := fmt.Sprintf("%s/api/v1/github/app/manifest/callback?state=%s", baseURL, url.QueryEscape(state))
+
+	manifest := map[string]interface{}{
+		"name":            fmt.Sprintf("citizen-%d", time.Now().Unix()),
+		"url":             baseURL,
+		"redirect_url":    redirectURL,
+		"public":          false,
+		"default_events":  []string{"push"},
+		"default_permissions": map[string]string{
+			"contents":  "read",
+			"metadata":  "read",
+			"administration": "write",
+			"pull_requests": "read",
+		},
+		"hook_attributes": map[string]string{
+			"url": webhookURL,
+		},
+	}
+
+	body, _ := json.Marshal(manifest)
+	manifestURL := fmt.Sprintf("https://github.com/settings/apps/new?state=%s&manifest=%s", url.QueryEscape(state), url.QueryEscape(string(body)))
+
+	return c.JSON(utils.NewCitizenResponse(
+		true,
+		"GitHub App manifest URL generated",
+		fiber.Map{
+			"manifest_url": manifestURL,
+			"state":        state,
+		},
+	))
+}
+
+// GitHubManifestCallback handles GitHub redirect after App creation
+func GitHubManifestCallback(c *fiber.Ctx) error {
+	code := c.Query("code")
+	state := c.Query("state")
+	if code == "" {
+		return c.Status(fiber.StatusBadRequest).SendString("Missing manifest code")
+	}
+	if state == "" || !manifestStates.validate(state, 15*time.Minute) {
+		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state")
+	}
+
+	req, err := http.NewRequest("POST", fmt.Sprintf("https://api.github.com/app-manifests/%s/conversions", code), nil)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("Failed to build request")
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("Failed to convert manifest code")
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		log.Printf("[GITHUB] Manifest conversion failed: %s", string(body))
+		return c.Status(resp.StatusCode).SendString("Manifest conversion failed")
+	}
+
+	var manifestResp struct {
+		ID            int64  `json:"id"`
+		Slug          string `json:"slug"`
+		Name          string `json:"name"`
+		ClientID      string `json:"client_id"`
+		ClientSecret  string `json:"client_secret"`
+		WebhookSecret string `json:"webhook_secret"`
+		Pem           string `json:"pem"`
+	}
+	if err := json.Unmarshal(body, &manifestResp); err != nil {
+		log.Printf("[GITHUB] Failed to parse manifest conversion response: %v", err)
+		return c.Status(fiber.StatusInternalServerError).SendString("Invalid manifest response")
+	}
+
+	baseURL := c.BaseURL()
+	redirectURI := fmt.Sprintf("%s/api/v1/github/auth/callback", baseURL)
+
+	appID := manifestResp.ID
+	appSlug := manifestResp.Slug
+	appName := manifestResp.Name
+	privateKey := manifestResp.Pem
+
+	if err := saveGitHubConfigToDB(manifestResp.ClientID, manifestResp.ClientSecret, redirectURI, manifestResp.WebhookSecret, &appID, &appSlug, &appName, &privateKey, nil); err != nil {
+		log.Printf("[GITHUB] Failed to save manifest config: %v", err)
+		return c.Status(fiber.StatusInternalServerError).SendString("Failed to save GitHub App config")
+	}
+
+	// Warm memory caches
+	_ = utils.SetupGitHubOAuth(manifestResp.ClientID, manifestResp.ClientSecret, redirectURI, manifestResp.WebhookSecret)
+	utils.SetupGitHubApp(appID, &appSlug, &privateKey, nil, &appName)
+
+	installState := generateSecureSecret()
+	manifestStates.add(installState)
+	installURL := fmt.Sprintf("https://github.com/apps/%s/installations/new?state=%s&redirect_url=%s", url.QueryEscape(appSlug), url.QueryEscape(installState), url.QueryEscape(fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL)))
+
+	return c.Redirect(installURL, http.StatusFound)
+}
+
+// GitHubInstallCallback stores installation ID after user installs the App
+func GitHubInstallCallback(c *fiber.Ctx) error {
+	installationID := c.QueryInt("installation_id")
+	state := c.Query("state")
+
+	if state == "" || !manifestStates.validate(state, 30*time.Minute) {
+		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state")
+	}
+
+	if installationID == 0 {
+		return c.Status(fiber.StatusBadRequest).SendString("Missing installation_id")
+	}
+
+	if err := api.GitHub.UpdateGitHubInstallationID(c.Context(), int64(installationID)); err != nil {
+		log.Printf("[GITHUB] Failed to store installation ID: %v", err)
+		return c.Status(fiber.StatusInternalServerError).SendString("Failed to save installation")
+	}
+
+	// Update in-memory config with latest installation
+	appID, appSlug, appName, privateKey, _ := utils.GetGitHubAppConfig()
+	if appID != nil && privateKey != nil {
+		inst := int64(installationID)
+		utils.SetupGitHubApp(*appID, appSlug, privateKey, &inst, appName)
+	}
+
+	html := `<html><body><script>
+		if (window.opener) {
+			window.opener.postMessage({ type: 'github-app-install-success' }, '*');
+			window.close();
+		} else {
+			document.write('GitHub App installed. You can close this window.');
+		}
+	</script></body></html>`
+
+	return c.Type("html").SendString(html)
 }
 
 // GitHubConfigRequest represents GitHub config setup request
@@ -851,7 +1035,7 @@ func SetupGitHubConfig(c *fiber.Ctx) error {
 	webhookSecret := generateSecureSecret()
 
 	// Save to database (encrypted)
-	err := saveGitHubConfigToDB(req.ClientID, req.ClientSecret, req.RedirectURI, webhookSecret)
+	err := saveGitHubConfigToDB(req.ClientID, req.ClientSecret, req.RedirectURI, webhookSecret, nil, nil, nil, nil, nil)
 	if err != nil {
 		log.Printf("[GITHUB] Failed to save GitHub config to database: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -924,6 +1108,9 @@ func GetGitHubConfig(c *fiber.Ctx) error {
 		"redirect_uri":  config.RedirectURI,
 		"is_active":     true,
 		"configured_at": config.CreatedAt.Format(time.RFC3339),
+		"app_slug":      config.AppSlug,
+		"app_name":      config.AppName,
+		"installation_id": config.InstallationID,
 	}
 
 	log.Printf("[CONFIG] Returning response: %+v", response)
@@ -950,6 +1137,39 @@ func DeleteGitHubConfig(c *fiber.Ctx) error {
 	})
 }
 
+// simple in-memory state store for manifest/install flows
+type stateStore struct {
+	mu    sync.Mutex
+	items map[string]time.Time
+}
+
+func newStateStore() *stateStore {
+	return &stateStore{
+		items: make(map[string]time.Time),
+	}
+}
+
+func (s *stateStore) add(state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[state] = time.Now()
+}
+
+func (s *stateStore) validate(state string, maxAge time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	created, ok := s.items[state]
+	if !ok {
+		return false
+	}
+	if time.Since(created) > maxAge {
+		delete(s.items, state)
+		return false
+	}
+	delete(s.items, state)
+	return true
+}
+
 // generateSecureSecret generates a cryptographically secure secret
 func generateSecureSecret() string {
 	bytes := make([]byte, 32)
@@ -958,7 +1178,7 @@ func generateSecureSecret() string {
 }
 
 // saveGitHubConfigToDB saves GitHub configuration to database (encrypted)
-func saveGitHubConfigToDB(clientID, clientSecret, redirectURI, webhookSecret string) error {
+func saveGitHubConfigToDB(clientID, clientSecret, redirectURI, webhookSecret string, appID *int64, appSlug, appName *string, privateKey *string, installationID *int64) error {
 	// Encrypt sensitive data
 	encryptedClientID, err := utils.EncryptString(clientID)
 	if err != nil {
@@ -975,8 +1195,17 @@ func saveGitHubConfigToDB(clientID, clientSecret, redirectURI, webhookSecret str
 		return fmt.Errorf("failed to encrypt webhook secret: %w", err)
 	}
 
+	var encryptedPrivateKey *string
+	if privateKey != nil && *privateKey != "" {
+		encPk, err := utils.EncryptString(*privateKey)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt private key: %w", err)
+		}
+		encryptedPrivateKey = &encPk
+	}
+
 	// Save to database - first deactivate old configs, then insert new
-	err = api.GitHub.SaveGitHubConfig(context.Background(), encryptedClientID, encryptedClientSecret, encryptedWebhookSecret, redirectURI)
+	err = api.GitHub.SaveGitHubConfig(context.Background(), encryptedClientID, encryptedClientSecret, encryptedWebhookSecret, redirectURI, appID, appSlug, appName, encryptedPrivateKey, installationID)
 	if err != nil {
 		return fmt.Errorf("failed to save GitHub config to database: %w", err)
 	}
@@ -986,28 +1215,37 @@ func saveGitHubConfigToDB(clientID, clientSecret, redirectURI, webhookSecret str
 }
 
 // LoadGitHubConfigFromDB loads GitHub configuration from database (decrypted)
-func LoadGitHubConfigFromDB() (clientID, clientSecret, redirectURI, webhookSecret string, err error) {
+func LoadGitHubConfigFromDB() (clientID, clientSecret, redirectURI, webhookSecret string, appID *int64, appSlug, appName *string, privateKey *string, installationID *int64, err error) {
 	config, err := api.GitHub.GetGitHubConfigFull(context.Background())
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("failed to load GitHub config from database: %w", err)
+		return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to load GitHub config from database: %w", err)
 	}
 
 	// Decrypt sensitive data
 	clientID, err = utils.DecryptString(config.ClientID)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("failed to decrypt client ID: %w", err)
+		return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to decrypt client ID: %w", err)
 	}
 
 	clientSecret, err = utils.DecryptString(config.ClientSecret)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("failed to decrypt client secret: %w", err)
+		return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to decrypt client secret: %w", err)
 	}
 
 	webhookSecret, err = utils.DecryptString(config.WebhookSecret)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("failed to decrypt webhook secret: %w", err)
+		return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to decrypt webhook secret: %w", err)
 	}
 
 	fmt.Printf("[CONFIG] ✅ GitHub config loaded from database\n")
-	return clientID, clientSecret, config.RedirectURI, webhookSecret, nil
+	var decryptedPrivateKey *string
+	if config.PrivateKey != nil && *config.PrivateKey != "" {
+		if pk, decErr := utils.DecryptString(*config.PrivateKey); decErr == nil {
+			decryptedPrivateKey = &pk
+		} else {
+			return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to decrypt private key: %w", decErr)
+		}
+	}
+
+	return clientID, clientSecret, config.RedirectURI, webhookSecret, config.AppID, config.AppSlug, config.AppName, decryptedPrivateKey, config.InstallationID, nil
 }

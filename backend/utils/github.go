@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // GitHub OAuth configuration - stored in memory after first setup
@@ -24,6 +28,11 @@ var (
 	gitHubWebhookSecret string
 	gitHubConfigMutex  sync.RWMutex
 	gitHubConfigured   bool
+	gitHubAppID        *int64
+	gitHubAppSlug      *string
+	gitHubAppName      *string
+	gitHubPrivateKey   *string
+	gitHubInstallationID *int64
 )
 
 // SetupGitHubOAuth sets up GitHub OAuth configuration in memory
@@ -46,6 +55,19 @@ func SetupGitHubOAuth(clientID, clientSecret, redirectURI, webhookSecret string)
 	return nil
 }
 
+// SetupGitHubApp stores GitHub App configuration (manifest flow)
+func SetupGitHubApp(appID int64, appSlug *string, privateKey *string, installationID *int64, appName *string) {
+	gitHubConfigMutex.Lock()
+	defer gitHubConfigMutex.Unlock()
+
+	gitHubAppID = &appID
+	gitHubAppSlug = appSlug
+	gitHubAppName = appName
+	gitHubPrivateKey = privateKey
+	gitHubInstallationID = installationID
+	fmt.Printf("[SETUP] GitHub App configured - appID: %d, slug: %v, installationID: %v\n", appID, appSlug, installationID)
+}
+
 // IsGitHubConfigured checks if GitHub OAuth is configured
 func IsGitHubConfigured() bool {
 	gitHubConfigMutex.RLock()
@@ -53,6 +75,11 @@ func IsGitHubConfigured() bool {
 	
 	// Check memory first
 	if gitHubConfigured {
+		return true
+	}
+
+	// If GitHub App (manifest) is set up with private key, treat as configured
+	if gitHubPrivateKey != nil && gitHubAppID != nil {
 		return true
 	}
 	
@@ -96,6 +123,13 @@ func GetGitHubConfig() (clientID, clientSecret, redirectURI, webhookSecret strin
 	}
 	
 	return
+}
+
+// GetGitHubAppConfig returns manifest app configuration (if set)
+func GetGitHubAppConfig() (appID *int64, appSlug *string, appName *string, privateKey *string, installationID *int64) {
+	gitHubConfigMutex.RLock()
+	defer gitHubConfigMutex.RUnlock()
+	return gitHubAppID, gitHubAppSlug, gitHubAppName, gitHubPrivateKey, gitHubInstallationID
 }
 
 // generateSecureSecret generates a cryptographically secure secret
@@ -220,7 +254,7 @@ func GetGitHubUser(accessToken string) (*GitHubUser, error) {
 		return nil, err
 	}
 	
-	req.Header.Set("Authorization", "token "+accessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	
 	client := &http.Client{}
@@ -252,7 +286,7 @@ func GetUserRepositories(accessToken string, page int) ([]GitHubRepository, erro
 		return nil, err
 	}
 	
-	req.Header.Set("Authorization", "token "+accessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	
 	client := &http.Client{}
@@ -331,7 +365,7 @@ func CreateWebhook(accessToken, owner, repo, webhookURL string) (*GitHubWebhook,
 		return nil, err
 	}
 	
-	req.Header.Set("Authorization", "token "+accessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("Content-Type", "application/json")
 	
@@ -367,7 +401,7 @@ func DeleteWebhook(accessToken, owner, repo string, webhookID int64) error {
 		return err
 	}
 	
-	req.Header.Set("Authorization", "token "+accessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	
 	client := &http.Client{}
@@ -394,7 +428,7 @@ func GetRepositoryInfo(accessToken, owner, repo string) (*GitHubRepository, erro
 		return nil, err
 	}
 	
-	req.Header.Set("Authorization", "token "+accessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	
 	client := &http.Client{}
@@ -441,4 +475,122 @@ func generateHMACSignature(payload []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
-} 
+}
+
+// GitHub App / Manifest helpers
+
+// GitHubInstallationTokenResponse represents installation token response
+type GitHubInstallationTokenResponse struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// generateGitHubAppJWT creates a short-lived JWT for GitHub App authentication
+func generateGitHubAppJWT(appID int64, pemKey string) (string, error) {
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(pemKey))
+	if err != nil {
+		return "", fmt.Errorf("parse private key: %w", err)
+	}
+
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"iat": now.Add(-1 * time.Minute).Unix(), // backdate 60s to avoid clock skew
+		"exp": now.Add(9 * time.Minute).Unix(),  // GitHub requires <= 10 minutes
+		"iss": appID,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	signed, err := token.SignedString(privateKey)
+	if err != nil {
+		return "", fmt.Errorf("sign jwt: %w", err)
+	}
+	return signed, nil
+}
+
+// GetGitHubInstallationToken returns an installation access token using stored app config
+func GetGitHubInstallationToken() (*GitHubInstallationTokenResponse, error) {
+	appID, _, _, privateKey, installationID := GetGitHubAppConfig()
+	if appID == nil || privateKey == nil {
+		return nil, errors.New("github app config missing")
+	}
+	if installationID == nil {
+		return nil, errors.New("github app installation missing")
+	}
+
+	jwtToken, err := generateGitHubAppJWT(*appID, *privateKey)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", *installationID)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("failed to get installation token: %s", string(body))
+	}
+
+	var tokenResp GitHubInstallationTokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, err
+	}
+
+	return &tokenResp, nil
+}
+
+// GetInstallationRepositories lists repositories accessible to installation
+func GetInstallationRepositories(page int) ([]GitHubRepository, error) {
+	tokenResp, err := GetGitHubInstallationToken()
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("https://api.github.com/installation/repositories?per_page=100&page=%d", page)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tokenResp.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to list repositories: %s", string(body))
+	}
+
+	var parsed struct {
+		TotalCount  int               `json:"total_count"`
+		Repositories []GitHubRepository `json:"repositories"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	return parsed.Repositories, nil
+}
