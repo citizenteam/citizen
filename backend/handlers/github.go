@@ -870,11 +870,11 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 		"default_permissions": map[string]string{
 			"contents":  "read",
 			"metadata":  "read",
-			"administration": "write",
 			"pull_requests": "read",
 		},
 		"hook_attributes": map[string]string{
 			"url": webhookURL,
+			"content_type": "json",
 		},
 	}
 
