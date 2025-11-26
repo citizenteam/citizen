@@ -879,7 +879,7 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 	}
 
 	body, _ := json.Marshal(manifest)
-	manifestURL := fmt.Sprintf("https://github.com/settings/apps/new?state=%s&manifest=%s", url.QueryEscape(state), url.QueryEscape(string(body)))
+	manifestURL := fmt.Sprintf("https://github.com/settings/apps/new?manifest=%s", url.QueryEscape(string(body)))
 
 	return c.JSON(utils.NewCitizenResponse(
 		true,
