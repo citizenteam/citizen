@@ -862,18 +862,21 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 	redirectURL := fmt.Sprintf("%s/api/v1/github/app/manifest/callback?state=%s", baseURL, url.QueryEscape(state))
 
 	manifest := map[string]interface{}{
-		"name":            fmt.Sprintf("citizen-%d", time.Now().Unix()),
-		"url":             baseURL,
-		"redirect_url":    redirectURL,
-		"public":          false,
-		"default_events":  []string{"push"},
+		"name":         fmt.Sprintf("citizen-%d", time.Now().Unix()),
+		"description": "Citizen deployment integration",
+		"url":          baseURL,
+		"redirect_url": redirectURL,
+		"public":       false,
+		"default_events": []string{
+			"push",
+		},
 		"default_permissions": map[string]string{
-			"contents":  "read",
-			"metadata":  "read",
+			"contents":      "read",
+			"metadata":      "read",
 			"pull_requests": "read",
 		},
 		"hook_attributes": map[string]string{
-			"url": webhookURL,
+			"url":          webhookURL,
 			"content_type": "json",
 		},
 	}
