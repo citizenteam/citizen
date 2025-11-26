@@ -300,8 +300,6 @@ func ListGitHubRepositories(c *fiber.Ctx) error {
 		))
 	}
 
-	page := c.QueryInt("page", 1)
-
 	repos, err := utils.GetUserRepositories(accessToken, page)
 	if err != nil {
 		log.Printf("[GITHUB] Failed to get repositories: %v", err)
