@@ -931,8 +931,13 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 	}
 
 	baseURL := c.BaseURL()
+	// Ensure HTTPS for production (GitHub requires HTTPS for redirect_url)
+	if strings.HasPrefix(baseURL, "http://") && !strings.Contains(baseURL, "localhost") && !strings.Contains(baseURL, "127.0.0.1") {
+		baseURL = strings.Replace(baseURL, "http://", "https://", 1)
+	}
 	webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
-	redirectURL := fmt.Sprintf("%s/api/v1/github/app/manifest/callback?state=%s", baseURL, url.QueryEscape(state))
+	// redirect_url must NOT have query params - GitHub adds its own (code, state)
+	redirectURL := fmt.Sprintf("%s/api/v1/github/app/manifest/callback", baseURL)
 
 	// Generate unique app name based on domain
 	appName := fmt.Sprintf("citizen-%d", time.Now().Unix())
