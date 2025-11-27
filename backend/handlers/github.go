@@ -861,7 +861,7 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 	manifestStates.add(state)
 
 	baseURL := c.BaseURL()
-	
+
 	// Return URL to our manifest redirect endpoint which will handle the POST
 	manifestURL := fmt.Sprintf("%s/api/v1/github/app/manifest/redirect?state=%s", baseURL, url.QueryEscape(state))
 
@@ -936,13 +936,13 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 
 	// Generate unique app name based on domain
 	appName := fmt.Sprintf("citizen-%d", time.Now().Unix())
-	
+
 	manifest := map[string]interface{}{
-		"name":         appName,
-		"description":  "Citizen PaaS deployment integration",
-		"url":          baseURL,
-		"redirect_url": redirectURL,
-		"public":       false,
+		"name":                     appName,
+		"description":              "Citizen PaaS deployment integration",
+		"url":                      baseURL,
+		"redirect_url":             redirectURL,
+		"public":                   false,
 		"request_oauth_on_install": true,
 		"default_events": []string{
 			"push",
@@ -953,9 +953,9 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 			"metadata":      "read",
 			"pull_requests": "read",
 		},
-		"hook_attributes": map[string]string{
+		"hook_attributes": map[string]interface{}{
 			"url":    webhookURL,
-			"active": "true",
+			"active": true,
 		},
 	}
 
@@ -1035,8 +1035,8 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 func GitHubManifestCallback(c *fiber.Ctx) error {
 	code := c.Query("code")
 	state := c.Query("state")
-	
-	log.Printf("[GITHUB] Manifest callback received: code=%s, state=%s", 
+
+	log.Printf("[GITHUB] Manifest callback received: code=%s, state=%s",
 		code[:min(8, len(code))]+"...", state[:min(8, len(state))]+"...")
 
 	if code == "" {
@@ -1084,7 +1084,7 @@ func GitHubManifestCallback(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).SendString("Invalid manifest response from GitHub")
 	}
 
-	log.Printf("[GITHUB] ✅ GitHub App created: id=%d, slug=%s, name=%s", 
+	log.Printf("[GITHUB] ✅ GitHub App created: id=%d, slug=%s, name=%s",
 		manifestResp.ID, manifestResp.Slug, manifestResp.Name)
 
 	baseURL := c.BaseURL()
@@ -1110,9 +1110,9 @@ func GitHubManifestCallback(c *fiber.Ctx) error {
 	// Generate install state and redirect to GitHub App installation
 	installState := generateSecureSecret()
 	installStates.add(installState)
-	installURL := fmt.Sprintf("https://github.com/apps/%s/installations/new?state=%s&redirect_url=%s", 
-		url.QueryEscape(appSlug), 
-		url.QueryEscape(installState), 
+	installURL := fmt.Sprintf("https://github.com/apps/%s/installations/new?state=%s&redirect_url=%s",
+		url.QueryEscape(appSlug),
+		url.QueryEscape(installState),
 		url.QueryEscape(fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL)))
 
 	return c.Redirect(installURL, http.StatusFound)
@@ -1132,7 +1132,7 @@ func GitHubInstallCallback(c *fiber.Ctx) error {
 	state := c.Query("state")
 	setupAction := c.Query("setup_action") // "install" or "update"
 
-	log.Printf("[GITHUB] Install callback received: installation_id=%d, state=%s, setup_action=%s", 
+	log.Printf("[GITHUB] Install callback received: installation_id=%d, state=%s, setup_action=%s",
 		installationID, state[:min(8, len(state))]+"...", setupAction)
 
 	if state == "" || !installStates.validate(state, 30*time.Minute) {
