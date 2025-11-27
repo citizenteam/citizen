@@ -969,6 +969,9 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 
 	log.Printf("[GITHUB] Rendering manifest redirect form for app: %s", appName)
 
+	// Override CSP for this page to allow form submission to GitHub
+	c.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; form-action 'self' https://github.com")
+
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -1154,6 +1157,9 @@ func GitHubInstallCallback(c *fiber.Ctx) error {
 		utils.SetupGitHubApp(*appID, appSlug, privateKey, &inst, appName)
 		log.Printf("[GITHUB] ✅ GitHub App installed successfully: app_id=%d, installation_id=%d", *appID, installationID)
 	}
+
+	// Override CSP for this page to allow postMessage to parent
+	c.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
 
 	// Return a nice success page that notifies the opener and closes
 	html := `<!DOCTYPE html>
