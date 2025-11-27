@@ -652,7 +652,7 @@ func GitHubWebhookHandler(c *fiber.Ctx) error {
 	// Extract branch name from ref (refs/heads/main -> main)
 	branch := strings.TrimPrefix(pushEvent.Ref, "refs/heads/")
 
-	log.Printf("[WEBHOOK] Push to %s/%s on branch %s (commit: %s)",
+	log.Printf("[WEBHOOK] Push to %s on branch %s (commit: %s)",
 		pushEvent.Repository.FullName, branch, pushEvent.HeadCommit.ID)
 
 	// Find repository connection in database
@@ -945,12 +945,16 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 	// OAuth callback URL for user authorization
 	callbackURL := fmt.Sprintf("%s/api/v1/github/auth/callback", baseURL)
 
+	// Setup URL for post-installation redirect (GitHub adds installation_id query param)
+	setupURL := fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL)
+
 	manifest := map[string]interface{}{
 		"name":                     appName,
 		"description":              "Citizen PaaS deployment integration",
 		"url":                      baseURL,
 		"redirect_url":             redirectURL,
 		"callback_urls":            []string{callbackURL},
+		"setup_url":                setupURL, // Post-installation redirect URL
 		"public":                   false,
 		"request_oauth_on_install": false, // Don't request OAuth during install - we use installation tokens
 		"setup_on_update":          true,
@@ -1142,12 +1146,26 @@ func GitHubInstallCallback(c *fiber.Ctx) error {
 	state := c.Query("state")
 	setupAction := c.Query("setup_action") // "install" or "update"
 
+	statePreview := ""
+	if len(state) > 8 {
+		statePreview = state[:8] + "..."
+	} else {
+		statePreview = state
+	}
 	log.Printf("[GITHUB] Install callback received: installation_id=%d, state=%s, setup_action=%s",
-		installationID, state[:min(8, len(state))]+"...", setupAction)
+		installationID, statePreview, setupAction)
 
-	if state == "" || !installStates.validate(state, 30*time.Minute) {
-		log.Printf("[GITHUB] Invalid or expired state in install callback")
-		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state - please try again")
+	// State validation: either valid state from our store, or GitHub's setup_url redirect (has setup_action)
+	// GitHub's setup_url redirect doesn't preserve our state, so we accept requests with setup_action
+	if state != "" && !installStates.validate(state, 30*time.Minute) {
+		log.Printf("[GITHUB] Invalid state provided in install callback")
+		return c.Status(fiber.StatusBadRequest).SendString("Invalid state - please try again")
+	}
+
+	// If no state and no setup_action, this is an invalid request
+	if state == "" && setupAction == "" {
+		log.Printf("[GITHUB] Missing both state and setup_action in install callback - rejecting")
+		return c.Status(fiber.StatusBadRequest).SendString("Invalid request - missing state or setup_action")
 	}
 
 	if installationID == 0 {
