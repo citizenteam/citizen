@@ -25,6 +25,7 @@ import (
 )
 
 var manifestStates = newStateStore()
+var installStates = newStateStore()
 
 // GitHubAuthInit initiates GitHub OAuth flow
 func GitHubAuthInit(c *fiber.Ctx) error {
@@ -884,6 +885,31 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 	))
 }
 
+// StartGitHubInstall generates an install URL for existing app
+func StartGitHubInstall(c *fiber.Ctx) error {
+	appID, appSlug, _, _, _ := utils.GetGitHubAppConfig()
+	if appSlug == nil || appID == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+			false,
+			"GitHub App not configured yet",
+			nil,
+		))
+	}
+	state := generateSecureSecret()
+	installStates.add(state)
+	baseURL := c.BaseURL()
+	installURL := fmt.Sprintf("https://github.com/apps/%s/installations/new?state=%s&redirect_url=%s", url.QueryEscape(*appSlug), url.QueryEscape(state), url.QueryEscape(fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL)))
+
+	return c.JSON(utils.NewCitizenResponse(
+		true,
+		"GitHub App install URL generated",
+		fiber.Map{
+			"install_url": installURL,
+			"state":       state,
+		},
+	))
+}
+
 // GitHubManifestRedirect renders an auto-submitting form to POST manifest to GitHub
 func GitHubManifestRedirect(c *fiber.Ctx) error {
 	state := c.Query("state")
@@ -995,7 +1021,7 @@ func GitHubManifestCallback(c *fiber.Ctx) error {
 	utils.SetupGitHubApp(appID, &appSlug, &privateKey, nil, &appName)
 
 	installState := generateSecureSecret()
-	manifestStates.add(installState)
+	installStates.add(installState)
 	installURL := fmt.Sprintf("https://github.com/apps/%s/installations/new?state=%s&redirect_url=%s", url.QueryEscape(appSlug), url.QueryEscape(installState), url.QueryEscape(fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL)))
 
 	return c.Redirect(installURL, http.StatusFound)
@@ -1006,7 +1032,7 @@ func GitHubInstallCallback(c *fiber.Ctx) error {
 	installationID := c.QueryInt("installation_id")
 	state := c.Query("state")
 
-	if state == "" || !manifestStates.validate(state, 30*time.Minute) {
+	if state == "" || !installStates.validate(state, 30*time.Minute) {
 		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state")
 	}
 
@@ -1039,10 +1065,17 @@ func GitHubInstallCallback(c *fiber.Ctx) error {
 }
 
 // GitHubConfigRequest represents GitHub config setup request
+// Supports either OAuth App (client_id/secret) or GitHub App (app_id + private_key + installation_id)
 type GitHubConfigRequest struct {
-	ClientID     string `json:"client_id" validate:"required"`
-	ClientSecret string `json:"client_secret" validate:"required"`
-	RedirectURI  string `json:"redirect_uri" validate:"required"`
+	ClientID        string  `json:"client_id"`
+	ClientSecret    string  `json:"client_secret"`
+	RedirectURI     string  `json:"redirect_uri"`
+	AppID           *int64  `json:"app_id"`
+	AppSlug         *string `json:"app_slug"`
+	AppName         *string `json:"app_name"`
+	PrivateKey      *string `json:"private_key"`
+	InstallationID  *int64  `json:"installation_id"`
+	WebhookSecretIn *string `json:"webhook_secret"`
 }
 
 // GitHubConfigResponse represents GitHub config response (without secrets)
@@ -1066,19 +1099,41 @@ func SetupGitHubConfig(c *fiber.Ctx) error {
 	req.ClientID = strings.TrimSpace(req.ClientID)
 	req.ClientSecret = strings.TrimSpace(req.ClientSecret)
 	req.RedirectURI = strings.TrimSpace(req.RedirectURI)
+	if req.AppSlug != nil {
+		s := strings.TrimSpace(*req.AppSlug)
+		req.AppSlug = &s
+	}
+	if req.AppName != nil {
+		n := strings.TrimSpace(*req.AppName)
+		req.AppName = &n
+	}
+	if req.PrivateKey != nil {
+		pk := strings.TrimSpace(*req.PrivateKey)
+		req.PrivateKey = &pk
+	}
 
-	// Validate required fields
-	if req.ClientID == "" || req.ClientSecret == "" || req.RedirectURI == "" {
+	// Validate: either OAuth App (client_id/secret) or GitHub App (app_id + private_key + installation_id)
+	hasOAuth := req.ClientID != "" && req.ClientSecret != ""
+	hasApp := req.AppID != nil && req.PrivateKey != nil && req.InstallationID != nil
+	if !hasOAuth && !hasApp {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "All fields are required",
+			"error": "Provide either Client ID/Secret or App ID + Private Key + Installation ID",
 		})
+	}
+
+	// Default redirect URI
+	if req.RedirectURI == "" {
+		req.RedirectURI = fmt.Sprintf("%s/api/v1/github/auth/callback", c.BaseURL())
 	}
 
 	// Generate webhook secret
 	webhookSecret := generateSecureSecret()
+	if req.WebhookSecretIn != nil && *req.WebhookSecretIn != "" {
+		webhookSecret = *req.WebhookSecretIn
+	}
 
 	// Save to database (encrypted)
-	err := saveGitHubConfigToDB(req.ClientID, req.ClientSecret, req.RedirectURI, webhookSecret, nil, nil, nil, nil, nil)
+	err := saveGitHubConfigToDB(req.ClientID, req.ClientSecret, req.RedirectURI, webhookSecret, req.AppID, req.AppSlug, req.AppName, req.PrivateKey, req.InstallationID)
 	if err != nil {
 		log.Printf("[GITHUB] Failed to save GitHub config to database: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -1087,12 +1142,17 @@ func SetupGitHubConfig(c *fiber.Ctx) error {
 	}
 
 	// Setup GitHub OAuth in memory
-	err = utils.SetupGitHubOAuth(req.ClientID, req.ClientSecret, req.RedirectURI, webhookSecret)
-	if err != nil {
-		log.Printf("[GITHUB] Failed to setup GitHub OAuth: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to setup GitHub OAuth",
-		})
+	if hasOAuth {
+		err = utils.SetupGitHubOAuth(req.ClientID, req.ClientSecret, req.RedirectURI, webhookSecret)
+		if err != nil {
+			log.Printf("[GITHUB] Failed to setup GitHub OAuth: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to setup GitHub OAuth",
+			})
+		}
+	}
+	if hasApp {
+		utils.SetupGitHubApp(*req.AppID, req.AppSlug, req.PrivateKey, req.InstallationID, req.AppName)
 	}
 
 	log.Printf("[GITHUB] ✅ GitHub OAuth setup completed")
@@ -1151,6 +1211,7 @@ func GetGitHubConfig(c *fiber.Ctx) error {
 		"redirect_uri":    config.RedirectURI,
 		"is_active":       true,
 		"configured_at":   config.CreatedAt.Format(time.RFC3339),
+		"app_id":          config.AppID,
 		"app_slug":        config.AppSlug,
 		"app_name":        config.AppName,
 		"installation_id": config.InstallationID,

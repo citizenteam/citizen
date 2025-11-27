@@ -175,6 +175,7 @@ func SetupRoutes(app *fiber.App) {
 		githubProtected.Post("/connect", handlers.ConnectRepository)
 		githubProtected.Delete("/apps/:app_name/disconnect", handlers.DisconnectRepository)
 		githubProtected.Put("/apps/:app_name/auto-deploy", handlers.ToggleAutoDeploy)
+		githubProtected.Post("/app/install/start", handlers.StartGitHubInstall)
 	}
 
 	// GitHub webhook endpoint (public - no auth required)
