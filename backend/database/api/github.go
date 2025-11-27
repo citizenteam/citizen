@@ -36,7 +36,7 @@ func (g *GitHubAPI) GetUserGitHubAccessToken(ctx context.Context, userID int) (s
 	}
 
 	query := `SELECT github_access_token FROM users WHERE id = $1 AND github_connected = true`
-	
+
 	var accessToken string
 	err := QueryRow(ctx, query, userID).Scan(&accessToken)
 	if err != nil {
@@ -99,7 +99,7 @@ func (g *GitHubAPI) GetGitHubRepositoryConnection(ctx context.Context, userID in
 	var userIDResult int
 	var webhookID *int64
 	var fullName string
-	
+
 	err := QueryRow(ctx, query, appName, userID).Scan(&userIDResult, &webhookID, &fullName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get repository connection: %w", err)
@@ -126,7 +126,7 @@ func (g *GitHubAPI) GetGitHubRepositoryConnectionByAppName(ctx context.Context, 
 	var userID int
 	var webhookID *int64
 	var fullName string
-	
+
 	err := QueryRow(ctx, query, appName).Scan(&userID, &webhookID, &fullName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get repository connection: %w", err)
@@ -178,7 +178,7 @@ func (g *GitHubAPI) GetGitHubRepositoryByID(ctx context.Context, githubID int64)
 
 	var appName, deployBranch string
 	var autoDeployEnabled bool
-	
+
 	err := QueryRow(ctx, query, githubID).Scan(&appName, &autoDeployEnabled, &deployBranch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get repository: %w", err)
@@ -218,28 +218,28 @@ func (g *GitHubAPI) GetGitHubRepositoryConnections(ctx context.Context, userID i
 		var webhookID *int64
 		var connectedAt, lastDeploy, createdAt interface{}
 
-		err := rows.Scan(&appName, &githubID, &fullName, &name, &owner, &cloneURL, &htmlURL, &private, 
+		err := rows.Scan(&appName, &githubID, &fullName, &name, &owner, &cloneURL, &htmlURL, &private,
 			&defaultBranch, &autoDeploy, &deployBranch, &webhookID, &connectedAt, &lastDeploy, &createdAt)
 		if err != nil {
 			continue
 		}
 
 		connections = append(connections, map[string]interface{}{
-			"app_name":        appName,
-			"github_id":       githubID,
-			"full_name":       fullName,
+			"app_name":       appName,
+			"github_id":      githubID,
+			"full_name":      fullName,
 			"name":           name,
 			"owner":          owner,
-			"clone_url":       cloneURL,
-			"html_url":        htmlURL,
+			"clone_url":      cloneURL,
+			"html_url":       htmlURL,
 			"private":        private,
-			"default_branch":  defaultBranch,
-			"auto_deploy":     autoDeploy,
-			"deploy_branch":   deployBranch,
-			"webhook_id":      webhookID,
-			"connected_at":    connectedAt,
-			"last_deploy":     lastDeploy,
-			"created_at":      createdAt,
+			"default_branch": defaultBranch,
+			"auto_deploy":    autoDeploy,
+			"deploy_branch":  deployBranch,
+			"webhook_id":     webhookID,
+			"connected_at":   connectedAt,
+			"last_deploy":    lastDeploy,
+			"created_at":     createdAt,
 		})
 	}
 
@@ -248,44 +248,46 @@ func (g *GitHubAPI) GetGitHubRepositoryConnections(ctx context.Context, userID i
 
 // GitHubConfig represents GitHub OAuth configuration
 type GitHubConfig struct {
-	ClientID      string
-	ClientSecret  string
-	WebhookSecret string
-	RedirectURI   string
-	AppID         *int64
-	AppSlug       *string
-	AppName       *string
-	PrivateKey    *string
+	ClientID       string
+	ClientSecret   string
+	WebhookSecret  string
+	RedirectURI    string
+	AppID          *int64
+	AppSlug        *string
+	AppName        *string
+	PrivateKey     *string
 	InstallationID *int64
-	CreatedAt     time.Time
+	CreatedAt      time.Time
 }
 
 // GetGitHubConfig retrieves GitHub config (without secrets)
 func (g *GitHubAPI) GetGitHubConfig(ctx context.Context) (*GitHubConfig, error) {
 	query := `
-		SELECT client_id, redirect_uri, app_slug, app_name, installation_id, created_at
+		SELECT client_id, redirect_uri, app_id, app_slug, app_name, installation_id, created_at
 		FROM github_config
 		WHERE is_active = true
 		ORDER BY updated_at DESC
 		LIMIT 1`
 
 	var clientID, redirectURI string
+	var appID *int64
 	var appSlug, appName *string
 	var installationID *int64
 	var createdAt time.Time
 
-	err := QueryRow(ctx, query).Scan(&clientID, &redirectURI, &appSlug, &appName, &installationID, &createdAt)
+	err := QueryRow(ctx, query).Scan(&clientID, &redirectURI, &appID, &appSlug, &appName, &installationID, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitHub config: %w", err)
 	}
 
 	return &GitHubConfig{
-		ClientID:    clientID,
-		RedirectURI: redirectURI,
-		AppSlug:     appSlug,
-		AppName:     appName,
+		ClientID:       clientID,
+		RedirectURI:    redirectURI,
+		AppID:          appID,
+		AppSlug:        appSlug,
+		AppName:        appName,
 		InstallationID: installationID,
-		CreatedAt:   createdAt,
+		CreatedAt:      createdAt,
 	}, nil
 }
 
@@ -310,14 +312,14 @@ func (g *GitHubAPI) GetGitHubConfigFull(ctx context.Context) (*GitHubConfig, err
 	}
 
 	return &GitHubConfig{
-		ClientID:      clientID,
-		ClientSecret:  clientSecret,
-		WebhookSecret: webhookSecret,
-		RedirectURI:   redirectURI,
-		AppID:         appID,
-		AppSlug:       appSlug,
-		AppName:       appName,
-		PrivateKey:    privateKey,
+		ClientID:       clientID,
+		ClientSecret:   clientSecret,
+		WebhookSecret:  webhookSecret,
+		RedirectURI:    redirectURI,
+		AppID:          appID,
+		AppSlug:        appSlug,
+		AppName:        appName,
+		PrivateKey:     privateKey,
 		InstallationID: installationID,
 	}, nil
 }
@@ -389,4 +391,4 @@ func (g *GitHubAPI) GetGitHubRepositoryDeployBranch(ctx context.Context, appName
 	}
 
 	return deployBranch, nil
-} 
+}
