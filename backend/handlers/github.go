@@ -854,33 +854,25 @@ func GetGitHubStatus(c *fiber.Ctx) error {
 }
 
 // StartGitHubManifest kicks off GitHub App manifest flow (instance-owned app)
+// This returns a URL to the manifest redirect endpoint which will POST the manifest to GitHub
 func StartGitHubManifest(c *fiber.Ctx) error {
+	// Generate secure state for CSRF protection
+	state := generateSecureSecret()
+	manifestStates.add(state)
+
 	baseURL := c.BaseURL()
-	webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
-	oauthCallback := fmt.Sprintf("%s/api/v1/github/auth/callback", baseURL)
+	
+	// Return URL to our manifest redirect endpoint which will handle the POST
+	manifestURL := fmt.Sprintf("%s/api/v1/github/app/manifest/redirect?state=%s", baseURL, url.QueryEscape(state))
 
-	// Fallback to GitHub's query-parameter prefill (no manifest) to avoid blank form issues.
-	params := url.Values{}
-	params.Add("name", fmt.Sprintf("citizen-%d", time.Now().Unix()))
-	params.Add("description", "Citizen deployment integration")
-	params.Add("url", baseURL)
-	params.Add("callback_urls[]", oauthCallback)
-	params.Add("request_oauth_on_install", "true")
-	params.Add("public", "false")
-	params.Add("webhook_active", "true")
-	params.Add("webhook_url", webhookURL)
-	params.Add("events[]", "push")
-	params.Add("contents", "read")
-	params.Add("metadata", "read")
-	params.Add("pull_requests", "read")
-
-	manifestURL := fmt.Sprintf("https://github.com/settings/apps/new?%s", params.Encode())
+	log.Printf("[GITHUB] Starting manifest flow with state: %s", state[:8]+"...")
 
 	return c.JSON(utils.NewCitizenResponse(
 		true,
 		"GitHub App manifest URL generated",
 		fiber.Map{
 			"manifest_url": manifestURL,
+			"state":        state,
 		},
 	))
 }
@@ -929,21 +921,32 @@ func StartGitHubInstall(c *fiber.Ctx) error {
 func GitHubManifestRedirect(c *fiber.Ctx) error {
 	state := c.Query("state")
 	if state == "" {
-		return c.Status(fiber.StatusBadRequest).SendString("Missing state")
+		return c.Status(fiber.StatusBadRequest).SendString("Missing state parameter")
+	}
+
+	// Validate state exists in our store (but don't consume it yet - callback will do that)
+	if !manifestStates.exists(state) {
+		log.Printf("[GITHUB] Invalid or expired state in manifest redirect: %s", state[:8]+"...")
+		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state - please try again")
 	}
 
 	baseURL := c.BaseURL()
 	webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
 	redirectURL := fmt.Sprintf("%s/api/v1/github/app/manifest/callback?state=%s", baseURL, url.QueryEscape(state))
 
+	// Generate unique app name based on domain
+	appName := fmt.Sprintf("citizen-%d", time.Now().Unix())
+	
 	manifest := map[string]interface{}{
-		"name":         fmt.Sprintf("citizen-%d", time.Now().Unix()),
-		"description":  "Citizen deployment integration",
+		"name":         appName,
+		"description":  "Citizen PaaS deployment integration",
 		"url":          baseURL,
 		"redirect_url": redirectURL,
 		"public":       false,
+		"request_oauth_on_install": true,
 		"default_events": []string{
 			"push",
+			"pull_request",
 		},
 		"default_permissions": map[string]string{
 			"contents":      "read",
@@ -951,24 +954,74 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 			"pull_requests": "read",
 		},
 		"hook_attributes": map[string]string{
-			"url":          webhookURL,
-			"content_type": "json",
+			"url":    webhookURL,
+			"active": "true",
 		},
 	}
 
-	body, _ := json.Marshal(manifest)
+	body, err := json.Marshal(manifest)
+	if err != nil {
+		log.Printf("[GITHUB] Failed to marshal manifest: %v", err)
+		return c.Status(fiber.StatusInternalServerError).SendString("Failed to create manifest")
+	}
+
 	action := fmt.Sprintf("https://github.com/settings/apps/new?state=%s", url.QueryEscape(state))
+
+	log.Printf("[GITHUB] Rendering manifest redirect form for app: %s", appName)
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
+<head>
+  <title>Creating GitHub App...</title>
+  <style>
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex; 
+      justify-content: center; 
+      align-items: center; 
+      height: 100vh; 
+      margin: 0;
+      background: #f6f8fa;
+    }
+    .container { text-align: center; }
+    .spinner {
+      border: 3px solid #e1e4e8;
+      border-top: 3px solid #0366d6;
+      border-radius: 50%%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin { 0%% { transform: rotate(0deg); } 100%% { transform: rotate(360deg); } }
+    h2 { color: #24292e; margin-bottom: 8px; }
+    p { color: #586069; }
+    button { 
+      background: #0366d6; 
+      color: white; 
+      border: none; 
+      padding: 12px 24px; 
+      border-radius: 6px; 
+      font-size: 14px;
+      cursor: pointer;
+      margin-top: 16px;
+    }
+    button:hover { background: #0256cc; }
+  </style>
+</head>
 <body onload="document.forms[0].submit()">
-<form action="%s" method="post">
-  <input type="hidden" name="manifest" value='%s'>
-  <noscript>
-    <p>Click continue to register the GitHub App.</p>
-    <button type="submit">Continue</button>
-  </noscript>
-</form>
+<div class="container">
+  <div class="spinner"></div>
+  <h2>Creating GitHub App</h2>
+  <p>Redirecting to GitHub...</p>
+  <form action="%s" method="post">
+    <input type="hidden" name="manifest" value='%s'>
+    <noscript>
+      <p style="color: #cb2431;">JavaScript is disabled.</p>
+      <button type="submit">Click to Continue</button>
+    </noscript>
+  </form>
+</div>
 </body>
 </html>`, action, htmlEscapeSingleQuotes(string(body)))
 
@@ -979,29 +1032,38 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 func GitHubManifestCallback(c *fiber.Ctx) error {
 	code := c.Query("code")
 	state := c.Query("state")
+	
+	log.Printf("[GITHUB] Manifest callback received: code=%s, state=%s", 
+		code[:min(8, len(code))]+"...", state[:min(8, len(state))]+"...")
+
 	if code == "" {
-		return c.Status(fiber.StatusBadRequest).SendString("Missing manifest code")
+		log.Printf("[GITHUB] Missing manifest code in callback")
+		return c.Status(fiber.StatusBadRequest).SendString("Missing manifest code - GitHub did not return a code")
 	}
 	if state == "" || !manifestStates.validate(state, 15*time.Minute) {
-		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state")
+		log.Printf("[GITHUB] Invalid or expired state in manifest callback")
+		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state - please try again")
 	}
 
+	// Convert the manifest code to get app credentials
 	req, err := http.NewRequest("POST", fmt.Sprintf("https://api.github.com/app-manifests/%s/conversions", code), nil)
 	if err != nil {
+		log.Printf("[GITHUB] Failed to build manifest conversion request: %v", err)
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to build request")
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("[GITHUB] Failed to call GitHub API for manifest conversion: %v", err)
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to convert manifest code")
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		log.Printf("[GITHUB] Manifest conversion failed: %s", string(body))
-		return c.Status(resp.StatusCode).SendString("Manifest conversion failed")
+		log.Printf("[GITHUB] Manifest conversion failed (status %d): %s", resp.StatusCode, string(body))
+		return c.Status(resp.StatusCode).SendString("GitHub manifest conversion failed - please try again")
 	}
 
 	var manifestResp struct {
@@ -1012,11 +1074,15 @@ func GitHubManifestCallback(c *fiber.Ctx) error {
 		ClientSecret  string `json:"client_secret"`
 		WebhookSecret string `json:"webhook_secret"`
 		Pem           string `json:"pem"`
+		HTMLURL       string `json:"html_url"`
 	}
 	if err := json.Unmarshal(body, &manifestResp); err != nil {
 		log.Printf("[GITHUB] Failed to parse manifest conversion response: %v", err)
-		return c.Status(fiber.StatusInternalServerError).SendString("Invalid manifest response")
+		return c.Status(fiber.StatusInternalServerError).SendString("Invalid manifest response from GitHub")
 	}
+
+	log.Printf("[GITHUB] ✅ GitHub App created: id=%d, slug=%s, name=%s", 
+		manifestResp.ID, manifestResp.Slug, manifestResp.Name)
 
 	baseURL := c.BaseURL()
 	redirectURI := fmt.Sprintf("%s/api/v1/github/auth/callback", baseURL)
@@ -1026,32 +1092,53 @@ func GitHubManifestCallback(c *fiber.Ctx) error {
 	appName := manifestResp.Name
 	privateKey := manifestResp.Pem
 
+	// Save the GitHub App configuration to database (including private key)
 	if err := saveGitHubConfigToDB(manifestResp.ClientID, manifestResp.ClientSecret, redirectURI, manifestResp.WebhookSecret, &appID, &appSlug, &appName, &privateKey, nil); err != nil {
-		log.Printf("[GITHUB] Failed to save manifest config: %v", err)
+		log.Printf("[GITHUB] Failed to save manifest config to database: %v", err)
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to save GitHub App config")
 	}
 
-	// Warm memory caches
+	// Setup in-memory caches
 	_ = utils.SetupGitHubOAuth(manifestResp.ClientID, manifestResp.ClientSecret, redirectURI, manifestResp.WebhookSecret)
 	utils.SetupGitHubApp(appID, &appSlug, &privateKey, nil, &appName)
 
+	log.Printf("[GITHUB] GitHub App config saved successfully, redirecting to installation...")
+
+	// Generate install state and redirect to GitHub App installation
 	installState := generateSecureSecret()
 	installStates.add(installState)
-	installURL := fmt.Sprintf("https://github.com/apps/%s/installations/new?state=%s&redirect_url=%s", url.QueryEscape(appSlug), url.QueryEscape(installState), url.QueryEscape(fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL)))
+	installURL := fmt.Sprintf("https://github.com/apps/%s/installations/new?state=%s&redirect_url=%s", 
+		url.QueryEscape(appSlug), 
+		url.QueryEscape(installState), 
+		url.QueryEscape(fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL)))
 
 	return c.Redirect(installURL, http.StatusFound)
+}
+
+// min returns the smaller of two integers (helper for Go versions < 1.21)
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // GitHubInstallCallback stores installation ID after user installs the App
 func GitHubInstallCallback(c *fiber.Ctx) error {
 	installationID := c.QueryInt("installation_id")
 	state := c.Query("state")
+	setupAction := c.Query("setup_action") // "install" or "update"
+
+	log.Printf("[GITHUB] Install callback received: installation_id=%d, state=%s, setup_action=%s", 
+		installationID, state[:min(8, len(state))]+"...", setupAction)
 
 	if state == "" || !installStates.validate(state, 30*time.Minute) {
-		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state")
+		log.Printf("[GITHUB] Invalid or expired state in install callback")
+		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state - please try again")
 	}
 
 	if installationID == 0 {
+		log.Printf("[GITHUB] Missing installation_id in callback")
 		return c.Status(fiber.StatusBadRequest).SendString("Missing installation_id")
 	}
 
@@ -1065,16 +1152,72 @@ func GitHubInstallCallback(c *fiber.Ctx) error {
 	if appID != nil && privateKey != nil {
 		inst := int64(installationID)
 		utils.SetupGitHubApp(*appID, appSlug, privateKey, &inst, appName)
+		log.Printf("[GITHUB] ✅ GitHub App installed successfully: app_id=%d, installation_id=%d", *appID, installationID)
 	}
 
-	html := `<html><body><script>
-		if (window.opener) {
-			window.opener.postMessage({ type: 'github-app-install-success' }, '*');
-			window.close();
-		} else {
-			document.write('GitHub App installed. You can close this window.');
-		}
-	</script></body></html>`
+	// Return a nice success page that notifies the opener and closes
+	html := `<!DOCTYPE html>
+<html>
+<head>
+  <title>GitHub App Installed</title>
+  <style>
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex; 
+      justify-content: center; 
+      align-items: center; 
+      height: 100vh; 
+      margin: 0;
+      background: #f6f8fa;
+    }
+    .container { text-align: center; max-width: 400px; padding: 40px; }
+    .success-icon {
+      width: 64px;
+      height: 64px;
+      background: #28a745;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 20px;
+    }
+    .success-icon svg { width: 32px; height: 32px; }
+    h2 { color: #24292e; margin-bottom: 8px; }
+    p { color: #586069; margin-bottom: 20px; }
+    .closing { color: #0366d6; font-size: 14px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="success-icon">
+    <svg fill="white" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+  </div>
+  <h2>GitHub App Installed!</h2>
+  <p>Your GitHub App has been successfully connected to this Citizen instance.</p>
+  <p class="closing">This window will close automatically...</p>
+</div>
+<script>
+  // Notify parent window and close
+  setTimeout(function() {
+    if (window.opener) {
+      window.opener.postMessage({ 
+        type: 'github-app-install-success',
+        installation_id: ` + fmt.Sprintf("%d", installationID) + `
+      }, '*');
+      window.close();
+    }
+  }, 1500);
+  
+  // Fallback: show close button after 3 seconds
+  setTimeout(function() {
+    if (!window.closed) {
+      document.querySelector('.closing').innerHTML = 
+        '<button onclick="window.close()" style="background:#0366d6;color:white;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;">Close Window</button>';
+    }
+  }, 3000);
+</script>
+</body>
+</html>`
 
 	return c.Type("html").SendString(html)
 }
@@ -1289,6 +1432,13 @@ func (s *stateStore) validate(state string, maxAge time.Duration) bool {
 	}
 	delete(s.items, state)
 	return true
+}
+
+func (s *stateStore) exists(state string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.items[state]
+	return ok
 }
 
 // generateSecureSecret generates a cryptographically secure secret
