@@ -503,7 +503,7 @@ func DisconnectRepository(c *fiber.Ctx) error {
 
 	// Get user's GitHub access token or fall back to installation token
 	accessToken, err := api.GitHub.GetUserGitHubAccessToken(c.Context(), userID.(int))
-	if (err != nil || accessToken == "") {
+	if err != nil || accessToken == "" {
 		if tokenResp, instErr := utils.GetGitHubInstallationToken(); instErr == nil {
 			accessToken = tokenResp.Token
 			err = nil
@@ -840,13 +840,13 @@ func GetGitHubStatus(c *fiber.Ctx) error {
 		true,
 		"GitHub status fetched successfully",
 		fiber.Map{
-			"github_configured": isConfigured,
-			"github_connected":  githubConnected,
-			"github_username":   githubUsername,
-			"github_id":         githubID,
-			"github_app_id":     appID,
-			"github_app_slug":   appSlug,
-			"github_app_name":   appName,
+			"github_configured":      isConfigured,
+			"github_connected":       githubConnected,
+			"github_username":        githubUsername,
+			"github_id":              githubID,
+			"github_app_id":          appID,
+			"github_app_slug":        appSlug,
+			"github_app_name":        appName,
 			"github_installation_id": installationID,
 		},
 	))
@@ -854,20 +854,32 @@ func GetGitHubStatus(c *fiber.Ctx) error {
 
 // StartGitHubManifest kicks off GitHub App manifest flow (instance-owned app)
 func StartGitHubManifest(c *fiber.Ctx) error {
-	state := generateSecureSecret()
-	manifestStates.add(state)
-
 	baseURL := c.BaseURL()
+	webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
+	oauthCallback := fmt.Sprintf("%s/api/v1/github/auth/callback", baseURL)
 
-	// We will POST the manifest via a local redirect helper to avoid CSP issues in browsers.
-	manifestURL := fmt.Sprintf("%s/api/v1/github/app/manifest/redirect?state=%s", baseURL, url.QueryEscape(state))
+	// Fallback to GitHub's query-parameter prefill (no manifest) to avoid blank form issues.
+	params := url.Values{}
+	params.Add("name", fmt.Sprintf("citizen-%d", time.Now().Unix()))
+	params.Add("description", "Citizen deployment integration")
+	params.Add("url", baseURL)
+	params.Add("callback_urls[]", oauthCallback)
+	params.Add("request_oauth_on_install", "true")
+	params.Add("public", "false")
+	params.Add("webhook_active", "true")
+	params.Add("webhook_url", webhookURL)
+	params.Add("events[]", "push")
+	params.Add("contents", "read")
+	params.Add("metadata", "read")
+	params.Add("pull_requests", "read")
+
+	manifestURL := fmt.Sprintf("https://github.com/settings/apps/new?%s", params.Encode())
 
 	return c.JSON(utils.NewCitizenResponse(
 		true,
 		"GitHub App manifest URL generated",
 		fiber.Map{
 			"manifest_url": manifestURL,
-			"state":        state,
 		},
 	))
 }
@@ -885,7 +897,7 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 
 	manifest := map[string]interface{}{
 		"name":         fmt.Sprintf("citizen-%d", time.Now().Unix()),
-		"description": "Citizen deployment integration",
+		"description":  "Citizen deployment integration",
 		"url":          baseURL,
 		"redirect_url": redirectURL,
 		"public":       false,
@@ -1134,13 +1146,13 @@ func GetGitHubConfig(c *fiber.Ctx) error {
 	}
 
 	response := fiber.Map{
-		"configured":    true,
-		"client_id":     maskedClientID,
-		"redirect_uri":  config.RedirectURI,
-		"is_active":     true,
-		"configured_at": config.CreatedAt.Format(time.RFC3339),
-		"app_slug":      config.AppSlug,
-		"app_name":      config.AppName,
+		"configured":      true,
+		"client_id":       maskedClientID,
+		"redirect_uri":    config.RedirectURI,
+		"is_active":       true,
+		"configured_at":   config.CreatedAt.Format(time.RFC3339),
+		"app_slug":        config.AppSlug,
+		"app_name":        config.AppName,
 		"installation_id": config.InstallationID,
 	}
 
