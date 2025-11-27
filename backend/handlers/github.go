@@ -952,7 +952,7 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 		"redirect_url":             redirectURL,
 		"callback_urls":            []string{callbackURL},
 		"public":                   false,
-		"request_oauth_on_install": true,
+		"request_oauth_on_install": false, // Don't request OAuth during install - we use installation tokens
 		"setup_on_update":          true,
 		"default_events": []string{
 			"push",
