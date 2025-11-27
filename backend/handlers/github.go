@@ -858,8 +858,6 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 	manifestStates.add(state)
 
 	baseURL := c.BaseURL()
-	webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
-	redirectURL := fmt.Sprintf("%s/api/v1/github/app/manifest/callback?state=%s", baseURL, url.QueryEscape(state))
 
 	// We will POST the manifest via a local redirect helper to avoid CSP issues in browsers.
 	manifestURL := fmt.Sprintf("%s/api/v1/github/app/manifest/redirect?state=%s", baseURL, url.QueryEscape(state))
