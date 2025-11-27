@@ -942,13 +942,18 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 	// Generate unique app name based on domain
 	appName := fmt.Sprintf("citizen-%d", time.Now().Unix())
 
+	// OAuth callback URL for user authorization
+	callbackURL := fmt.Sprintf("%s/api/v1/github/auth/callback", baseURL)
+
 	manifest := map[string]interface{}{
 		"name":                     appName,
 		"description":              "Citizen PaaS deployment integration",
 		"url":                      baseURL,
 		"redirect_url":             redirectURL,
+		"callback_urls":            []string{callbackURL},
 		"public":                   false,
 		"request_oauth_on_install": true,
+		"setup_on_update":          true,
 		"default_events": []string{
 			"push",
 			"pull_request",

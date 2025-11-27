@@ -13,15 +13,35 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Bootstrap agent dizinini otomatik bul
+find_citizen_source() {
+    # Önce bootstrap-* dizinlerini ara
+    local bootstrap_dir=$(find /opt/citizen -maxdepth 1 -type d -name "bootstrap-*" 2>/dev/null | head -1)
+    if [ -n "$bootstrap_dir" ] && [ -f "$bootstrap_dir/docker/dockerfiles/Dockerfile" ]; then
+        echo "$bootstrap_dir"
+        return
+    fi
+    
+    # Sonra data/sources dizinini ara
+    local sources_dir=$(find /opt/citizen/data/sources -maxdepth 1 -type d 2>/dev/null | tail -1)
+    if [ -n "$sources_dir" ] && [ -f "$sources_dir/docker/dockerfiles/Dockerfile" ]; then
+        echo "$sources_dir"
+        return
+    fi
+    
+    # Fallback
+    echo "/opt/citizen"
+}
+
 # Varsayılan değerler
-CITIZEN_DIR="${CITIZEN_DIR:-/opt/citizen}"
+CITIZEN_DIR="${CITIZEN_DIR:-$(find_citizen_source)}"
 KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 IMAGE_NAME="${IMAGE_NAME:-citizen-backend:local}"
 DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-citizen-platform-api}"
 CONTAINER_NAME="${CONTAINER_NAME:-api}"
 NAMESPACE="${NAMESPACE:-citizen-system}"
-GIT_BRANCH="${GIT_BRANCH:-main}"
-SKIP_GIT_PULL="${SKIP_GIT_PULL:-false}"
+GIT_BRANCH="${GIT_BRANCH:-dokku-replacement}"
+SKIP_GIT_PULL="${SKIP_GIT_PULL:-true}"
 
 export KUBECONFIG
 
