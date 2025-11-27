@@ -888,6 +888,21 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 // StartGitHubInstall generates an install URL for existing app
 func StartGitHubInstall(c *fiber.Ctx) error {
 	appID, appSlug, _, _, _ := utils.GetGitHubAppConfig()
+
+	// Allow optional overrides via request body for existing app flow
+	var body struct {
+		AppID   *int64  `json:"app_id"`
+		AppSlug *string `json:"app_slug"`
+	}
+	_ = c.BodyParser(&body)
+
+	if body.AppID != nil {
+		appID = body.AppID
+	}
+	if body.AppSlug != nil && *body.AppSlug != "" {
+		appSlug = body.AppSlug
+	}
+
 	if appSlug == nil || appID == nil {
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,
@@ -1112,12 +1127,12 @@ func SetupGitHubConfig(c *fiber.Ctx) error {
 		req.PrivateKey = &pk
 	}
 
-	// Validate: either OAuth App (client_id/secret) or GitHub App (app_id + private_key + installation_id)
+	// Validate: either OAuth App (client_id/secret) or GitHub App (app_id)
 	hasOAuth := req.ClientID != "" && req.ClientSecret != ""
-	hasApp := req.AppID != nil && req.PrivateKey != nil && req.InstallationID != nil
+	hasApp := req.AppID != nil
 	if !hasOAuth && !hasApp {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Provide either Client ID/Secret or App ID + Private Key + Installation ID",
+			"error": "Provide either Client ID/Secret or App ID",
 		})
 	}
 
@@ -1152,7 +1167,9 @@ func SetupGitHubConfig(c *fiber.Ctx) error {
 		}
 	}
 	if hasApp {
-		utils.SetupGitHubApp(*req.AppID, req.AppSlug, req.PrivateKey, req.InstallationID, req.AppName)
+		if req.PrivateKey != nil {
+			utils.SetupGitHubApp(*req.AppID, req.AppSlug, req.PrivateKey, req.InstallationID, req.AppName)
+		}
 	}
 
 	log.Printf("[GITHUB] ✅ GitHub OAuth setup completed")
