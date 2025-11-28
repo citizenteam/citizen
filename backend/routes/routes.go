@@ -172,7 +172,6 @@ func SetupRoutes(app *fiber.App) {
 
 		// GitHub OAuth endpoints
 		githubProtected.Get("/auth/init", handlers.GitHubAuthInit)
-		githubProtected.Get("/auth/callback", handlers.GitHubAuthCallback)
 		githubProtected.Get("/status", handlers.GetGitHubStatus)
 		githubProtected.Delete("/disconnect", handlers.DisconnectGitHubAccount) // Disconnect GitHub account
 		githubProtected.Get("/repositories", handlers.ListGitHubRepositories)
@@ -186,6 +185,7 @@ func SetupRoutes(app *fiber.App) {
 
 	// GitHub webhook endpoint (public - no auth required)
 	github.Post("/webhook", handlers.GitHubWebhookHandler)
+	github.Get("/auth/callback", handlers.GitHubAuthCallback) // OAuth callback (public - uses state for user validation)
 	github.Get("/app/manifest/callback", handlers.GitHubManifestCallback)
 	github.Get("/app/manifest/redirect", handlers.GitHubManifestRedirect)
 	github.Get("/app/install/callback", handlers.GitHubInstallCallback)

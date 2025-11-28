@@ -201,7 +201,7 @@ func GetGitHubOAuthURL(state string) (string, error) {
 	params := url.Values{}
 	params.Add("client_id", clientID)
 	params.Add("redirect_uri", redirectURI)
-	params.Add("scope", "repo,read:user,user:email")
+	params.Add("scope", "read:user")
 	params.Add("state", state)
 
 	return fmt.Sprintf("%s?%s", baseURL, params.Encode()), nil
@@ -505,6 +505,58 @@ func generateGitHubAppJWT(appID int64, pemKey string) (string, error) {
 		return "", fmt.Errorf("sign jwt: %w", err)
 	}
 	return signed, nil
+}
+
+// GenerateGitHubAppJWTWithKey creates a JWT using provided app ID and private key
+func GenerateGitHubAppJWTWithKey(appID int64, pemKey string) (string, error) {
+	return generateGitHubAppJWT(appID, pemKey)
+}
+
+// AppInstallation represents a GitHub App installation
+type AppInstallation struct {
+	ID      int64 `json:"id"`
+	Account struct {
+		Login string `json:"login"`
+		ID    int64  `json:"id"`
+		Type  string `json:"type"`
+	} `json:"account"`
+	AppID               int64  `json:"app_id"`
+	TargetType          string `json:"target_type"`
+	RepositorySelection string `json:"repository_selection"`
+}
+
+// GetAppInstallationsWithJWT lists all installations for a GitHub App using JWT
+func GetAppInstallationsWithJWT(jwtToken string) ([]AppInstallation, error) {
+	url := "https://api.github.com/app/installations"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get installations: %s", string(body))
+	}
+
+	var installations []AppInstallation
+	if err := json.Unmarshal(body, &installations); err != nil {
+		return nil, err
+	}
+	return installations, nil
 }
 
 // GetGitHubInstallationToken returns an installation access token using stored app config

@@ -93,17 +93,8 @@ func GitHubAuthInit(c *fiber.Ctx) error {
 }
 
 // GitHubAuthCallback handles GitHub OAuth callback
+// This is a public endpoint - user validation is done via state parameter
 func GitHubAuthCallback(c *fiber.Ctx) error {
-	// Get current user from context
-	userID := c.Locals("user_id")
-	if userID == nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-			false,
-			"User not authenticated",
-			nil,
-		))
-	}
-
 	code := c.Query("code")
 	state := c.Query("state")
 
@@ -117,7 +108,7 @@ func GitHubAuthCallback(c *fiber.Ctx) error {
 
 	// CSRF Protection: Validate state parameter
 	if state == "" {
-		log.Printf("[GITHUB] CSRF Protection: Missing state parameter for user %v", userID)
+		log.Printf("[GITHUB] CSRF Protection: Missing state parameter")
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,
 			"Invalid state parameter - CSRF protection failed",
@@ -126,9 +117,8 @@ func GitHubAuthCallback(c *fiber.Ctx) error {
 	}
 
 	// Validate state format: "user_{userID}_{timestamp}_{randomComponent}"
-	expectedPrefix := fmt.Sprintf("user_%v_", userID)
-	if !strings.HasPrefix(state, expectedPrefix) {
-		log.Printf("[GITHUB] CSRF Protection: Invalid state format for user %v, state: %s", userID, state)
+	if !strings.HasPrefix(state, "user_") {
+		log.Printf("[GITHUB] CSRF Protection: Invalid state format, state: %s", state)
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,
 			"Invalid state parameter - CSRF protection failed",
@@ -139,7 +129,7 @@ func GitHubAuthCallback(c *fiber.Ctx) error {
 	// Extract and validate timestamp (prevent replay attacks)
 	parts := strings.Split(state, "_")
 	if len(parts) != 4 {
-		log.Printf("[GITHUB] CSRF Protection: Invalid state parts count for user %v, expected 4, got %d, state: %s", userID, len(parts), state)
+		log.Printf("[GITHUB] CSRF Protection: Invalid state parts count, expected 4, got %d, state: %s", len(parts), state)
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,
 			"Invalid state parameter - CSRF protection failed",
@@ -147,10 +137,11 @@ func GitHubAuthCallback(c *fiber.Ctx) error {
 		))
 	}
 
-	// Additional validation: ensure userID in state matches current user
+	// Extract userID from state
 	stateUserIDStr := parts[1]
-	if fmt.Sprintf("%v", userID) != stateUserIDStr {
-		log.Printf("[GITHUB] CSRF Protection: UserID mismatch for user %v, state userID: %s", userID, stateUserIDStr)
+	userID, err := strconv.Atoi(stateUserIDStr)
+	if err != nil {
+		log.Printf("[GITHUB] CSRF Protection: Invalid userID in state: %s", stateUserIDStr)
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,
 			"Invalid state parameter - CSRF protection failed",
@@ -229,7 +220,7 @@ func GitHubAuthCallback(c *fiber.Ctx) error {
 	}
 
 	// Update user in database with GitHub info
-	err = api.GitHub.UpdateGitHubInfo(c.Context(), userID.(int), int64(githubUser.ID), githubUser.Login, tokenResp.AccessToken)
+	err = api.GitHub.UpdateGitHubInfo(c.Context(), userID, int64(githubUser.ID), githubUser.Login, tokenResp.AccessToken)
 
 	if err != nil {
 		log.Printf("[GITHUB] Failed to update user with GitHub info: %v", err)
@@ -241,6 +232,37 @@ func GitHubAuthCallback(c *fiber.Ctx) error {
 	}
 
 	log.Printf("[GITHUB] ✅ GitHub user connected: %s (ID: %d)", githubUser.Login, githubUser.ID)
+
+	// Check if this is a popup (has state parameter) - return HTML to close popup
+	if state != "" {
+		c.Set("Content-Type", "text/html; charset=utf-8")
+		return c.SendString(`<!DOCTYPE html>
+<html>
+<head>
+	<title>GitHub Connected</title>
+	<style>
+		body { font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f9fafb; }
+		.container { text-align: center; padding: 2rem; }
+		.success { color: #16a34a; font-size: 3rem; margin-bottom: 1rem; }
+		h1 { color: #111827; font-size: 1.5rem; margin-bottom: 0.5rem; }
+		p { color: #6b7280; }
+	</style>
+</head>
+<body>
+	<div class="container">
+		<div class="success">✓</div>
+		<h1>GitHub Bağlandı!</h1>
+		<p>Bu pencere kapanıyor...</p>
+	</div>
+	<script>
+		if (window.opener) {
+			window.opener.postMessage({ type: 'github-oauth-success' }, '*');
+		}
+		setTimeout(function() { window.close(); }, 1500);
+	</script>
+</body>
+</html>`)
+	}
 
 	return c.JSON(utils.NewCitizenResponse(
 		true,
@@ -1168,7 +1190,7 @@ func ListUserGitHubAppInstallations(c *fiber.Ctx) error {
 }
 
 // ConnectExistingGitHubApp connects an existing GitHub App to this Citizen instance
-// User selects from their installed apps, provides private key, and we configure the server
+// User provides app_id, app_slug, and private_key - we find the installation automatically
 func ConnectExistingGitHubApp(c *fiber.Ctx) error {
 	log.Printf("[GITHUB] ConnectExistingGitHubApp called")
 
@@ -1200,10 +1222,10 @@ func ConnectExistingGitHubApp(c *fiber.Ctx) error {
 	}
 
 	// Validate required fields
-	if connectData.InstallationID == 0 || connectData.AppID == 0 {
+	if connectData.AppID == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,
-			"Installation ID and App ID are required",
+			"App ID is required",
 			nil,
 		))
 	}
@@ -1216,7 +1238,45 @@ func ConnectExistingGitHubApp(c *fiber.Ctx) error {
 		))
 	}
 
-	// If app_slug not provided, try to get it from GitHub
+	// If installation_id not provided, try to find it using JWT
+	if connectData.InstallationID == 0 {
+		log.Printf("[GITHUB] Installation ID not provided, trying to find it using JWT...")
+
+		// Generate JWT using the provided private key
+		jwtToken, err := utils.GenerateGitHubAppJWTWithKey(connectData.AppID, connectData.PrivateKey)
+		if err != nil {
+			log.Printf("[GITHUB] Failed to generate JWT with provided key: %v", err)
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false,
+				"Invalid Private Key - could not generate JWT",
+				nil,
+			))
+		}
+
+		// Get installations for this app
+		installations, err := utils.GetAppInstallationsWithJWT(jwtToken)
+		if err != nil {
+			log.Printf("[GITHUB] Failed to get installations: %v", err)
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false,
+				"Could not find installations. Make sure the app is installed on your account.",
+				nil,
+			))
+		}
+
+		if len(installations) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false,
+				"No installations found. Please install the app on GitHub first.",
+				nil,
+			))
+		}
+
+		// Use the first installation (typically there's only one per user/org)
+		connectData.InstallationID = installations[0].ID
+		log.Printf("[GITHUB] Found installation ID: %d", connectData.InstallationID)
+	}
+
 	if connectData.AppSlug == "" {
 		log.Printf("[GITHUB] App slug not provided, this may cause issues with install flow")
 	}
