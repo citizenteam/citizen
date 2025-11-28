@@ -54,8 +54,8 @@ func (g *GitHubAPI) ConnectGitHubRepository(ctx context.Context, userID int, app
 
 	query := `
 		INSERT INTO github_repositories 
-		(user_id, app_name, github_id, full_name, name, owner, clone_url, html_url, private, default_branch, auto_deploy_enabled, deploy_branch, webhook_id, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP)
+		(user_id, app_name, github_id, full_name, name, owner, clone_url, html_url, private, default_branch, auto_deploy_enabled, deploy_branch, webhook_id, created_at, deleted_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP, NULL)
 		ON CONFLICT (app_name) DO UPDATE SET
 			github_id = EXCLUDED.github_id,
 			full_name = EXCLUDED.full_name,
@@ -68,7 +68,8 @@ func (g *GitHubAPI) ConnectGitHubRepository(ctx context.Context, userID int, app
 			auto_deploy_enabled = EXCLUDED.auto_deploy_enabled,
 			deploy_branch = EXCLUDED.deploy_branch,
 			webhook_id = EXCLUDED.webhook_id,
-			updated_at = CURRENT_TIMESTAMP`
+			updated_at = CURRENT_TIMESTAMP,
+			deleted_at = NULL`
 
 	_, err := Exec(ctx, query, userID, appName, repositoryID, fullName, name, owner, cloneURL, htmlURL, private, defaultBranch, autoDeployEnabled, deployBranch, webhookID)
 	if err != nil {
