@@ -416,7 +416,26 @@ func executeDeployment(runID, appName, gitURL, gitBranch, builder string, userID
 
 	time.Sleep(500 * time.Millisecond) // Small delay for UX
 
-	initLog := fmt.Sprintf("🚀 Starting deployment for %s\n📦 Git URL: %s\n🌿 Branch: %s\n🔨 Builder: %s\n", appName, gitURL, gitBranch, builder)
+	// Add GitHub authentication token to git URL for private repos
+	authenticatedGitURL := gitURL
+	if strings.Contains(gitURL, "github.com") {
+		// Try GitHub App installation token first (preferred)
+		if tokenResp, tokenErr := utils.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
+			log.Printf("[DEPLOY] 🔑 Using GitHub App installation token for authentication")
+			authenticatedGitURL = strings.Replace(gitURL, "https://github.com/",
+				fmt.Sprintf("https://x-access-token:%s@github.com/", tokenResp.Token), 1)
+		} else if userID != nil {
+			// Fallback to user's GitHub access token
+			accessToken, tokenErr := api.GitHub.GetUserGitHubAccessToken(ctx, *userID)
+			if tokenErr == nil && accessToken != "" {
+				log.Printf("[DEPLOY] 🔑 Using user's GitHub access token for authentication")
+				authenticatedGitURL = strings.Replace(gitURL, "https://github.com/",
+					fmt.Sprintf("https://x-access-token:%s@github.com/", accessToken), 1)
+			}
+		}
+	}
+
+	initLog := fmt.Sprintf("Starting deployment for %s\nGit URL: %s\nBranch: %s\nBuilder: %s\n", appName, gitURL, gitBranch, builder)
 	updateStep(ctx, runID, "initializing", "completed", &initLog)
 	BroadcastDeploymentLog(runID, "initializing", "completed", initLog)
 
@@ -430,15 +449,15 @@ func executeDeployment(runID, appName, gitURL, gitBranch, builder string, userID
 	BroadcastStepUpdate(runID, "building", "running")
 	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "building")
 
-	// Execute actual deployment via platform adapter
+	// Execute actual deployment via platform adapter (using authenticated URL)
 	adapter := platform.GetAdapter()
-	output, err := adapter.DeployFromGit(appName, gitURL, gitBranch, userID)
+	output, err := adapter.DeployFromGit(appName, authenticatedGitURL, gitBranch, userID)
 	finalLogs = output
 
 	if err != nil {
 		deployErr = err
 		// Mark remaining steps as failed
-		errLog := fmt.Sprintf("❌ Deployment failed: %v", err)
+		errLog := fmt.Sprintf("Deployment failed: %v", err)
 		updateStep(ctx, runID, "cloning", "completed", nil)
 		updateStep(ctx, runID, "building", "failed", &errLog)
 		BroadcastDeploymentLog(runID, "building", "failed", errLog)
@@ -446,18 +465,18 @@ func executeDeployment(runID, appName, gitURL, gitBranch, builder string, userID
 	}
 
 	// Mark steps as completed
-	cloneLog := "✅ Repository cloned successfully\n"
+	cloneLog := "Repository cloned successfully\n"
 	updateStep(ctx, runID, "cloning", "completed", &cloneLog)
 	BroadcastDeploymentLog(runID, "cloning", "completed", cloneLog)
 
-	buildLog := "✅ Build completed successfully\n"
+	buildLog := "Build completed successfully\n"
 	updateStep(ctx, runID, "building", "completed", &buildLog)
 	BroadcastDeploymentLog(runID, "building", "completed", buildLog)
 
 	// Pushing
 	updateStep(ctx, runID, "pushing", "running", nil)
 	BroadcastStepUpdate(runID, "pushing", "running")
-	pushLog := "✅ Image pushed to registry\n"
+	pushLog := "Image pushed to registry\n"
 	updateStep(ctx, runID, "pushing", "completed", &pushLog)
 	BroadcastDeploymentLog(runID, "pushing", "completed", pushLog)
 
@@ -465,14 +484,14 @@ func executeDeployment(runID, appName, gitURL, gitBranch, builder string, userID
 	updateStep(ctx, runID, "deploying", "running", nil)
 	BroadcastStepUpdate(runID, "deploying", "running")
 	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "deploying")
-	deployLog := "✅ Deployment rolled out successfully\n"
+	deployLog := "Deployment rolled out successfully\n"
 	updateStep(ctx, runID, "deploying", "completed", &deployLog)
 	BroadcastDeploymentLog(runID, "deploying", "completed", deployLog)
 
 	// Cleanup
 	updateStep(ctx, runID, "cleanup", "running", nil)
 	BroadcastStepUpdate(runID, "cleanup", "running")
-	cleanupLog := "✅ Cleanup completed\n"
+	cleanupLog := "Cleanup completed\n"
 	updateStep(ctx, runID, "cleanup", "completed", &cleanupLog)
 	BroadcastDeploymentLog(runID, "cleanup", "completed", cleanupLog)
 

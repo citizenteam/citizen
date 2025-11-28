@@ -456,6 +456,13 @@ func DeployApp(c *fiber.Ctx) error {
 		}
 	}
 
+	// 📊 Create deployment run for tracking (K3s style)
+	var deploymentRun *api.DeploymentRun
+	if run, err := api.DeploymentRuns.CreateDeploymentRun(c.Context(), appName, deployData.GitURL, deployData.GitBranch, builderType, "manual", userID); err == nil {
+		deploymentRun = run
+		fmt.Printf("[DEPLOY] 📊 Created deployment run: %s\n", run.RunID)
+	}
+
 	// Branch priority: 1. Frontend request, 2. Database connected repo, 3. Default "main"
 	if deployData.GitBranch == "" {
 		// If no branch provided in request, check database for connected repository
@@ -606,6 +613,12 @@ func DeployApp(c *fiber.Ctx) error {
 			database.UpdateActivity(deployActivity.ID, database.StatusError, &errorMsg)
 		}
 
+		// 📊 Update deployment run as failed
+		if deploymentRun != nil {
+			errorMsg := err.Error()
+			api.DeploymentRuns.CompleteDeploymentRun(c.Context(), deploymentRun.RunID, "failed", output, &errorMsg)
+		}
+
 		// Deploy failed - include both error and any available output
 		errorMessage := "Failed to deploy app: " + err.Error()
 
@@ -631,6 +644,11 @@ func DeployApp(c *fiber.Ctx) error {
 			}
 		}
 
+		// Add deployment run info
+		if deploymentRun != nil {
+			responseData["run_id"] = deploymentRun.RunID
+		}
+
 		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
 			false,
 			errorMessage,
@@ -641,6 +659,11 @@ func DeployApp(c *fiber.Ctx) error {
 	// 📝 Update deployment activity as successful
 	if deployActivity != nil {
 		database.UpdateActivity(deployActivity.ID, database.StatusSuccess, nil)
+	}
+
+	// 📊 Update deployment run as completed
+	if deploymentRun != nil {
+		api.DeploymentRuns.CompleteDeploymentRun(c.Context(), deploymentRun.RunID, "completed", output, nil)
 	}
 
 	// 💾 Save deployment info to database
@@ -688,6 +711,11 @@ func DeployApp(c *fiber.Ctx) error {
 			"source":        portInfo.Source,
 			"message":       portSetMessage,
 		}
+	}
+
+	// Add deployment run info for frontend tracking
+	if deploymentRun != nil {
+		responseData["run_id"] = deploymentRun.RunID
 	}
 
 	return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(

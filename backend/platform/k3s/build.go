@@ -145,6 +145,8 @@ func (k *K3sAdapter) waitForJobCompletion(namespace, jobName string, timeout tim
 	for {
 		select {
 		case <-deadline:
+			// Timeout - cleanup the build job and pods
+			k.cleanupFailedBuildJob(namespace, jobName)
 			return fmt.Errorf("timeout waiting for build job %s", jobName)
 		case <-ticker.C:
 			job, err := k.client.BatchV1().Jobs(namespace).Get(k.ctx, jobName, metav1.GetOptions{})
@@ -160,6 +162,9 @@ func (k *K3sAdapter) waitForJobCompletion(namespace, jobName string, timeout tim
 			}
 
 			if job.Status.Failed > 0 && job.Status.Active == 0 {
+				// Build failed - cleanup the build job and pods
+				k.cleanupFailedBuildJob(namespace, jobName)
+
 				for _, cond := range job.Status.Conditions {
 					if cond.Type == batchv1.JobFailed {
 						if cond.Message != "" {
@@ -171,6 +176,38 @@ func (k *K3sAdapter) waitForJobCompletion(namespace, jobName string, timeout tim
 				return fmt.Errorf("build job %s failed", jobName)
 			}
 		}
+	}
+}
+
+// cleanupFailedBuildJob removes the failed build job and its associated pods
+func (k *K3sAdapter) cleanupFailedBuildJob(namespace, jobName string) {
+	fmt.Printf("[BUILD] 🧹 Cleaning up failed build job %s in namespace %s\n", jobName, namespace)
+
+	// Delete pods associated with the job first
+	podList, err := k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+	})
+	if err == nil && podList != nil {
+		for _, pod := range podList.Items {
+			fmt.Printf("[BUILD] 🗑️ Deleting build pod %s\n", pod.Name)
+			deleteErr := k.client.CoreV1().Pods(namespace).Delete(k.ctx, pod.Name, metav1.DeleteOptions{})
+			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+				fmt.Printf("[BUILD] ⚠️ Failed to delete pod %s: %v\n", pod.Name, deleteErr)
+			}
+		}
+	}
+
+	// Delete the job with propagation policy to clean up remaining pods
+	propagationPolicy := metav1.DeletePropagationBackground
+	deleteOptions := metav1.DeleteOptions{
+		PropagationPolicy: &propagationPolicy,
+	}
+
+	err = k.client.BatchV1().Jobs(namespace).Delete(k.ctx, jobName, deleteOptions)
+	if err != nil && !apierrors.IsNotFound(err) {
+		fmt.Printf("[BUILD] ⚠️ Failed to delete job %s: %v\n", jobName, err)
+	} else {
+		fmt.Printf("[BUILD] ✅ Successfully cleaned up failed build job %s\n", jobName)
 	}
 }
 
@@ -207,7 +244,7 @@ func buildJobScript() string {
 set -eu
 
 echo "============================================"
-echo "🚀 Starting build for ${APP_NAME}"
+echo "Starting build for ${APP_NAME}"
 echo "============================================"
 echo "Source: ${GIT_URL}@${GIT_BRANCH}"
 
@@ -219,70 +256,70 @@ cd /workspace/src
 push_image="${PUSH_IMAGE:-true}"
 
 if [ "${push_image}" = "true" ] && [ -n "${REGISTRY_USERNAME:-}" ]; then
-  echo "📦 Logging into ${REGISTRY_URL}"
+  echo "Logging into ${REGISTRY_URL}"
   echo "${REGISTRY_PASSWORD:-}" | docker login -u "${REGISTRY_USERNAME}" --password-stdin "${REGISTRY_URL}"
 fi
 
 builder="${BUILDER_TYPE:-auto}"
 dockerfile_path="${DOCKERFILE_PATH:-Dockerfile}"
 
-echo "🔍 Configured builder: ${builder}"
+echo "Configured builder: ${builder}"
 
 # Auto-detection logic
 if [ "${builder}" = "auto" ]; then
-  echo "🔍 Auto-detecting build method..."
+  echo "Auto-detecting build method..."
   
   if [ -f "${dockerfile_path}" ]; then
-    echo "   ✓ Found ${dockerfile_path} - will use Dockerfile build"
+    echo "   Found ${dockerfile_path} - will use Dockerfile build"
     builder="dockerfile"
   elif [ -f "Dockerfile" ]; then
-    echo "   ✓ Found Dockerfile - will use Dockerfile build"
+    echo "   Found Dockerfile - will use Dockerfile build"
     builder="dockerfile"
     dockerfile_path="Dockerfile"
   else
-    echo "   ✓ No Dockerfile found - will use Nixpacks"
+    echo "   No Dockerfile found - will use Nixpacks"
     builder="nixpacks"
   fi
 fi
 
 echo "============================================"
-echo "🔨 Using builder: ${builder}"
+echo "Using builder: ${builder}"
 echo "============================================"
 
 if [ "${builder}" = "dockerfile" ]; then
-  echo "📄 Building via Dockerfile (${dockerfile_path})"
+  echo "Building via Dockerfile (${dockerfile_path})"
   
   if [ ! -f "${dockerfile_path}" ]; then
-    echo "❌ Error: ${dockerfile_path} not found!"
+    echo "Error: ${dockerfile_path} not found!"
     exit 1
   fi
   
   docker build -t "${IMAGE_NAME}" -f "${dockerfile_path}" .
 else
-  echo "📦 Building via Nixpacks (auto-detect language & framework)"
+  echo "Building via Nixpacks (auto-detect language & framework)"
   
   # Show detected info
   if [ -f "package.json" ]; then
-    echo "   ✓ Detected: Node.js project"
+    echo "   Detected: Node.js project"
   elif [ -f "requirements.txt" ] || [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then
-    echo "   ✓ Detected: Python project"
+    echo "   Detected: Python project"
   elif [ -f "go.mod" ]; then
-    echo "   ✓ Detected: Go project"
+    echo "   Detected: Go project"
   elif [ -f "Cargo.toml" ]; then
-    echo "   ✓ Detected: Rust project"
+    echo "   Detected: Rust project"
   elif [ -f "pom.xml" ] || [ -f "build.gradle" ]; then
-    echo "   ✓ Detected: Java project"
+    echo "   Detected: Java project"
   elif [ -f "Gemfile" ]; then
-    echo "   ✓ Detected: Ruby project"
+    echo "   Detected: Ruby project"
   elif [ -f "mix.exs" ]; then
-    echo "   ✓ Detected: Elixir project"
+    echo "   Detected: Elixir project"
   else
-    echo "   ℹ️  Language will be auto-detected by Nixpacks"
+    echo "   Language will be auto-detected by Nixpacks"
   fi
   
   # Install nixpacks if not available
   if ! command -v nixpacks >/dev/null 2>&1; then
-    echo "📥 Installing Nixpacks..."
+    echo "Installing Nixpacks..."
     # Download and install nixpacks binary
     NIXPACKS_VERSION="1.41.0"
     ARCH=$(uname -m)
@@ -298,20 +335,20 @@ else
     tar -xzf /tmp/nixpacks.tar.gz -C /usr/local/bin
     chmod +x /usr/local/bin/nixpacks
     rm /tmp/nixpacks.tar.gz
-    echo "   ✓ Nixpacks ${NIXPACKS_VERSION} installed"
+    echo "   Nixpacks ${NIXPACKS_VERSION} installed"
   fi
   
   nixpacks build . --name "${IMAGE_NAME}"
 fi
 
 echo "============================================"
-echo "🏷️  Tagging image: ${IMAGE_REF}"
+echo "Tagging image: ${IMAGE_REF}"
 echo "============================================"
 
 docker tag "${IMAGE_NAME}" "${IMAGE_REF}"
 
 if [ "${push_image}" = "true" ]; then
-  echo "📤 Pushing image to registry..."
+  echo "Pushing image to registry..."
   docker push "${IMAGE_REF}"
 else
   echo "PUSH_IMAGE=false - skipping docker push, attempting to import into containerd"
@@ -328,15 +365,15 @@ else
   fi
 
   if command -v ctr >/dev/null 2>&1 && [ -S "${ctr_sock}" ]; then
-    echo "📥 Importing image into containerd namespace k8s.io via ${ctr_sock}"
+    echo "Importing image into containerd namespace k8s.io via ${ctr_sock}"
     docker save "${IMAGE_REF}" | ctr --address "${ctr_sock}" -n k8s.io images import -
   else
-    echo "⚠️  Warning: containerd socket not found or ctr unavailable; image will only exist in Docker daemon"
+    echo "Warning: containerd socket not found or ctr unavailable; image will only exist in Docker daemon"
   fi
 fi
 
 echo "============================================"
-echo "✅ Build completed for ${APP_NAME}"
+echo "Build completed for ${APP_NAME}"
 echo "============================================"
 `) + "\n"
 }
