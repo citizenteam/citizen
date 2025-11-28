@@ -158,42 +158,42 @@ func SetupRoutes(app *fiber.App) {
 	citizen.Get("/apps/:app_name/activities", handlers.GetAppActivities)
 
 	// GitHub integration endpoints
-	github := api.Group("/github")
 
-	// GitHub endpoints (JWT or SSO session required)
-	githubProtected := github.Group("")
-	githubProtected.Use(middleware.JWTAuth())   // Try JWT first (CitizenAuth)
-	githubProtected.Use(middleware.Protected()) // Fallback to SSO session
+	// PUBLIC GitHub endpoints (no auth required - have their own security mechanisms)
+	// These are registered directly on api group to avoid middleware inheritance issues
+	api.Post("/github/webhook", handlers.GitHubWebhookHandler)                // HMAC signature validation
+	api.Get("/github/auth/callback", handlers.GitHubAuthCallback)             // State token validation
+	api.Get("/github/app/manifest/callback", handlers.GitHubManifestCallback) // State token validation
+	api.Get("/github/app/manifest/redirect", handlers.GitHubManifestRedirect) // State token validation
+	api.Get("/github/app/install/callback", handlers.GitHubInstallCallback)   // State token validation
+
+	// PROTECTED GitHub endpoints (JWT or SSO session required)
+	github := api.Group("/github")
+	github.Use(middleware.JWTAuth())   // Try JWT first (CitizenAuth)
+	github.Use(middleware.Protected()) // Fallback to SSO session
 	{
 		// GitHub config endpoints (admin only)
-		githubProtected.Post("/config", handlers.SetupGitHubConfig)
-		githubProtected.Get("/config", handlers.GetGitHubConfig)
-		githubProtected.Delete("/config", handlers.DeleteGitHubConfig)
-		githubProtected.Post("/app/manifest/start", handlers.StartGitHubManifest)
+		github.Post("/config", handlers.SetupGitHubConfig)
+		github.Get("/config", handlers.GetGitHubConfig)
+		github.Delete("/config", handlers.DeleteGitHubConfig)
+		github.Post("/app/manifest/start", handlers.StartGitHubManifest)
 
 		// Existing GitHub App connection (App ID + Private Key)
-		githubProtected.Post("/app/connect-with-key", handlers.ConnectWithPrivateKey)
+		github.Post("/app/connect-with-key", handlers.ConnectWithPrivateKey)
 
 		// GitHub OAuth endpoints
-		githubProtected.Get("/auth/init", handlers.GitHubAuthInit)
-		githubProtected.Get("/status", handlers.GetGitHubStatus)
-		githubProtected.Delete("/disconnect", handlers.DisconnectGitHubAccount) // Disconnect GitHub account
-		githubProtected.Get("/repositories", handlers.ListGitHubRepositories)
-		githubProtected.Get("/repos/:owner/:repo/branches", handlers.GetRepositoryBranches)
-		githubProtected.Get("/connections", handlers.GetRepositoryConnections)
-		githubProtected.Post("/connect", handlers.ConnectRepository)
-		githubProtected.Post("/apps/:app_name/connect", handlers.ConnectExistingAppToRepository) // Connect existing app to repo
-		githubProtected.Delete("/apps/:app_name/disconnect", handlers.DisconnectRepository)
-		githubProtected.Put("/apps/:app_name/auto-deploy", handlers.ToggleAutoDeploy)
-		githubProtected.Post("/app/install/start", handlers.StartGitHubInstall)
+		github.Get("/auth/init", handlers.GitHubAuthInit)
+		github.Get("/status", handlers.GetGitHubStatus)
+		github.Delete("/disconnect", handlers.DisconnectGitHubAccount) // Disconnect GitHub account
+		github.Get("/repositories", handlers.ListGitHubRepositories)
+		github.Get("/repos/:owner/:repo/branches", handlers.GetRepositoryBranches)
+		github.Get("/connections", handlers.GetRepositoryConnections)
+		github.Post("/connect", handlers.ConnectRepository)
+		github.Post("/apps/:app_name/connect", handlers.ConnectExistingAppToRepository) // Connect existing app to repo
+		github.Delete("/apps/:app_name/disconnect", handlers.DisconnectRepository)
+		github.Put("/apps/:app_name/auto-deploy", handlers.ToggleAutoDeploy)
+		github.Post("/app/install/start", handlers.StartGitHubInstall)
 	}
-
-	// GitHub webhook endpoint (public - no auth required)
-	github.Post("/webhook", handlers.GitHubWebhookHandler)
-	github.Get("/auth/callback", handlers.GitHubAuthCallback) // OAuth callback (public - uses state for user validation)
-	github.Get("/app/manifest/callback", handlers.GitHubManifestCallback)
-	github.Get("/app/manifest/redirect", handlers.GitHubManifestRedirect)
-	github.Get("/app/install/callback", handlers.GitHubInstallCallback)
 
 	// ===== CITIZENAUTH INTEGRATION ENDPOINTS =====
 
