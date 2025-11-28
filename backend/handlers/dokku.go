@@ -639,6 +639,7 @@ func DeployApp(c *fiber.Ctx) error {
 				api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "building")
 
 				output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, authenticatedGitURL, deployData.GitBranch, userID, func(logs string) {
+					fmt.Printf("[DEPLOY] LogCallback received %d bytes for run %s\n", len(logs), runID)
 					// Broadcast live logs to WebSocket subscribers
 					BroadcastDeploymentLog(runID, "building", "running", logs)
 					// Also append to database with step info
