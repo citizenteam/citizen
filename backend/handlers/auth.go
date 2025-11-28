@@ -734,6 +734,23 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 	forwardedHost := c.Get("X-Forwarded-Host")
 	forwardedUri := c.Get("X-Forwarded-Uri")
 
+	// Public endpoints that have their own security mechanisms:
+	// - Webhook: HMAC-SHA256 signature validation
+	// - Callbacks: Cryptographic state token validation
+	publicPaths := []string{
+		"/api/v1/github/webhook",
+		"/api/v1/github/auth/callback",
+		"/api/v1/github/app/manifest/callback",
+		"/api/v1/github/app/manifest/redirect",
+		"/api/v1/github/app/install/callback",
+	}
+	for _, path := range publicPaths {
+		if forwardedUri == path || strings.HasPrefix(forwardedUri, path+"?") {
+			log.Printf("✅ [VALIDATE] Allowing public endpoint (has its own auth): %s", forwardedUri)
+			return c.SendStatus(fiber.StatusOK)
+		}
+	}
+
 	// Get Authorization header (Traefik forwards it)
 	authHeader := strings.TrimSpace(c.Get("Authorization"))
 
