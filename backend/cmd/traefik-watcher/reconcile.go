@@ -264,12 +264,12 @@ func (w *Watcher) writeBaseRouters(sb *strings.Builder) bool {
 
 		w.writePlatformSecureRoutes(sb, safeDomain)
 	} else {
-		// WebSocket endpoint for deployment logs (HTTP with auth)
+		// WebSocket endpoint for deployment logs (no forwardAuth - auth via cookie in backend)
 		sb.WriteString("    ws-deployment-logs-http:\n")
 		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api/v1/ws/`)\"\n", safeDomain))
 		sb.WriteString("      service: ws-api-service\n")
 		sb.WriteString("      entryPoints:\n        - web\n")
-		sb.WriteString("      middlewares:\n        - auth-api\n        - security-headers\n")
+		sb.WriteString("      middlewares:\n        - security-headers\n")
 		sb.WriteString("      priority: 135\n\n")
 
 		sb.WriteString("    sso-http:\n")
@@ -321,12 +321,12 @@ func (w *Watcher) writeBaseRouters(sb *strings.Builder) bool {
 }
 
 func (w *Watcher) writePlatformSecureRoutes(sb *strings.Builder, safeDomain string) {
-	// WebSocket endpoint for deployment logs (with auth)
+	// WebSocket endpoint for deployment logs (no forwardAuth - auth via cookie in backend)
 	sb.WriteString("    ws-deployment-logs-https:\n")
 	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api/v1/ws/`)\"\n", safeDomain))
 	sb.WriteString("      service: ws-api-service\n")
 	sb.WriteString("      entryPoints:\n        - websecure\n")
-	sb.WriteString("      middlewares:\n        - auth-api\n        - security-headers\n")
+	sb.WriteString("      middlewares:\n        - security-headers\n")
 	sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
 	sb.WriteString("      priority: 135\n\n")
 
