@@ -284,14 +284,17 @@ else
   if ! command -v nixpacks >/dev/null 2>&1; then
     echo "📥 Installing Nixpacks..."
     # Download and install nixpacks binary
-    NIXPACKS_VERSION="1.24.4"
+    NIXPACKS_VERSION="1.41.0"
     ARCH=$(uname -m)
     case "$ARCH" in
-      x86_64) ARCH="amd64" ;;
-      aarch64) ARCH="arm64" ;;
+      x86_64) NIXPACKS_ARCH="x86_64-unknown-linux-musl" ;;
+      aarch64) NIXPACKS_ARCH="aarch64-unknown-linux-musl" ;;
+      *) NIXPACKS_ARCH="x86_64-unknown-linux-musl" ;;
     esac
     
-    wget -q "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-linux-${ARCH}.tar.gz" -O /tmp/nixpacks.tar.gz
+    NIXPACKS_URL="https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-${NIXPACKS_ARCH}.tar.gz"
+    echo "   Downloading from: ${NIXPACKS_URL}"
+    wget -q "${NIXPACKS_URL}" -O /tmp/nixpacks.tar.gz
     tar -xzf /tmp/nixpacks.tar.gz -C /usr/local/bin
     chmod +x /usr/local/bin/nixpacks
     rm /tmp/nixpacks.tar.gz
