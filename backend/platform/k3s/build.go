@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -290,9 +291,94 @@ func (k *K3sAdapter) cleanupFailedBuildJob(namespace, jobName string) {
 
 	err = k.client.BatchV1().Jobs(namespace).Delete(k.ctx, jobName, deleteOptions)
 	if err != nil && !apierrors.IsNotFound(err) {
-		fmt.Printf("[BUILD] ⚠️ Failed to delete job %s: %v\n", jobName, err)
+		fmt.Printf("[BUILD] Failed to delete job %s: %v\n", jobName, err)
 	} else {
-		fmt.Printf("[BUILD] ✅ Successfully cleaned up failed build job %s\n", jobName)
+		fmt.Printf("[BUILD] Successfully cleaned up failed build job %s\n", jobName)
+	}
+}
+
+// CleanupCompletedBuildJobs removes old completed build jobs for an app, keeping the latest one
+func (k *K3sAdapter) CleanupCompletedBuildJobs(appName string) error {
+	namespace := k.builderNamespaceOrDefault()
+
+	// List all jobs for this app
+	jobs, err := k.client.BatchV1().Jobs(namespace).List(k.ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", appName),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list build jobs: %w", err)
+	}
+
+	// Find completed jobs (succeeded or failed)
+	var completedJobs []batchv1.Job
+	for _, job := range jobs.Items {
+		if job.Status.Succeeded > 0 || (job.Status.Failed > 0 && job.Status.Active == 0) {
+			completedJobs = append(completedJobs, job)
+		}
+	}
+
+	// Sort by creation time (newest first)
+	sort.Slice(completedJobs, func(i, j int) bool {
+		return completedJobs[i].CreationTimestamp.After(completedJobs[j].CreationTimestamp.Time)
+	})
+
+	// Delete all but the latest completed job
+	propagationPolicy := metav1.DeletePropagationBackground
+	deleteOptions := metav1.DeleteOptions{PropagationPolicy: &propagationPolicy}
+
+	for i, job := range completedJobs {
+		if i == 0 {
+			continue // Keep the latest one
+		}
+		// Delete pods first
+		podList, _ := k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("job-name=%s", job.Name),
+		})
+		if podList != nil {
+			for _, pod := range podList.Items {
+				k.client.CoreV1().Pods(namespace).Delete(k.ctx, pod.Name, metav1.DeleteOptions{})
+			}
+		}
+		// Delete job
+		k.client.BatchV1().Jobs(namespace).Delete(k.ctx, job.Name, deleteOptions)
+		fmt.Printf("[BUILD] Cleaned up old build job: %s\n", job.Name)
+	}
+
+	return nil
+}
+
+// WaitForDeploymentRollout waits for a deployment to finish rolling out
+func (k *K3sAdapter) WaitForDeploymentRollout(appName string, timeout time.Duration) error {
+	namespace := k.appNamespace(appName)
+
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+
+	ctx, cancel := context.WithTimeout(k.ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for deployment rollout")
+		case <-ticker.C:
+			deploy, err := k.client.AppsV1().Deployments(namespace).Get(ctx, appName, metav1.GetOptions{})
+			if err != nil {
+				continue
+			}
+
+			// Check if rollout is complete
+			if deploy.Status.UpdatedReplicas == *deploy.Spec.Replicas &&
+				deploy.Status.ReadyReplicas == *deploy.Spec.Replicas &&
+				deploy.Status.AvailableReplicas == *deploy.Spec.Replicas &&
+				deploy.Status.ObservedGeneration >= deploy.Generation {
+				return nil
+			}
+		}
 	}
 }
 

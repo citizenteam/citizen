@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -689,22 +690,54 @@ func DeployApp(c *fiber.Ctx) error {
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "pushing", "completed", &pushLog)
 			BroadcastDeploymentLog(runID, "pushing", "completed", pushLog)
 
-			// Deploying
+			// Deploying - wait for rollout to complete
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "deploying", "running", nil)
 			BroadcastStepUpdate(runID, "deploying", "running")
 			api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "deploying")
+
+			// Wait for deployment rollout to complete
+			if k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter); ok {
+				rolloutLog := "Waiting for pods to be ready...\n"
+				BroadcastDeploymentLog(runID, "deploying", "running", rolloutLog)
+
+				if rolloutErr := k3sAdapter.WaitForDeploymentRollout(appName, 5*time.Minute); rolloutErr != nil {
+					rolloutFailLog := fmt.Sprintf("Rollout warning: %v\n", rolloutErr)
+					BroadcastDeploymentLog(runID, "deploying", "running", rolloutFailLog)
+				}
+			}
+
+			deployLog = "Deployment rolled out successfully\n"
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "deploying", "completed", &deployLog)
 			BroadcastDeploymentLog(runID, "deploying", "completed", deployLog)
 
-			// Cleanup
+			// Cleanup - remove old build jobs
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cleanup", "running", nil)
 			BroadcastStepUpdate(runID, "cleanup", "running")
+
+			// Clean up old build jobs
+			if k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter); ok {
+				if cleanupErr := k3sAdapter.CleanupCompletedBuildJobs(appName); cleanupErr != nil {
+					fmt.Printf("[DEPLOY] Cleanup warning: %v\n", cleanupErr)
+				}
+			}
+
+			cleanupLog = "Old build jobs cleaned up\n"
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cleanup", "completed", &cleanupLog)
 			BroadcastDeploymentLog(runID, "cleanup", "completed", cleanupLog)
 
-			// Complete the run
+			// Get app URL for the response
+			mainDomain := os.Getenv("MAIN_DOMAIN")
+			if mainDomain == "" {
+				mainDomain = os.Getenv("APP_HOST")
+			}
+			appURL := fmt.Sprintf("https://%s.%s", appName, mainDomain)
+
+			// Complete the run with app URL
 			api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "completed", output, nil)
 			BroadcastRunUpdate(runID, "completed")
+
+			// Broadcast app URL
+			BroadcastDeploymentLog(runID, "completed", "completed", fmt.Sprintf("\nApp URL: %s\n", appURL))
 
 			// Save deployment info to database
 			newDeployment := &models.AppDeployment{

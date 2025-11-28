@@ -163,14 +163,10 @@ func (api *DeploymentRunsAPI) CompleteDeploymentRun(ctx context.Context, runID, 
 
 // AppendBuildLogs appends logs to a deployment run using JSONB array
 func (api *DeploymentRunsAPI) AppendBuildLogs(ctx context.Context, runID, step, logs string) error {
-	fmt.Printf("[DB] AppendBuildLogs called for run %s, step %s, %d bytes\n", runID, step, len(logs))
-
 	if DB == nil {
-		fmt.Printf("[DB] ERROR: Database connection is nil!\n")
 		return fmt.Errorf("database connection not initialized")
 	}
 
-	// Append to JSONB array with timestamp
 	query := `
 		UPDATE deployment_runs 
 		SET build_logs_json = COALESCE(build_logs_json, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
@@ -182,13 +178,8 @@ func (api *DeploymentRunsAPI) AppendBuildLogs(ctx context.Context, runID, step, 
 		updated_at = CURRENT_TIMESTAMP
 		WHERE run_id = $3::text
 	`
-	result, err := DB.Exec(ctx, query, step, logs, runID)
-	if err != nil {
-		fmt.Printf("[DB] ERROR AppendBuildLogs: %v\n", err)
-		return err
-	}
-	fmt.Printf("[DB] AppendBuildLogs success, rows affected: %d\n", result.RowsAffected())
-	return nil
+	_, err := DB.Exec(ctx, query, step, logs, runID)
+	return err
 }
 
 // UpdateDeploymentStep updates a deployment step
@@ -269,17 +260,7 @@ func (api *DeploymentRunsAPI) GetDeploymentRun(ctx context.Context, runID string
 
 	// Parse JSONB build logs
 	if len(buildLogsJSON) > 0 {
-		if err := json.Unmarshal(buildLogsJSON, &run.BuildLogsJSON); err != nil {
-			previewLen := len(buildLogsJSON)
-			if previewLen > 100 {
-				previewLen = 100
-			}
-			fmt.Printf("[DEBUG] Failed to unmarshal build_logs_json: %v, raw: %s\n", err, string(buildLogsJSON[:previewLen]))
-		} else {
-			fmt.Printf("[DEBUG] build_logs_json loaded: %d entries\n", len(run.BuildLogsJSON))
-		}
-	} else {
-		fmt.Printf("[DEBUG] build_logs_json is empty for run %s\n", runID)
+		json.Unmarshal(buildLogsJSON, &run.BuildLogsJSON)
 	}
 
 	// Get steps
