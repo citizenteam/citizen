@@ -2043,17 +2043,29 @@ func GetGitHubConfig(c *fiber.Ctx) error {
 	// Get config from database
 	config, err := api.GitHub.GetGitHubConfig(context.Background())
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to load GitHub config",
-		})
+		log.Printf("[CONFIG] Failed to load GitHub config from DB: %v", err)
+		// Config doesn't exist in DB, return not configured
+		return c.JSON(utils.NewCitizenResponse(
+			true,
+			"GitHub not configured",
+			fiber.Map{
+				"configured": false,
+			},
+		))
 	}
 
 	// Decrypt only client ID for display
 	clientID, err := utils.DecryptString(config.ClientID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to decrypt config",
-		})
+		log.Printf("[CONFIG] Failed to decrypt config: %v", err)
+		// Decryption failed, config is corrupted - return not configured
+		return c.JSON(utils.NewCitizenResponse(
+			true,
+			"GitHub not configured",
+			fiber.Map{
+				"configured": false,
+			},
+		))
 	}
 
 	// Mask client ID for security (show only first 8 chars)
