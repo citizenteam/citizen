@@ -65,7 +65,7 @@ func newAdapterFromClient(client *kubernetes.Clientset) platform.Adapter {
 		ctx:                context.Background(),
 		namespacePrefix:    envOrDefault("K3S_NAMESPACE_PREFIX", "citizen-app"),
 		builderNamespace:   envOrDefault("K3S_BUILDER_NAMESPACE", "citizen-builder"),
-		builderImage:       envOrDefault("K3S_BUILDER_IMAGE", "ghcr.io/railwayapp/nixpacks:latest"),
+		builderImage:       envOrDefault("K3S_BUILDER_IMAGE", "docker:25.0.5-git"),
 		dockerBuilderImage: envOrDefault("K3S_DOCKER_BUILDER_IMAGE", "docker:25.0.5-git"),
 		registryURL:        envOrDefault("K3S_REGISTRY_URL", "ghcr.io/citizen"),
 		registryUser:       os.Getenv("K3S_REGISTRY_USER"),

@@ -381,7 +381,7 @@ spec:
                   name: dotenv
                   key: CITIZENAUTH_WEBHOOK_SECRET
             - name: K3S_BUILDER_IMAGE
-              value: "ghcr.io/railwayapp/nixpacks:latest"
+              value: "docker:25.0.5-git"
             - name: K3S_DOCKER_BUILDER_IMAGE
               value: "docker:25.0.5-git"
             - name: K3S_PUSH_IMAGES

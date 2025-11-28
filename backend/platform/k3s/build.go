@@ -280,6 +280,24 @@ else
     echo "   ℹ️  Language will be auto-detected by Nixpacks"
   fi
   
+  # Install nixpacks if not available
+  if ! command -v nixpacks >/dev/null 2>&1; then
+    echo "📥 Installing Nixpacks..."
+    # Download and install nixpacks binary
+    NIXPACKS_VERSION="1.24.4"
+    ARCH=$(uname -m)
+    case "$ARCH" in
+      x86_64) ARCH="amd64" ;;
+      aarch64) ARCH="arm64" ;;
+    esac
+    
+    wget -q "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-linux-${ARCH}.tar.gz" -O /tmp/nixpacks.tar.gz
+    tar -xzf /tmp/nixpacks.tar.gz -C /usr/local/bin
+    chmod +x /usr/local/bin/nixpacks
+    rm /tmp/nixpacks.tar.gz
+    echo "   ✓ Nixpacks ${NIXPACKS_VERSION} installed"
+  fi
+  
   nixpacks build . --name "${IMAGE_NAME}"
 fi
 
