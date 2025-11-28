@@ -400,6 +400,7 @@ func RemoveDomain(c *fiber.Ctx) error {
 // DeployApp deploys an app from a git repository
 func DeployApp(c *fiber.Ctx) error {
 	appName := c.Params("app_name")
+	fmt.Printf("[DEPLOY] DeployApp called with appName: '%s'\n", appName)
 	if appName == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,
@@ -640,13 +641,10 @@ func DeployApp(c *fiber.Ctx) error {
 				api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "building")
 
 				output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, authenticatedGitURL, deployData.GitBranch, userID, func(logs string) {
-					fmt.Printf("[DEPLOY] LogCallback received %d bytes for run %s\n", len(logs), runID)
 					// Broadcast live logs to WebSocket subscribers
 					BroadcastDeploymentLog(runID, "building", "running", logs)
 					// Also append to database with step info
-					if err := api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs); err != nil {
-						fmt.Printf("[DEPLOY] Error appending build logs to DB: %v\n", err)
-					}
+					api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs)
 				})
 			} else {
 				output, deployErr = platform.GetAdapter().DeployFromGit(appName, authenticatedGitURL, deployData.GitBranch, userID)
@@ -682,12 +680,14 @@ func DeployApp(c *fiber.Ctx) error {
 
 			// Building completed
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "completed", &buildLog)
+			BroadcastStepUpdate(runID, "building", "completed")
 			BroadcastDeploymentLog(runID, "building", "completed", buildLog)
 
 			// Pushing
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "pushing", "running", nil)
 			BroadcastStepUpdate(runID, "pushing", "running")
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "pushing", "completed", &pushLog)
+			BroadcastStepUpdate(runID, "pushing", "completed")
 			BroadcastDeploymentLog(runID, "pushing", "completed", pushLog)
 
 			// Deploying - wait for rollout to complete
@@ -708,6 +708,7 @@ func DeployApp(c *fiber.Ctx) error {
 
 			deployLog = "Deployment rolled out successfully\n"
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "deploying", "completed", &deployLog)
+			BroadcastStepUpdate(runID, "deploying", "completed")
 			BroadcastDeploymentLog(runID, "deploying", "completed", deployLog)
 
 			// Cleanup - remove old build jobs
@@ -723,6 +724,7 @@ func DeployApp(c *fiber.Ctx) error {
 
 			cleanupLog = "Old build jobs cleaned up\n"
 			api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cleanup", "completed", &cleanupLog)
+			BroadcastStepUpdate(runID, "cleanup", "completed")
 			BroadcastDeploymentLog(runID, "cleanup", "completed", cleanupLog)
 
 			// Get app URL for the response
