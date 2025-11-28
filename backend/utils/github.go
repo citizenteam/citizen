@@ -395,6 +395,53 @@ func CreateWebhook(accessToken, owner, repo, webhookURL string) (*GitHubWebhook,
 }
 
 // DeleteWebhook deletes a GitHub webhook
+// ListWebhooks lists all webhooks for a repository
+func ListWebhooks(accessToken, owner, repo string) ([]GitHubWebhook, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/hooks", owner, repo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to list webhooks: %s", string(body))
+	}
+
+	var webhooks []GitHubWebhook
+	if err := json.NewDecoder(resp.Body).Decode(&webhooks); err != nil {
+		return nil, err
+	}
+
+	return webhooks, nil
+}
+
+// FindExistingWebhook finds an existing webhook for the given URL
+func FindExistingWebhook(accessToken, owner, repo, webhookURL string) (*GitHubWebhook, error) {
+	webhooks, err := ListWebhooks(accessToken, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, webhook := range webhooks {
+		if webhook.Config.URL == webhookURL {
+			return &webhook, nil
+		}
+	}
+
+	return nil, nil // Not found
+}
+
 func DeleteWebhook(accessToken, owner, repo string, webhookID int64) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/hooks/%d", owner, repo, webhookID)
 	req, err := http.NewRequest("DELETE", url, nil)

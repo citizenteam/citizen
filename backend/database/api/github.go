@@ -113,6 +113,30 @@ func (g *GitHubAPI) GetGitHubRepositoryConnection(ctx context.Context, userID in
 	}, nil
 }
 
+// UpdateAutoDeploy updates the auto deploy setting for a repository
+func (g *GitHubAPI) UpdateAutoDeploy(ctx context.Context, appName string, autoDeploy bool, webhookID *int64) error {
+	if err := ValidateArgs(appName); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	query := `
+		UPDATE github_repositories 
+		SET auto_deploy_enabled = $2, webhook_id = $3, updated_at = CURRENT_TIMESTAMP
+		WHERE app_name = $1 AND deleted_at IS NULL`
+
+	result, err := Exec(ctx, query, appName, autoDeploy, webhookID)
+	if err != nil {
+		return fmt.Errorf("failed to update auto deploy: %w", err)
+	}
+
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("repository not found")
+	}
+
+	return nil
+}
+
 // GetGitHubRepositoryConnectionByAppName retrieves a repository connection by app name only (for webhooks)
 func (g *GitHubAPI) GetGitHubRepositoryConnectionByAppName(ctx context.Context, appName string) (*GitHubRepositoryConnection, error) {
 	if err := ValidateArgs(appName); err != nil {

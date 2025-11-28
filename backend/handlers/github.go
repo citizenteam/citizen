@@ -522,15 +522,34 @@ func ConnectRepository(c *fiber.Ctx) error {
 
 	// Create webhook if auto deploy is enabled
 	var webhookID *int64
+	baseURL := c.BaseURL()
+	if strings.HasPrefix(baseURL, "http://") && !strings.Contains(baseURL, "localhost") && !strings.Contains(baseURL, "127.0.0.1") {
+		baseURL = strings.Replace(baseURL, "http://", "https://", 1)
+	}
+	webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
+
 	if connectData.AutoDeploy {
-		webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", c.BaseURL())
 		webhook, err := utils.CreateWebhook(accessToken, owner, repoName, webhookURL)
 		if err != nil {
 			log.Printf("[GITHUB] Failed to create webhook: %v", err)
-			// Don't fail the entire connection, just disable auto deploy
-			connectData.AutoDeploy = false
+			// Check if webhook already exists
+			if strings.Contains(err.Error(), "Hook already exists") {
+				log.Printf("[GITHUB] Webhook already exists, trying to find existing webhook...")
+				existingWebhook, findErr := utils.FindExistingWebhook(accessToken, owner, repoName, webhookURL)
+				if findErr == nil && existingWebhook != nil {
+					log.Printf("[GITHUB] Found existing webhook with ID: %d", existingWebhook.ID)
+					webhookID = &existingWebhook.ID
+				} else {
+					log.Printf("[GITHUB] Could not find existing webhook, keeping auto deploy enabled anyway")
+					// Keep auto deploy enabled - webhook exists but we don't have the ID
+				}
+			} else {
+				// Other error - disable auto deploy
+				connectData.AutoDeploy = false
+			}
 		} else {
 			webhookID = &webhook.ID
+			log.Printf("[GITHUB] Webhook created with ID: %d", webhook.ID)
 		}
 	}
 
@@ -675,22 +694,95 @@ func ToggleAutoDeploy(c *fiber.Ctx) error {
 		))
 	}
 
-	// Repository webhook management:
-	// 1. Get repository connection from database (api.GitHub)
-	// 2. Create or delete webhook based on auto_deploy setting
-	// 3. Update database with webhook status and URL
+	log.Printf("[GITHUB] ToggleAutoDeploy called for app %s, auto_deploy=%v", appName, toggleData.AutoDeploy)
 
-	log.Printf("[GITHUB] ✅ Auto deploy %s for app: %s",
-		map[bool]string{true: "enabled", false: "disabled"}[toggleData.AutoDeploy],
-		appName)
+	// Get repository connection
+	repoConnection, err := api.GitHub.GetGitHubRepositoryConnectionByAppName(c.Context(), appName)
+	if err != nil {
+		log.Printf("[GITHUB] Failed to get repository connection: %v", err)
+		return c.Status(fiber.StatusNotFound).JSON(utils.NewCitizenResponse(
+			false,
+			"Repository not connected",
+			nil,
+		))
+	}
+
+	var webhookID *int64 = repoConnection.WebhookID
+
+	// Get access token for webhook management (using GitHub App installation token)
+	var accessToken string
+	if tokenResp, tokenErr := utils.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
+		accessToken = tokenResp.Token
+	}
+	if accessToken == "" {
+		log.Printf("[GITHUB] Failed to get installation token")
+		// Continue without webhook management, just update database
+	} else if repoConnection.FullName != "" {
+		parts := strings.Split(repoConnection.FullName, "/")
+		if len(parts) == 2 {
+			owner, repoName := parts[0], parts[1]
+			baseURL := c.BaseURL()
+			if strings.HasPrefix(baseURL, "http://") && !strings.Contains(baseURL, "localhost") && !strings.Contains(baseURL, "127.0.0.1") {
+				baseURL = strings.Replace(baseURL, "http://", "https://", 1)
+			}
+			webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
+
+			if toggleData.AutoDeploy {
+				// Create webhook if not exists
+				if webhookID == nil {
+					webhook, err := utils.CreateWebhook(accessToken, owner, repoName, webhookURL)
+					if err != nil {
+						if strings.Contains(err.Error(), "Hook already exists") {
+							// Find existing webhook
+							existingWebhook, _ := utils.FindExistingWebhook(accessToken, owner, repoName, webhookURL)
+							if existingWebhook != nil {
+								webhookID = &existingWebhook.ID
+								log.Printf("[GITHUB] Found existing webhook with ID: %d", existingWebhook.ID)
+							}
+						} else {
+							log.Printf("[GITHUB] Failed to create webhook: %v", err)
+						}
+					} else {
+						webhookID = &webhook.ID
+						log.Printf("[GITHUB] Created webhook with ID: %d", webhook.ID)
+					}
+				}
+			} else {
+				// Delete webhook if exists
+				if webhookID != nil {
+					err := utils.DeleteWebhook(accessToken, owner, repoName, *webhookID)
+					if err != nil {
+						log.Printf("[GITHUB] Failed to delete webhook: %v", err)
+					} else {
+						log.Printf("[GITHUB] Deleted webhook with ID: %d", *webhookID)
+						webhookID = nil
+					}
+				}
+			}
+		}
+	}
+
+	// Update database
+	err = api.GitHub.UpdateAutoDeploy(c.Context(), appName, toggleData.AutoDeploy, webhookID)
+	if err != nil {
+		log.Printf("[GITHUB] Failed to update auto deploy in database: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+			false,
+			"Failed to update auto deploy setting",
+			nil,
+		))
+	}
+
+	statusText := map[bool]string{true: "enabled", false: "disabled"}[toggleData.AutoDeploy]
+	log.Printf("[GITHUB] ✅ Auto deploy %s for app: %s", statusText, appName)
 
 	return c.JSON(utils.NewCitizenResponse(
 		true,
-		fmt.Sprintf("Auto deploy %s successfully",
-			map[bool]string{true: "enabled", false: "disabled"}[toggleData.AutoDeploy]),
+		fmt.Sprintf("Auto deploy %s successfully", statusText),
 		fiber.Map{
 			"app_name":    appName,
 			"auto_deploy": toggleData.AutoDeploy,
+			"webhook_id":  webhookID,
 		},
 	))
 }
@@ -1178,18 +1270,30 @@ func ConnectExistingAppToRepository(c *fiber.Ctx) error {
 
 	// Create webhook if auto deploy is enabled
 	var webhookID *int64
+	baseURL := c.BaseURL()
+	if strings.HasPrefix(baseURL, "http://") && !strings.Contains(baseURL, "localhost") && !strings.Contains(baseURL, "127.0.0.1") {
+		baseURL = strings.Replace(baseURL, "http://", "https://", 1)
+	}
+	webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
+
 	if connectData.AutoDeploy {
-		baseURL := c.BaseURL()
-		// Ensure HTTPS for production
-		if strings.HasPrefix(baseURL, "http://") && !strings.Contains(baseURL, "localhost") && !strings.Contains(baseURL, "127.0.0.1") {
-			baseURL = strings.Replace(baseURL, "http://", "https://", 1)
-		}
-		webhookURL := fmt.Sprintf("%s/api/v1/github/webhook", baseURL)
 		webhook, err := utils.CreateWebhook(accessToken, owner, repoName, webhookURL)
 		if err != nil {
 			log.Printf("[GITHUB] Failed to create webhook: %v", err)
-			// Don't fail, just disable auto deploy
-			connectData.AutoDeploy = false
+			// Check if webhook already exists
+			if strings.Contains(err.Error(), "Hook already exists") {
+				log.Printf("[GITHUB] Webhook already exists, trying to find existing webhook...")
+				existingWebhook, findErr := utils.FindExistingWebhook(accessToken, owner, repoName, webhookURL)
+				if findErr == nil && existingWebhook != nil {
+					log.Printf("[GITHUB] Found existing webhook with ID: %d", existingWebhook.ID)
+					webhookID = &existingWebhook.ID
+				} else {
+					log.Printf("[GITHUB] Could not find existing webhook, keeping auto deploy enabled anyway")
+				}
+			} else {
+				// Other error - disable auto deploy
+				connectData.AutoDeploy = false
+			}
 		} else {
 			webhookID = &webhook.ID
 			log.Printf("[GITHUB] Webhook created with ID: %d", webhook.ID)
