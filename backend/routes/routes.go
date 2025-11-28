@@ -166,13 +166,19 @@ func SetupRoutes(app *fiber.App) {
 		githubProtected.Delete("/config", handlers.DeleteGitHubConfig)
 		githubProtected.Post("/app/manifest/start", handlers.StartGitHubManifest)
 
+		// Existing GitHub App connection (select from installed apps)
+		githubProtected.Get("/app/installations", handlers.ListUserGitHubAppInstallations)
+		githubProtected.Post("/app/connect", handlers.ConnectExistingGitHubApp)
+
 		// GitHub OAuth endpoints
 		githubProtected.Get("/auth/init", handlers.GitHubAuthInit)
 		githubProtected.Get("/auth/callback", handlers.GitHubAuthCallback)
 		githubProtected.Get("/status", handlers.GetGitHubStatus)
+		githubProtected.Delete("/disconnect", handlers.DisconnectGitHubAccount) // Disconnect GitHub account
 		githubProtected.Get("/repositories", handlers.ListGitHubRepositories)
 		githubProtected.Get("/connections", handlers.GetRepositoryConnections)
 		githubProtected.Post("/connect", handlers.ConnectRepository)
+		githubProtected.Post("/apps/:app_name/connect", handlers.ConnectExistingAppToRepository) // Connect existing app to repo
 		githubProtected.Delete("/apps/:app_name/disconnect", handlers.DisconnectRepository)
 		githubProtected.Put("/apps/:app_name/auto-deploy", handlers.ToggleAutoDeploy)
 		githubProtected.Post("/app/install/start", handlers.StartGitHubInstall)
