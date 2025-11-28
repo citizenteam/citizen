@@ -688,7 +688,7 @@ func Login(c *fiber.Ctx) error {
 		}
 	}
 
-	utils.SecurityLog("User %s LOGIN - SSO Session: %s, Host: %s", userID, ssoSessionID, currentHost)
+	utils.SecurityLog("User %d LOGIN - SSO Session: %s, Host: %s", userID, ssoSessionID, currentHost)
 
 	// Response
 	responseData := fiber.Map{

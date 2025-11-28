@@ -166,9 +166,7 @@ func SetupRoutes(app *fiber.App) {
 		githubProtected.Delete("/config", handlers.DeleteGitHubConfig)
 		githubProtected.Post("/app/manifest/start", handlers.StartGitHubManifest)
 
-		// Existing GitHub App connection
-		githubProtected.Get("/app/installations", handlers.ListUserGitHubAppInstallations)
-		githubProtected.Post("/app/connect", handlers.ConnectExistingGitHubApp)
+		// Existing GitHub App connection (App ID + Private Key)
 		githubProtected.Post("/app/connect-with-key", handlers.ConnectWithPrivateKey)
 
 		// GitHub OAuth endpoints
