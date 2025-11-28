@@ -576,8 +576,29 @@ func DeployApp(c *fiber.Ctx) error {
 		fmt.Printf("[ACTIVITY] ⚠️ Failed to log deploy activity: %v\n", activityErr)
 	}
 
-	// 🚀 Deploy from git repository with specific branch (WITH GITHUB TOKEN)
-	output, err := platform.GetAdapter().DeployFromGit(appName, deployData.GitURL, deployData.GitBranch, userID)
+	// 🔑 Get authenticated Git URL for private repo access
+	authenticatedGitURL := deployData.GitURL
+
+	// Check if this is a GitHub URL and try to add authentication
+	if strings.Contains(deployData.GitURL, "github.com") {
+		// Try GitHub App installation token first (preferred)
+		if tokenResp, tokenErr := utils.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
+			fmt.Printf("[DEPLOY] 🔑 Using GitHub App installation token for authentication\n")
+			authenticatedGitURL = strings.Replace(deployData.GitURL, "https://github.com/",
+				fmt.Sprintf("https://x-access-token:%s@github.com/", tokenResp.Token), 1)
+		} else if userID != nil {
+			// Fall back to user's OAuth token
+			accessToken, tokenErr := api.GitHub.GetUserGitHubAccessToken(c.Context(), *userID)
+			if tokenErr == nil && accessToken != "" {
+				fmt.Printf("[DEPLOY] 🔑 Using user OAuth token for authentication\n")
+				authenticatedGitURL = strings.Replace(deployData.GitURL, "https://github.com/",
+					fmt.Sprintf("https://x-access-token:%s@github.com/", accessToken), 1)
+			}
+		}
+	}
+
+	// 🚀 Deploy from git repository with specific branch (WITH AUTHENTICATED GIT URL)
+	output, err := platform.GetAdapter().DeployFromGit(appName, authenticatedGitURL, deployData.GitBranch, userID)
 	if err != nil {
 		// 📝 Update deployment activity as failed
 		if deployActivity != nil {

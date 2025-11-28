@@ -813,19 +813,39 @@ func GitHubWebhookHandler(c *fiber.Ctx) error {
 			log.Printf("[WEBHOOK] ⚠️ Failed to log webhook deployment activity: %v", activityErr)
 		}
 
-		// Get the connected user's ID for authentication
+		// Get GitHub token for private repo access
 		var userID *int
-		repoConnection, err := api.GitHub.GetGitHubRepositoryConnectionByAppName(context.Background(), appName)
-		if err == nil && repoConnection.UserID != 0 {
-			uid := repoConnection.UserID
-			userID = &uid
-			log.Printf("[WEBHOOK] 🔑 Using user ID %d for GitHub authentication", uid)
+		authenticatedGitURL := gitURL
+
+		// Try GitHub App installation token first (preferred)
+		if tokenResp, tokenErr := utils.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
+			log.Printf("[WEBHOOK] 🔑 Using GitHub App installation token for authentication")
+			// Convert: https://github.com/user/repo.git → https://x-access-token:TOKEN@github.com/user/repo.git
+			authenticatedGitURL = strings.Replace(gitURL, "https://github.com/",
+				fmt.Sprintf("https://x-access-token:%s@github.com/", tokenResp.Token), 1)
 		} else {
-			log.Printf("[WEBHOOK] ⚠️ No user ID found for webhook authentication: %v", err)
+			// Fall back to user's OAuth token
+			repoConnection, connErr := api.GitHub.GetGitHubRepositoryConnectionByAppName(context.Background(), appName)
+			if connErr == nil && repoConnection.UserID != 0 {
+				uid := repoConnection.UserID
+				userID = &uid
+
+				// Get user's GitHub access token
+				accessToken, tokenErr := api.GitHub.GetUserGitHubAccessToken(context.Background(), uid)
+				if tokenErr == nil && accessToken != "" {
+					log.Printf("[WEBHOOK] 🔑 Using user OAuth token for authentication (user: %d)", uid)
+					authenticatedGitURL = strings.Replace(gitURL, "https://github.com/",
+						fmt.Sprintf("https://x-access-token:%s@github.com/", accessToken), 1)
+				} else {
+					log.Printf("[WEBHOOK] ⚠️ No access token found for user %d: %v", uid, tokenErr)
+				}
+			} else {
+				log.Printf("[WEBHOOK] ⚠️ No user ID found for webhook authentication: %v", connErr)
+			}
 		}
 
-		// 🚀 Trigger deployment using existing deploy logic (WITH GITHUB TOKEN)
-		output, err := platform.GetAdapter().DeployFromGit(appName, gitURL, branch, userID)
+		// 🚀 Trigger deployment using existing deploy logic (WITH AUTHENTICATED GIT URL)
+		output, err := platform.GetAdapter().DeployFromGit(appName, authenticatedGitURL, branch, userID)
 		if err != nil {
 			log.Printf("[WEBHOOK] ❌ Deployment failed for %s: %v", appName, err)
 
