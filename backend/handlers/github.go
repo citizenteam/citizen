@@ -344,6 +344,87 @@ func ListGitHubRepositories(c *fiber.Ctx) error {
 	))
 }
 
+// GetRepositoryBranches lists branches for a specific repository
+func GetRepositoryBranches(c *fiber.Ctx) error {
+	// Get repo full name from params (owner/repo format)
+	owner := c.Params("owner")
+	repo := c.Params("repo")
+
+	if owner == "" || repo == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+			false,
+			"Repository owner and name are required",
+			nil,
+		))
+	}
+
+	fullName := owner + "/" + repo
+	log.Printf("[GITHUB] GetRepositoryBranches called for: %s", fullName)
+
+	// Get current user from context
+	userID := c.Locals("user_id")
+	if userID == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
+			false,
+			"User not authenticated",
+			nil,
+		))
+	}
+
+	// Try GitHub App installation token first
+	branches, appErr := utils.GetRepositoryBranchesWithApp(fullName)
+	if appErr == nil && len(branches) > 0 {
+		return c.JSON(utils.NewCitizenResponse(
+			true,
+			"Branches fetched",
+			fiber.Map{
+				"branches":   branches,
+				"total":      len(branches),
+				"github_app": true,
+			},
+		))
+	}
+
+	// Fall back to user's OAuth token
+	accessToken, err := api.GitHub.GetUserGitHubAccessToken(c.Context(), userID.(int))
+	if err != nil || accessToken == "" {
+		log.Printf("[GITHUB] No access token, returning default branches")
+		return c.JSON(utils.NewCitizenResponse(
+			true,
+			"Default branches (no GitHub access)",
+			fiber.Map{
+				"branches": []string{"main", "master", "develop"},
+				"total":    3,
+				"default":  true,
+			},
+		))
+	}
+
+	// Fetch branches using user's token
+	branches, err = utils.GetRepositoryBranchesWithToken(fullName, accessToken)
+	if err != nil {
+		log.Printf("[GITHUB] Failed to get branches: %v", err)
+		return c.JSON(utils.NewCitizenResponse(
+			true,
+			"Default branches (fetch failed)",
+			fiber.Map{
+				"branches": []string{"main", "master", "develop"},
+				"total":    3,
+				"default":  true,
+			},
+		))
+	}
+
+	return c.JSON(utils.NewCitizenResponse(
+		true,
+		"Branches fetched",
+		fiber.Map{
+			"branches": branches,
+			"total":    len(branches),
+		},
+	))
+}
+
 // ConnectRepository connects a GitHub repository to Citizen app
 func ConnectRepository(c *fiber.Ctx) error {
 	log.Printf("[GITHUB] ConnectRepository called")

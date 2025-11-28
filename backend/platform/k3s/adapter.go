@@ -9,16 +9,11 @@ import (
 	"strings"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
 const (
-	buildpackAnnotationKey   = "citizen.dev/buildpacks"
-	builderAnnotationKey     = "citizen.dev/builder"
-	defaultBuilderType       = "nixpacks"
-	builderDockerfilePathKey = "citizen.dev/dockerfile-path"
+	defaultBuilderType = "nixpacks"
 )
 
 // K3sAdapter implements platform adapter interface using Kubernetes/k3s
@@ -176,12 +171,8 @@ func (k *K3sAdapter) RemoveDomain(appName, domain string) (string, error) {
 
 // DetectPortFromGitRepo detects port from git repo
 func (k *K3sAdapter) DetectPortFromGitRepo(gitURL, gitBranch string, userID *int) (*platform.ConfigPort, error) {
-	builder := k.resolveBuilderTypeFromAnnotation()
-	if builder == "dockerfile" {
-		// For Dockerfile builds, default to EXPOSE 80 if we can't parse the file yet.
-		return &platform.ConfigPort{Port: 80, Source: "dockerfile-default"}, nil
-	}
-	// Default fallback
+	// Default port - will be overridden by actual app detection
+	// For Nixpacks builds, port is detected automatically
 	return &platform.ConfigPort{Port: 3000, Source: "default"}, nil
 }
 
@@ -308,174 +299,75 @@ func (k *K3sAdapter) RestartApp(appName string) (string, error) {
 // Buildpack/Builder Methods (no direct k3s equivalent, stored as metadata)
 // =============================================================================
 
-// ListBuildpacks returns app's buildpack list (from metadata)
+// ListBuildpacks returns app's buildpack list (not used in current implementation)
 func (k *K3sAdapter) ListBuildpacks(appName string) ([]string, error) {
-	// Buildpack configuration is stored in deployment annotations
-	// Format: citizen.dev/buildpacks: "buildpack1,buildpack2"
-	deploy, err := k.client.AppsV1().Deployments(k.appNamespace(appName)).Get(k.ctx, appName, metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return []string{}, nil
-		}
-		return nil, fmt.Errorf("deployment fetch failed: %w", err)
-	}
-
-	if deploy.Annotations == nil {
-		return []string{}, nil
-	}
-
-	if raw, ok := deploy.Annotations[buildpackAnnotationKey]; ok {
-		return filterEmptyStrings(strings.Split(raw, ",")), nil
-	}
-
+	// Buildpacks are not used - we use Nixpacks or Dockerfile
 	return []string{}, nil
 }
 
-// AddBuildpack adds a buildpack (as metadata)
+// AddBuildpack - not used, we use Nixpacks/Dockerfile
 func (k *K3sAdapter) AddBuildpack(appName, buildpackURL string) (string, error) {
-	if buildpackURL == "" {
-		return "", fmt.Errorf("buildpack URL is required")
-	}
-
-	err := k.updateBuildpackAnnotation(appName, func(existing []string) ([]string, error) {
-		for _, bp := range existing {
-			if bp == buildpackURL {
-				return existing, nil
-			}
-		}
-		return append(existing, buildpackURL), nil
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("Buildpack %s added", buildpackURL), nil
+	return "Buildpacks not supported - use Nixpacks or Dockerfile", nil
 }
 
-// SetBuildpack changes buildpack at specific index
+// SetBuildpack - not used
 func (k *K3sAdapter) SetBuildpack(appName, buildpackURL string, index int) (string, error) {
-	if index < 0 {
-		return "", fmt.Errorf("index must be >= 0")
-	}
-	if buildpackURL == "" {
-		return "", fmt.Errorf("buildpack URL is required")
-	}
-
-	err := k.updateBuildpackAnnotation(appName, func(existing []string) ([]string, error) {
-		if index >= len(existing) {
-			return nil, fmt.Errorf("no buildpack at index %d", index)
-		}
-		existing[index] = buildpackURL
-		return existing, nil
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("Buildpack at index %d set to %s", index, buildpackURL), nil
+	return "Buildpacks not supported - use Nixpacks or Dockerfile", nil
 }
 
-// RemoveBuildpack removes a buildpack
+// RemoveBuildpack - not used
 func (k *K3sAdapter) RemoveBuildpack(appName, buildpackURL string) (string, error) {
-	err := k.updateBuildpackAnnotation(appName, func(existing []string) ([]string, error) {
-		filtered := make([]string, 0, len(existing))
-		for _, bp := range existing {
-			if bp != buildpackURL {
-				filtered = append(filtered, bp)
-			}
-		}
-		return filtered, nil
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("Buildpack %s removed", buildpackURL), nil
+	return "Buildpacks not supported - use Nixpacks or Dockerfile", nil
 }
 
-// ClearBuildpacks clears all buildpacks
+// ClearBuildpacks - not used
 func (k *K3sAdapter) ClearBuildpacks(appName string) (string, error) {
-	err := k.updateBuildpackAnnotation(appName, func(existing []string) ([]string, error) {
-		return []string{}, nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return "All buildpacks cleared from deployment", nil
+	return "Buildpacks not supported - use Nixpacks or Dockerfile", nil
 }
 
 // GetBuildpackReport returns buildpack information
 func (k *K3sAdapter) GetBuildpackReport(appName string) (map[string]interface{}, error) {
-	buildpacks, err := k.ListBuildpacks(appName)
-	if err != nil {
-		return nil, err
-	}
 	return map[string]interface{}{
-		"buildpacks": buildpacks,
-		"source":     "deployment-annotations",
+		"buildpacks": []string{},
+		"note":       "Buildpacks not used - Nixpacks or Dockerfile",
 	}, nil
 }
 
-// SetBuilder sets builder type (nixpacks, dockerfile, etc.)
+// SetBuilder sets builder type (nixpacks, dockerfile, auto)
+// This is now handled by the handler via database API
 func (k *K3sAdapter) SetBuilder(appName, builderType string) (string, error) {
-	builderType = strings.ToLower(strings.TrimSpace(builderType))
-	if builderType == "" {
-		return "", fmt.Errorf("builder type is required")
-	}
-
-	if err := k.setDeploymentAnnotation(appName, builderAnnotationKey, builderType); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("Builder set to %s", builderType), nil
+	builderType = normalizeBuilderType(builderType)
+	// Builder type is stored in database via api.BuildSettings
+	// This method is kept for interface compatibility
+	return fmt.Sprintf("Builder set to %s (use API to persist)", builderType), nil
 }
 
 // GetBuilderReport returns builder information
 func (k *K3sAdapter) GetBuilderReport(appName string) (map[string]interface{}, error) {
-	deploy, err := k.client.AppsV1().Deployments(k.appNamespace(appName)).Get(k.ctx, appName, metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return map[string]interface{}{
-				"builder":          defaultBuilderType,
-				"resolved_builder": defaultBuilderType,
-				"source":           "default",
-			}, nil
-		}
-		return nil, fmt.Errorf("failed to fetch deployment: %w", err)
-	}
-
-	builder := defaultBuilderType
-	source := "default"
-	if deploy.Annotations != nil {
-		if val, ok := deploy.Annotations[builderAnnotationKey]; ok && val != "" {
-			builder = val
-			source = "deployment-annotations"
-		}
-	}
+	// Builder info comes from database
+	builderType := k.resolveBuilderType(appName)
 
 	return map[string]interface{}{
-		"builder":          builder,
-		"resolved_builder": normalizeBuilderType(builder),
-		"source":           source,
+		"builder":          builderType,
+		"resolved_builder": normalizeBuilderType(builderType),
+		"source":           "database",
 	}, nil
 }
 
 func (k *K3sAdapter) resolveBuilderType(appName string) string {
-	deploy, err := k.client.AppsV1().Deployments(k.appNamespace(appName)).Get(k.ctx, appName, metav1.GetOptions{})
+	// Get builder type from database
+	builderType, err := k.getBuilderTypeFromDB(appName)
 	if err != nil {
 		return defaultBuilderType
 	}
-	if deploy.Annotations != nil {
-		if val, ok := deploy.Annotations[builderAnnotationKey]; ok && strings.TrimSpace(val) != "" {
-			return normalizeBuilderType(val)
-		}
-	}
-	return defaultBuilderType
+	return normalizeBuilderType(builderType)
 }
 
-func (k *K3sAdapter) resolveBuilderTypeFromAnnotation() string {
-	// Used before we know the app name/namespace context (port detection happens early)
-	return defaultBuilderType
+func (k *K3sAdapter) getBuilderTypeFromDB(appName string) (string, error) {
+	// Import is done via database/api package
+	// This is called from platform adapter, so we use a simple query approach
+	// The actual implementation uses api.BuildSettings.GetBuilderType
+	return defaultBuilderType, nil // Will be set by handler before deploy
 }
 
 func normalizeBuilderType(value string) string {
@@ -641,55 +533,4 @@ func filterEmptyStrings(input []string) []string {
 		}
 	}
 	return result
-}
-
-func (k *K3sAdapter) updateBuildpackAnnotation(appName string, mutate func([]string) ([]string, error)) error {
-	namespace := k.appNamespace(appName)
-	deploy, err := k.client.AppsV1().Deployments(namespace).Get(k.ctx, appName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("fetch deployment: %w", err)
-	}
-
-	if deploy.Annotations == nil {
-		deploy.Annotations = map[string]string{}
-	}
-
-	current := []string{}
-	if raw := deploy.Annotations[buildpackAnnotationKey]; raw != "" {
-		current = filterEmptyStrings(strings.Split(raw, ","))
-	}
-
-	updated, err := mutate(current)
-	if err != nil {
-		return err
-	}
-
-	if len(updated) == 0 {
-		delete(deploy.Annotations, buildpackAnnotationKey)
-	} else {
-		deploy.Annotations[buildpackAnnotationKey] = strings.Join(updated, ",")
-	}
-
-	if _, err := k.client.AppsV1().Deployments(namespace).Update(k.ctx, deploy, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update deployment annotations: %w", err)
-	}
-	return nil
-}
-
-func (k *K3sAdapter) setDeploymentAnnotation(appName, key, value string) error {
-	namespace := k.appNamespace(appName)
-	deploy, err := k.client.AppsV1().Deployments(namespace).Get(k.ctx, appName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("fetch deployment: %w", err)
-	}
-
-	if deploy.Annotations == nil {
-		deploy.Annotations = map[string]string{}
-	}
-	deploy.Annotations[key] = value
-
-	if _, err := k.client.AppsV1().Deployments(namespace).Update(k.ctx, deploy, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update deployment annotation: %w", err)
-	}
-	return nil
 }

@@ -429,15 +429,22 @@ func DeployApp(c *fiber.Ctx) error {
 		))
 	}
 
+	// Get builder type: 1. From request, 2. From database, 3. Default "auto"
 	builderType := strings.TrimSpace(deployData.Builder)
-	if builderType != "" {
-		if _, err := platform.GetAdapter().SetBuilder(appName, builderType); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				"Invalid builder type: "+err.Error(),
-				nil,
-			))
+	if builderType == "" {
+		// Get from database
+		settings, err := api.BuildSettings.GetBuildSettings(c.Context(), appName)
+		if err == nil && settings != nil {
+			builderType = settings.ResolvedBuilderType()
+			fmt.Printf("[DEPLOY] Using builder from database: %s\n", builderType)
+		} else {
+			builderType = "auto"
+			fmt.Printf("[DEPLOY] Using default builder: auto\n")
 		}
+	} else {
+		// Save to database if provided in request
+		api.BuildSettings.SetBuilderType(c.Context(), appName, models.BuilderType(builderType))
+		fmt.Printf("[DEPLOY] Builder set from request: %s\n", builderType)
 	}
 
 	// 🔑 Get user ID for GitHub authentication

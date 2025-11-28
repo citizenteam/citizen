@@ -206,7 +206,9 @@ func buildJobScript() string {
 	return strings.TrimSpace(`
 set -eu
 
-echo "Starting build for ${APP_NAME}"
+echo "============================================"
+echo "🚀 Starting build for ${APP_NAME}"
+echo "============================================"
 echo "Source: ${GIT_URL}@${GIT_BRANCH}"
 
 rm -rf /workspace/src
@@ -217,24 +219,78 @@ cd /workspace/src
 push_image="${PUSH_IMAGE:-true}"
 
 if [ "${push_image}" = "true" ] && [ -n "${REGISTRY_USERNAME:-}" ]; then
-  echo "Logging into ${REGISTRY_URL}"
+  echo "📦 Logging into ${REGISTRY_URL}"
   echo "${REGISTRY_PASSWORD:-}" | docker login -u "${REGISTRY_USERNAME}" --password-stdin "${REGISTRY_URL}"
 fi
 
-builder="${BUILDER_TYPE:-nixpacks}"
-echo "Using builder: ${builder}"
+builder="${BUILDER_TYPE:-auto}"
+dockerfile_path="${DOCKERFILE_PATH:-Dockerfile}"
+
+echo "🔍 Configured builder: ${builder}"
+
+# Auto-detection logic
+if [ "${builder}" = "auto" ]; then
+  echo "🔍 Auto-detecting build method..."
+  
+  if [ -f "${dockerfile_path}" ]; then
+    echo "   ✓ Found ${dockerfile_path} - will use Dockerfile build"
+    builder="dockerfile"
+  elif [ -f "Dockerfile" ]; then
+    echo "   ✓ Found Dockerfile - will use Dockerfile build"
+    builder="dockerfile"
+    dockerfile_path="Dockerfile"
+  else
+    echo "   ✓ No Dockerfile found - will use Nixpacks"
+    builder="nixpacks"
+  fi
+fi
+
+echo "============================================"
+echo "🔨 Using builder: ${builder}"
+echo "============================================"
 
 if [ "${builder}" = "dockerfile" ]; then
-  dockerfile_path="${DOCKERFILE_PATH:-Dockerfile}"
-  echo "Building via Dockerfile (${dockerfile_path})"
+  echo "📄 Building via Dockerfile (${dockerfile_path})"
+  
+  if [ ! -f "${dockerfile_path}" ]; then
+    echo "❌ Error: ${dockerfile_path} not found!"
+    exit 1
+  fi
+  
   docker build -t "${IMAGE_NAME}" -f "${dockerfile_path}" .
 else
-  echo "Building via Nixpacks"
+  echo "📦 Building via Nixpacks (auto-detect language & framework)"
+  
+  # Show detected info
+  if [ -f "package.json" ]; then
+    echo "   ✓ Detected: Node.js project"
+  elif [ -f "requirements.txt" ] || [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then
+    echo "   ✓ Detected: Python project"
+  elif [ -f "go.mod" ]; then
+    echo "   ✓ Detected: Go project"
+  elif [ -f "Cargo.toml" ]; then
+    echo "   ✓ Detected: Rust project"
+  elif [ -f "pom.xml" ] || [ -f "build.gradle" ]; then
+    echo "   ✓ Detected: Java project"
+  elif [ -f "Gemfile" ]; then
+    echo "   ✓ Detected: Ruby project"
+  elif [ -f "mix.exs" ]; then
+    echo "   ✓ Detected: Elixir project"
+  else
+    echo "   ℹ️  Language will be auto-detected by Nixpacks"
+  fi
+  
   nixpacks build . --name "${IMAGE_NAME}"
 fi
 
+echo "============================================"
+echo "🏷️  Tagging image: ${IMAGE_REF}"
+echo "============================================"
+
 docker tag "${IMAGE_NAME}" "${IMAGE_REF}"
+
 if [ "${push_image}" = "true" ]; then
+  echo "📤 Pushing image to registry..."
   docker push "${IMAGE_REF}"
 else
   echo "PUSH_IMAGE=false - skipping docker push, attempting to import into containerd"
@@ -251,14 +307,16 @@ else
   fi
 
   if command -v ctr >/dev/null 2>&1 && [ -S "${ctr_sock}" ]; then
-    echo "Importing image into containerd namespace k8s.io via ${ctr_sock}"
+    echo "📥 Importing image into containerd namespace k8s.io via ${ctr_sock}"
     docker save "${IMAGE_REF}" | ctr --address "${ctr_sock}" -n k8s.io images import -
   else
-    echo "Warning: containerd socket not found or ctr unavailable; image will only exist in Docker daemon"
+    echo "⚠️  Warning: containerd socket not found or ctr unavailable; image will only exist in Docker daemon"
   fi
 fi
 
-echo "Build completed for ${APP_NAME}"
+echo "============================================"
+echo "✅ Build completed for ${APP_NAME}"
+echo "============================================"
 `) + "\n"
 }
 

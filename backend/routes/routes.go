@@ -89,6 +89,11 @@ func SetupRoutes(app *fiber.App) {
 	// Port settings
 	citizen.Post("/apps/:app_name/port", handlers.SetPort)
 
+	// Build settings
+	citizen.Get("/apps/:app_name/build-settings", handlers.GetBuildSettings)
+	citizen.Post("/apps/:app_name/build-settings", handlers.SetBuildSettings)
+	citizen.Post("/apps/:app_name/builder", handlers.SetBuilderType)
+
 	// Git deploy
 	citizen.Post("/apps/:app_name/git-deploy", handlers.DeployApp)
 	citizen.Post("/apps/:app_name/deploy", handlers.DeployApp)
@@ -174,6 +179,7 @@ func SetupRoutes(app *fiber.App) {
 		githubProtected.Get("/status", handlers.GetGitHubStatus)
 		githubProtected.Delete("/disconnect", handlers.DisconnectGitHubAccount) // Disconnect GitHub account
 		githubProtected.Get("/repositories", handlers.ListGitHubRepositories)
+		githubProtected.Get("/repos/:owner/:repo/branches", handlers.GetRepositoryBranches)
 		githubProtected.Get("/connections", handlers.GetRepositoryConnections)
 		githubProtected.Post("/connect", handlers.ConnectRepository)
 		githubProtected.Post("/apps/:app_name/connect", handlers.ConnectExistingAppToRepository) // Connect existing app to repo
