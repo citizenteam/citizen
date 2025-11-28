@@ -1436,17 +1436,55 @@ func ConnectWithPrivateKey(c *fiber.Ctx) error {
 	}
 	redirectURI := fmt.Sprintf("%s/api/v1/github/auth/callback", baseURL)
 
-	// Save to database
+	// Encrypt sensitive values before saving
+	encryptedClientID, err := utils.EncryptString(clientID)
+	if err != nil {
+		log.Printf("[GITHUB] Failed to encrypt client ID: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+			false,
+			"Failed to encrypt configuration",
+			nil,
+		))
+	}
+	encryptedClientSecret, err := utils.EncryptString(clientSecret)
+	if err != nil {
+		log.Printf("[GITHUB] Failed to encrypt client secret: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+			false,
+			"Failed to encrypt configuration",
+			nil,
+		))
+	}
+	encryptedWebhookSecret, err := utils.EncryptString(webhookSecret)
+	if err != nil {
+		log.Printf("[GITHUB] Failed to encrypt webhook secret: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+			false,
+			"Failed to encrypt configuration",
+			nil,
+		))
+	}
+	encryptedPrivateKey, err := utils.EncryptString(connectData.PrivateKey)
+	if err != nil {
+		log.Printf("[GITHUB] Failed to encrypt private key: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+			false,
+			"Failed to encrypt configuration",
+			nil,
+		))
+	}
+
+	// Save to database with encrypted values
 	err = api.GitHub.SaveGitHubConfig(
 		c.Context(),
-		clientID,
-		clientSecret,
-		webhookSecret,
+		encryptedClientID,
+		encryptedClientSecret,
+		encryptedWebhookSecret,
 		redirectURI,
 		&connectData.AppID,
 		&appInfo.Slug,
 		&appInfo.Name,
-		&connectData.PrivateKey,
+		&encryptedPrivateKey,
 		&installationID,
 	)
 	if err != nil {
