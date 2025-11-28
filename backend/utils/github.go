@@ -525,6 +525,50 @@ type AppInstallation struct {
 	RepositorySelection string `json:"repository_selection"`
 }
 
+// GitHubAppInfo represents basic GitHub App information
+type GitHubAppInfo struct {
+	ID    int64  `json:"id"`
+	Slug  string `json:"slug"`
+	Name  string `json:"name"`
+	Owner struct {
+		Login string `json:"login"`
+	} `json:"owner"`
+}
+
+// GetGitHubAppInfoWithJWT gets app info using JWT authentication
+func GetGitHubAppInfoWithJWT(jwtToken string) (*GitHubAppInfo, error) {
+	url := "https://api.github.com/app"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get app info: %s", string(body))
+	}
+
+	var appInfo GitHubAppInfo
+	if err := json.Unmarshal(body, &appInfo); err != nil {
+		return nil, err
+	}
+	return &appInfo, nil
+}
+
 // GetAppInstallationsWithJWT lists all installations for a GitHub App using JWT
 func GetAppInstallationsWithJWT(jwtToken string) ([]AppInstallation, error) {
 	url := "https://api.github.com/app/installations"
