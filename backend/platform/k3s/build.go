@@ -132,15 +132,25 @@ func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef, builderTy
 	return jobName, nil
 }
 
+// LogCallback is a function that receives build logs
+type LogCallback func(logs string)
+
 // waitForJobCompletion polls the job status until it completes or times out
 func (k *K3sAdapter) waitForJobCompletion(namespace, jobName string, timeout time.Duration) error {
+	return k.waitForJobCompletionWithLogs(namespace, jobName, timeout, nil)
+}
+
+// waitForJobCompletionWithLogs polls the job status and streams logs via callback
+func (k *K3sAdapter) waitForJobCompletionWithLogs(namespace, jobName string, timeout time.Duration, logCallback LogCallback) error {
 	if timeout <= 0 {
 		timeout = 20 * time.Minute
 	}
 
 	deadline := time.After(timeout)
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+
+	var lastLogLength int
 
 	for {
 		select {
@@ -155,6 +165,16 @@ func (k *K3sAdapter) waitForJobCompletion(namespace, jobName string, timeout tim
 					continue
 				}
 				return fmt.Errorf("build job lookup failed: %w", err)
+			}
+
+			// Stream logs if callback provided
+			if logCallback != nil {
+				logs := k.getJobPodLogs(namespace, jobName)
+				if len(logs) > lastLogLength {
+					newLogs := logs[lastLogLength:]
+					lastLogLength = len(logs)
+					logCallback(newLogs)
+				}
 			}
 
 			if job.Status.Succeeded > 0 {
@@ -177,6 +197,23 @@ func (k *K3sAdapter) waitForJobCompletion(namespace, jobName string, timeout tim
 			}
 		}
 	}
+}
+
+// getJobPodLogs gets logs from the job's pod
+func (k *K3sAdapter) getJobPodLogs(namespace, jobName string) string {
+	pods, err := k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+	})
+	if err != nil || len(pods.Items) == 0 {
+		return ""
+	}
+
+	req := k.client.CoreV1().Pods(namespace).GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{})
+	logs, err := req.DoRaw(k.ctx)
+	if err != nil {
+		return ""
+	}
+	return string(logs)
 }
 
 // cleanupFailedBuildJob removes the failed build job and its associated pods

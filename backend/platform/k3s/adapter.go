@@ -200,6 +200,11 @@ func (k *K3sAdapter) GetEnv(appName string) (map[string]string, error) {
 
 // DeployFromGit triggers build pipeline and updates deployment
 func (k *K3sAdapter) DeployFromGit(appName, gitURL, branch string, userID *int) (string, error) {
+	return k.DeployFromGitWithLogs(appName, gitURL, branch, userID, nil)
+}
+
+// DeployFromGitWithLogs triggers build pipeline with live log streaming
+func (k *K3sAdapter) DeployFromGitWithLogs(appName, gitURL, branch string, userID *int, logCallback LogCallback) (string, error) {
 	if appName == "" {
 		return "", fmt.Errorf("app name is required")
 	}
@@ -225,7 +230,7 @@ func (k *K3sAdapter) DeployFromGit(appName, gitURL, branch string, userID *int) 
 		return "", err
 	}
 
-	if err := k.waitForJobCompletion(k.builderNamespaceOrDefault(), jobName, k.buildTimeout); err != nil {
+	if err := k.waitForJobCompletionWithLogs(k.builderNamespaceOrDefault(), jobName, k.buildTimeout, logCallback); err != nil {
 		logs, logErr := k.getBuildJobLogs(appName)
 		if logErr == nil && logs != "" {
 			return logs, err

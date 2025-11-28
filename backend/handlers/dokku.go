@@ -5,6 +5,7 @@ import (
 	"backend/database/api"
 	"backend/models"
 	"backend/platform"
+	"backend/platform/k3s"
 	"backend/services"
 	"backend/utils"
 	"bufio"
@@ -456,11 +457,13 @@ func DeployApp(c *fiber.Ctx) error {
 		}
 	}
 
-	// 📊 Create deployment run for tracking (K3s style)
+	// Create deployment run for tracking (K3s style)
 	var deploymentRun *api.DeploymentRun
 	if run, err := api.DeploymentRuns.CreateDeploymentRun(c.Context(), appName, deployData.GitURL, deployData.GitBranch, builderType, "manual", userID); err == nil {
 		deploymentRun = run
-		fmt.Printf("[DEPLOY] 📊 Created deployment run: %s\n", run.RunID)
+		fmt.Printf("[DEPLOY] Created deployment run: %s\n", run.RunID)
+		// Start initializing step
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), run.RunID, "initializing", "running", nil)
 	}
 
 	// Branch priority: 1. Frontend request, 2. Database connected repo, 3. Default "main"
@@ -604,30 +607,58 @@ func DeployApp(c *fiber.Ctx) error {
 		}
 	}
 
-	// 🚀 Deploy from git repository with specific branch (WITH AUTHENTICATED GIT URL)
-	output, err := platform.GetAdapter().DeployFromGit(appName, authenticatedGitURL, deployData.GitBranch, userID)
-	if err != nil {
-		// 📝 Update deployment activity as failed
+	// Update deployment steps before starting actual deploy
+	if deploymentRun != nil {
+		initLog := fmt.Sprintf("Starting deployment for %s\nGit URL: %s\nBranch: %s\nBuilder: %s\n", appName, deployData.GitURL, deployData.GitBranch, builderType)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "initializing", "completed", &initLog)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cloning", "running", nil)
+		api.DeploymentRuns.UpdateDeploymentRunStatus(c.Context(), deploymentRun.RunID, "cloning")
+	}
+
+	// Deploy from git repository with specific branch (WITH AUTHENTICATED GIT URL)
+	// Use K3s adapter with live log streaming if available
+	var output string
+	var deployErr error
+
+	if k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter); ok && deploymentRun != nil {
+		// Use K3s adapter with live log callback
+		runID := deploymentRun.RunID
+		output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, authenticatedGitURL, deployData.GitBranch, userID, func(logs string) {
+			// Broadcast live logs to WebSocket subscribers
+			BroadcastDeploymentLog(runID, "building", "running", logs)
+			// Also append to database
+			api.DeploymentRuns.AppendBuildLogs(context.Background(), runID, logs)
+		})
+	} else {
+		output, deployErr = platform.GetAdapter().DeployFromGit(appName, authenticatedGitURL, deployData.GitBranch, userID)
+	}
+	if deployErr != nil {
+		// Update deployment activity as failed
 		if deployActivity != nil {
-			errorMsg := err.Error()
+			errorMsg := deployErr.Error()
 			database.UpdateActivity(deployActivity.ID, database.StatusError, &errorMsg)
 		}
 
-		// 📊 Update deployment run as failed
+		// Update deployment run as failed
 		if deploymentRun != nil {
-			errorMsg := err.Error()
+			errorMsg := deployErr.Error()
+			errLog := fmt.Sprintf("Deployment failed: %s", errorMsg)
+			// Mark cloning as completed, building as failed
+			api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cloning", "completed", nil)
+			api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "building", "running", nil)
+			api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "building", "failed", &errLog)
 			api.DeploymentRuns.CompleteDeploymentRun(c.Context(), deploymentRun.RunID, "failed", output, &errorMsg)
 		}
 
 		// Deploy failed - include both error and any available output
-		errorMessage := "Failed to deploy app: " + err.Error()
+		errorMessage := "Failed to deploy app: " + deployErr.Error()
 
 		// Try to get build logs for failed deploys
 		buildLogs, _ := platform.GetAdapter().GetBuildLogs(appName)
 
 		responseData := fiber.Map{
 			"output":        output,
-			"error_details": err.Error(),
+			"error_details": deployErr.Error(),
 		}
 
 		// Add build logs if available
@@ -661,8 +692,23 @@ func DeployApp(c *fiber.Ctx) error {
 		database.UpdateActivity(deployActivity.ID, database.StatusSuccess, nil)
 	}
 
-	// 📊 Update deployment run as completed
+	// Update deployment run as completed - mark all steps as completed
 	if deploymentRun != nil {
+		cloneLog := "Repository cloned successfully\n"
+		buildLog := "Build completed successfully\n"
+		pushLog := "Image pushed to registry\n"
+		deployLog := "Deployment rolled out successfully\n"
+		cleanupLog := "Cleanup completed\n"
+
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cloning", "completed", &cloneLog)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "building", "running", nil)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "building", "completed", &buildLog)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "pushing", "running", nil)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "pushing", "completed", &pushLog)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "deploying", "running", nil)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "deploying", "completed", &deployLog)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cleanup", "running", nil)
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cleanup", "completed", &cleanupLog)
 		api.DeploymentRuns.CompleteDeploymentRun(c.Context(), deploymentRun.RunID, "completed", output, nil)
 	}
 
