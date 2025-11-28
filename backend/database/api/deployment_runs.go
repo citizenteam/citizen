@@ -163,7 +163,10 @@ func (api *DeploymentRunsAPI) CompleteDeploymentRun(ctx context.Context, runID, 
 
 // AppendBuildLogs appends logs to a deployment run using JSONB array
 func (api *DeploymentRunsAPI) AppendBuildLogs(ctx context.Context, runID, step, logs string) error {
+	fmt.Printf("[DB] AppendBuildLogs called for run %s, step %s, %d bytes\n", runID, step, len(logs))
+
 	if DB == nil {
+		fmt.Printf("[DB] ERROR: Database connection is nil!\n")
 		return fmt.Errorf("database connection not initialized")
 	}
 
@@ -172,15 +175,20 @@ func (api *DeploymentRunsAPI) AppendBuildLogs(ctx context.Context, runID, step, 
 		UPDATE deployment_runs 
 		SET build_logs_json = COALESCE(build_logs_json, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
 			'timestamp', extract(epoch from now())::bigint,
-			'step', $1,
-			'log', $2
+			'step', $1::text,
+			'log', $2::text
 		)),
-		build_logs = COALESCE(build_logs, '') || $2,
+		build_logs = COALESCE(build_logs, '') || $2::text,
 		updated_at = CURRENT_TIMESTAMP
-		WHERE run_id = $3
+		WHERE run_id = $3::text
 	`
-	_, err := DB.Exec(ctx, query, step, logs, runID)
-	return err
+	result, err := DB.Exec(ctx, query, step, logs, runID)
+	if err != nil {
+		fmt.Printf("[DB] ERROR AppendBuildLogs: %v\n", err)
+		return err
+	}
+	fmt.Printf("[DB] AppendBuildLogs success, rows affected: %d\n", result.RowsAffected())
+	return nil
 }
 
 // UpdateDeploymentStep updates a deployment step
