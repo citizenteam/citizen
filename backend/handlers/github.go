@@ -1342,24 +1342,25 @@ func ConnectWithPrivateKey(c *fiber.Ctx) error {
 	}
 	redirectURI := fmt.Sprintf("%s/api/v1/github/auth/callback", baseURL)
 
-	// Update GitHub App URLs if requested
+	// Update GitHub App webhook config if requested
 	var urlsUpdated bool
 	if connectData.UpdateURLs {
-		log.Printf("[GITHUB] Updating GitHub App URLs to: %s", baseURL)
+		log.Printf("[GITHUB] Updating GitHub App webhook config to: %s", baseURL)
 
 		urlUpdate := utils.GitHubAppURLUpdate{
-			HomepageURL:  baseURL,
-			WebhookURL:   fmt.Sprintf("%s/api/v1/github/webhook", baseURL),
-			CallbackURLs: []string{redirectURI},
-			SetupURL:     fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL),
+			HomepageURL:   baseURL,
+			WebhookURL:    fmt.Sprintf("%s/api/v1/github/webhook", baseURL),
+			WebhookSecret: webhookSecret, // Update webhook secret to match our new one
+			CallbackURLs:  []string{redirectURI},
+			SetupURL:      fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL),
 		}
 
 		if err := utils.UpdateGitHubAppURLs(jwtToken, urlUpdate); err != nil {
-			log.Printf("[GITHUB] ⚠️ Failed to update GitHub App URLs: %v", err)
+			log.Printf("[GITHUB] ⚠️ Failed to update GitHub App webhook config: %v", err)
 			// Don't fail the connection, just warn
 		} else {
 			urlsUpdated = true
-			log.Printf("[GITHUB] ✅ GitHub App URLs updated successfully")
+			log.Printf("[GITHUB] ✅ GitHub App webhook URL and secret updated successfully")
 		}
 	}
 

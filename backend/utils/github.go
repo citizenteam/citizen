@@ -604,10 +604,11 @@ func GetAppInstallationsWithJWT(jwtToken string) ([]AppInstallation, error) {
 	return installations, nil
 }
 
-// GitHubAppURLUpdate represents the URLs to update on a GitHub App
+// GitHubAppURLUpdate represents the URLs and webhook config to update on a GitHub App
 type GitHubAppURLUpdate struct {
 	HomepageURL   string   `json:"homepage_url,omitempty"`
 	WebhookURL    string   `json:"webhook_url,omitempty"`
+	WebhookSecret string   `json:"webhook_secret,omitempty"` // New webhook secret to set
 	CallbackURLs  []string `json:"callback_urls,omitempty"`
 	SetupURL      string   `json:"setup_url,omitempty"`
 	SetupOnUpdate bool     `json:"setup_on_update,omitempty"`
@@ -633,6 +634,12 @@ func UpdateGitHubAppURLs(jwtToken string, updates GitHubAppURLUpdate) error {
 	requestBody := map[string]interface{}{
 		"url":          updates.WebhookURL,
 		"content_type": "json",
+	}
+
+	// Include webhook secret if provided
+	if updates.WebhookSecret != "" {
+		requestBody["secret"] = updates.WebhookSecret
+		log.Printf("[GITHUB] Including new webhook secret in update")
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
@@ -666,7 +673,11 @@ func UpdateGitHubAppURLs(jwtToken string, updates GitHubAppURLUpdate) error {
 		return fmt.Errorf("GitHub API error (%d): %s", resp.StatusCode, string(body))
 	}
 
-	log.Printf("[GITHUB] ✅ Webhook URL updated successfully to: %s", updates.WebhookURL)
+	if updates.WebhookSecret != "" {
+		log.Printf("[GITHUB] ✅ Webhook URL and secret updated successfully to: %s", updates.WebhookURL)
+	} else {
+		log.Printf("[GITHUB] ✅ Webhook URL updated successfully to: %s", updates.WebhookURL)
+	}
 
 	// Warn about URLs that need manual update
 	if updates.HomepageURL != "" || len(updates.CallbackURLs) > 0 || updates.SetupURL != "" {
