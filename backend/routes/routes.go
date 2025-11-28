@@ -148,6 +148,12 @@ func SetupRoutes(app *fiber.App) {
 	citizen.Put("/apps/:app_name/deployment", handlers.UpdateAppDeployment)
 	citizen.Put("/apps/:app_name/deployment/status", handlers.UpdateAppDeploymentStatus)
 
+	// Deployment runs (K3s only) - Netlify-style deployment tracking
+	citizen.Get("/apps/:app_name/runs", handlers.GetDeploymentRuns)
+	citizen.Get("/apps/:app_name/runs/latest", handlers.GetLatestDeploymentRun)
+	citizen.Get("/runs/:run_id", handlers.GetDeploymentRun)
+	citizen.Post("/apps/:app_name/trigger-deploy", handlers.TriggerDeployment)
+
 	// Log management
 	citizen.Get("/apps/:app_name/logs", handlers.GetAppLogs)
 	citizen.Get("/apps/:app_name/logs/stream", handlers.StreamAppLogs)
@@ -194,6 +200,9 @@ func SetupRoutes(app *fiber.App) {
 		github.Put("/apps/:app_name/auto-deploy", handlers.ToggleAutoDeploy)
 		github.Post("/app/install/start", handlers.StartGitHubInstall)
 	}
+
+	// WebSocket endpoint for real-time deployment logs (K3s only)
+	api.Get("/ws/runs/:run_id", handlers.DeploymentLogsWebSocketHandler)
 
 	// ===== CITIZENAUTH INTEGRATION ENDPOINTS =====
 
