@@ -3,6 +3,7 @@ package k3s
 import (
 	"backend/platform"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/pointer"
 )
 
 // =============================================================================
@@ -689,6 +691,57 @@ func (k *K3sAdapter) streamPodLogsByLabel(namespace, processType string, tail in
 	}
 
 	return string(logs), nil
+}
+
+// StreamPodLogs streams pod logs in real-time via callback
+func (k *K3sAdapter) StreamPodLogs(namespace, appName string, callback func(string)) error {
+	// Find pods
+	labelSelector := fmt.Sprintf("app=%s", appName)
+	pods, err := k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	if len(pods.Items) == 0 {
+		// Try without label selector
+		pods, err = k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to list pods: %w", err)
+		}
+		if len(pods.Items) == 0 {
+			return fmt.Errorf("no pods found in namespace %s", namespace)
+		}
+	}
+
+	// Stream logs from first pod
+	pod := pods.Items[0]
+	req := k.client.CoreV1().Pods(namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+		Follow:    true,
+		TailLines: pointer.Int64(100),
+	})
+
+	stream, err := req.Stream(k.ctx)
+	if err != nil {
+		return fmt.Errorf("failed to stream logs: %w", err)
+	}
+	defer stream.Close()
+
+	buf := make([]byte, 4096)
+	for {
+		n, err := stream.Read(buf)
+		if n > 0 {
+			callback(string(buf[:n]))
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 // =============================================================================

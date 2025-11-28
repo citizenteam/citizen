@@ -201,8 +201,9 @@ func SetupRoutes(app *fiber.App) {
 		github.Post("/app/install/start", handlers.StartGitHubInstall)
 	}
 
-	// WebSocket endpoint for real-time deployment logs (K3s only)
+	// WebSocket endpoints (K3s only)
 	api.Get("/ws/runs/:run_id", handlers.DeploymentLogsWebSocketHandler)
+	api.Get("/ws/apps/:app_name/logs", handlers.PodLogsWebSocketHandler)
 
 	// ===== CITIZENAUTH INTEGRATION ENDPOINTS =====
 

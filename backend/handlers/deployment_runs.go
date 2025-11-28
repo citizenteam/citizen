@@ -3,6 +3,7 @@ package handlers
 import (
 	"backend/database/api"
 	"backend/platform"
+	"backend/platform/k3s"
 	"backend/utils"
 	"context"
 	"encoding/json"
@@ -505,4 +506,87 @@ func updateStep(ctx context.Context, runID, stepName, status string, logs *strin
 	if err := api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, stepName, status, logs); err != nil {
 		log.Printf("[DEPLOY] Failed to update step %s: %v", stepName, err)
 	}
+}
+
+// PodLogsWebSocketHandler streams pod logs via WebSocket
+func PodLogsWebSocketHandler(c *fiber.Ctx) error {
+	appName := c.Params("app_name")
+	if appName == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+			false,
+			"app_name is required",
+			nil,
+		))
+	}
+
+	processType := c.Query("process", "web")
+	tailLines := c.QueryInt("tail", 100)
+
+	// Check if it's a websocket upgrade request
+	if !websocket.FastHTTPIsWebSocketUpgrade(c.Context()) {
+		// If not WebSocket, return logs via REST
+		k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter)
+		if !ok {
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false,
+				"Pod logs only supported for K3s adapter",
+				nil,
+			))
+		}
+		logs, err := k3sAdapter.GetAppLogs(appName, tailLines, false)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+				false,
+				"Failed to get logs: "+err.Error(),
+				nil,
+			))
+		}
+		return c.JSON(utils.NewCitizenResponse(true, "Logs retrieved", fiber.Map{"logs": logs}))
+	}
+
+	// Upgrade to WebSocket
+	err := wsUpgrader.Upgrade(c.Context(), func(conn *websocket.Conn) {
+		defer conn.Close()
+
+		log.Printf("[WS] Pod logs connection for app %s, process %s", appName, processType)
+
+		// Get K3s adapter for streaming
+		k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter)
+		if !ok {
+			conn.WriteJSON(map[string]interface{}{
+				"type":  "error",
+				"error": "Pod log streaming only supported for K3s adapter",
+			})
+			return
+		}
+
+		// Stream logs
+		namespace := fmt.Sprintf("citizen-app-%s", appName)
+		err := k3sAdapter.StreamPodLogs(namespace, appName, func(logLine string) {
+			conn.WriteJSON(map[string]interface{}{
+				"type":    "log",
+				"content": logLine,
+				"app":     appName,
+				"process": processType,
+			})
+		})
+
+		if err != nil {
+			conn.WriteJSON(map[string]interface{}{
+				"type":  "error",
+				"error": err.Error(),
+			})
+		}
+	})
+
+	if err != nil {
+		log.Printf("[WS] Pod logs upgrade error: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+			false,
+			"WebSocket upgrade failed",
+			nil,
+		))
+	}
+
+	return nil
 }
