@@ -609,10 +609,14 @@ func DeployApp(c *fiber.Ctx) error {
 
 	// Update deployment steps before starting actual deploy
 	if deploymentRun != nil {
+		runID := deploymentRun.RunID
 		initLog := fmt.Sprintf("Starting deployment for %s\nGit URL: %s\nBranch: %s\nBuilder: %s\n", appName, deployData.GitURL, deployData.GitBranch, builderType)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "initializing", "completed", &initLog)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cloning", "running", nil)
-		api.DeploymentRuns.UpdateDeploymentRunStatus(c.Context(), deploymentRun.RunID, "cloning")
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "initializing", "completed", &initLog)
+		BroadcastDeploymentLog(runID, "initializing", "completed", initLog)
+
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "cloning", "running", nil)
+		BroadcastStepUpdate(runID, "cloning", "running")
+		api.DeploymentRuns.UpdateDeploymentRunStatus(c.Context(), runID, "cloning")
 	}
 
 	// Deploy from git repository with specific branch (WITH AUTHENTICATED GIT URL)
@@ -623,6 +627,16 @@ func DeployApp(c *fiber.Ctx) error {
 	if k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter); ok && deploymentRun != nil {
 		// Use K3s adapter with live log callback
 		runID := deploymentRun.RunID
+
+		// Mark cloning as completed and building as running
+		cloneLog := "Repository cloning started...\n"
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "cloning", "completed", &cloneLog)
+		BroadcastDeploymentLog(runID, "cloning", "completed", cloneLog)
+
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "building", "running", nil)
+		BroadcastStepUpdate(runID, "building", "running")
+		api.DeploymentRuns.UpdateDeploymentRunStatus(c.Context(), runID, "building")
+
 		output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, authenticatedGitURL, deployData.GitBranch, userID, func(logs string) {
 			// Broadcast live logs to WebSocket subscribers
 			BroadcastDeploymentLog(runID, "building", "running", logs)
@@ -641,13 +655,14 @@ func DeployApp(c *fiber.Ctx) error {
 
 		// Update deployment run as failed
 		if deploymentRun != nil {
+			runID := deploymentRun.RunID
 			errorMsg := deployErr.Error()
 			errLog := fmt.Sprintf("Deployment failed: %s", errorMsg)
-			// Mark cloning as completed, building as failed
-			api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cloning", "completed", nil)
-			api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "building", "running", nil)
-			api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "building", "failed", &errLog)
-			api.DeploymentRuns.CompleteDeploymentRun(c.Context(), deploymentRun.RunID, "failed", output, &errorMsg)
+			// Mark building as failed
+			api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "building", "failed", &errLog)
+			BroadcastDeploymentLog(runID, "building", "failed", errLog)
+			api.DeploymentRuns.CompleteDeploymentRun(c.Context(), runID, "failed", output, &errorMsg)
+			BroadcastRunUpdate(runID, "failed")
 		}
 
 		// Deploy failed - include both error and any available output
@@ -694,22 +709,38 @@ func DeployApp(c *fiber.Ctx) error {
 
 	// Update deployment run as completed - mark all steps as completed
 	if deploymentRun != nil {
-		cloneLog := "Repository cloned successfully\n"
+		runID := deploymentRun.RunID
 		buildLog := "Build completed successfully\n"
 		pushLog := "Image pushed to registry\n"
 		deployLog := "Deployment rolled out successfully\n"
 		cleanupLog := "Cleanup completed\n"
 
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cloning", "completed", &cloneLog)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "building", "running", nil)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "building", "completed", &buildLog)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "pushing", "running", nil)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "pushing", "completed", &pushLog)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "deploying", "running", nil)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "deploying", "completed", &deployLog)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cleanup", "running", nil)
-		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), deploymentRun.RunID, "cleanup", "completed", &cleanupLog)
-		api.DeploymentRuns.CompleteDeploymentRun(c.Context(), deploymentRun.RunID, "completed", output, nil)
+		// Building completed
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "building", "completed", &buildLog)
+		BroadcastDeploymentLog(runID, "building", "completed", buildLog)
+
+		// Pushing
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "pushing", "running", nil)
+		BroadcastStepUpdate(runID, "pushing", "running")
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "pushing", "completed", &pushLog)
+		BroadcastDeploymentLog(runID, "pushing", "completed", pushLog)
+
+		// Deploying
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "deploying", "running", nil)
+		BroadcastStepUpdate(runID, "deploying", "running")
+		api.DeploymentRuns.UpdateDeploymentRunStatus(c.Context(), runID, "deploying")
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "deploying", "completed", &deployLog)
+		BroadcastDeploymentLog(runID, "deploying", "completed", deployLog)
+
+		// Cleanup
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "cleanup", "running", nil)
+		BroadcastStepUpdate(runID, "cleanup", "running")
+		api.DeploymentRuns.UpdateDeploymentStep(c.Context(), runID, "cleanup", "completed", &cleanupLog)
+		BroadcastDeploymentLog(runID, "cleanup", "completed", cleanupLog)
+
+		// Complete the run
+		api.DeploymentRuns.CompleteDeploymentRun(c.Context(), runID, "completed", output, nil)
+		BroadcastRunUpdate(runID, "completed")
 	}
 
 	// 💾 Save deployment info to database

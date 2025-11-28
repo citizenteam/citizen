@@ -1,7 +1,10 @@
 package k3s
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -140,26 +143,51 @@ func (k *K3sAdapter) waitForJobCompletion(namespace, jobName string, timeout tim
 	return k.waitForJobCompletionWithLogs(namespace, jobName, timeout, nil)
 }
 
-// waitForJobCompletionWithLogs polls the job status and streams logs via callback
+// waitForJobCompletionWithLogs streams logs in real-time and monitors job status
 func (k *K3sAdapter) waitForJobCompletionWithLogs(namespace, jobName string, timeout time.Duration, logCallback LogCallback) error {
 	if timeout <= 0 {
 		timeout = 20 * time.Minute
 	}
 
-	deadline := time.After(timeout)
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
+	ctx, cancel := context.WithTimeout(k.ctx, timeout)
+	defer cancel()
 
-	var lastLogLength int
+	// Wait for pod to be created and running
+	var podName string
+	for i := 0; i < 60; i++ { // Wait up to 60 seconds for pod
+		pods, err := k.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+		})
+		if err == nil && len(pods.Items) > 0 {
+			pod := pods.Items[0]
+			podName = pod.Name
+			if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+				break
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	if podName == "" {
+		return fmt.Errorf("no pod found for job %s", jobName)
+	}
+
+	// Start real-time log streaming in goroutine
+	if logCallback != nil {
+		go k.streamBuildLogs(ctx, namespace, podName, logCallback)
+	}
+
+	// Monitor job status
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
-		case <-deadline:
-			// Timeout - cleanup the build job and pods
+		case <-ctx.Done():
 			k.cleanupFailedBuildJob(namespace, jobName)
 			return fmt.Errorf("timeout waiting for build job %s", jobName)
 		case <-ticker.C:
-			job, err := k.client.BatchV1().Jobs(namespace).Get(k.ctx, jobName, metav1.GetOptions{})
+			job, err := k.client.BatchV1().Jobs(namespace).Get(ctx, jobName, metav1.GetOptions{})
 			if err != nil {
 				if apierrors.IsNotFound(err) {
 					continue
@@ -167,33 +195,53 @@ func (k *K3sAdapter) waitForJobCompletionWithLogs(namespace, jobName string, tim
 				return fmt.Errorf("build job lookup failed: %w", err)
 			}
 
-			// Stream logs if callback provided
-			if logCallback != nil {
-				logs := k.getJobPodLogs(namespace, jobName)
-				if len(logs) > lastLogLength {
-					newLogs := logs[lastLogLength:]
-					lastLogLength = len(logs)
-					logCallback(newLogs)
-				}
-			}
-
 			if job.Status.Succeeded > 0 {
+				// Give a moment for final logs to stream
+				time.Sleep(500 * time.Millisecond)
 				return nil
 			}
 
 			if job.Status.Failed > 0 && job.Status.Active == 0 {
-				// Build failed - cleanup the build job and pods
 				k.cleanupFailedBuildJob(namespace, jobName)
-
 				for _, cond := range job.Status.Conditions {
-					if cond.Type == batchv1.JobFailed {
-						if cond.Message != "" {
-							return fmt.Errorf(cond.Message)
-						}
-						break
+					if cond.Type == batchv1.JobFailed && cond.Message != "" {
+						return fmt.Errorf(cond.Message)
 					}
 				}
 				return fmt.Errorf("build job %s failed", jobName)
+			}
+		}
+	}
+}
+
+// streamBuildLogs streams build pod logs in real-time to the callback
+func (k *K3sAdapter) streamBuildLogs(ctx context.Context, namespace, podName string, logCallback LogCallback) {
+	req := k.client.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Follow: true,
+	})
+
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		log.Printf("[K3S] Failed to stream logs for pod %s: %v", podName, err)
+		return
+	}
+	defer stream.Close()
+
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			n, err := stream.Read(buf)
+			if n > 0 {
+				logCallback(string(buf[:n]))
+			}
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("[K3S] Log stream error: %v", err)
+				}
+				return
 			}
 		}
 	}
