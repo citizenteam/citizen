@@ -33,7 +33,7 @@ type DeploymentRun struct {
 	CompletedAt     *time.Time      `json:"completed_at"`
 	DurationSeconds *int            `json:"duration_seconds"`
 	BuildLogs       *string         `json:"build_logs"`
-	BuildLogsJSON   []BuildLogEntry `json:"build_logs_json,omitempty"`
+	BuildLogsJSON   []BuildLogEntry `json:"build_logs_json"`
 	ErrorMessage    *string         `json:"error_message"`
 	TriggerType     string          `json:"trigger_type"`
 	TriggeredBy     *int            `json:"triggered_by"`
@@ -204,7 +204,11 @@ func (api *DeploymentRunsAPI) UpdateDeploymentStep(ctx context.Context, runID, s
 			UPDATE deployment_steps 
 			SET status = $1, 
 				completed_at = CURRENT_TIMESTAMP, 
-				duration_ms = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at))::INTEGER * 1000,
+				duration_ms = CASE 
+					WHEN started_at IS NOT NULL THEN 
+						GREATEST(1, (EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)) * 1000)::INTEGER)
+					ELSE 1 
+				END,
 				logs = COALESCE(logs, '') || COALESCE($2, ''),
 				updated_at = CURRENT_TIMESTAMP
 			WHERE run_id = $3 AND step_name = $4
@@ -257,7 +261,17 @@ func (api *DeploymentRunsAPI) GetDeploymentRun(ctx context.Context, runID string
 
 	// Parse JSONB build logs
 	if len(buildLogsJSON) > 0 {
-		json.Unmarshal(buildLogsJSON, &run.BuildLogsJSON)
+		if err := json.Unmarshal(buildLogsJSON, &run.BuildLogsJSON); err != nil {
+			previewLen := len(buildLogsJSON)
+			if previewLen > 100 {
+				previewLen = 100
+			}
+			fmt.Printf("[DEBUG] Failed to unmarshal build_logs_json: %v, raw: %s\n", err, string(buildLogsJSON[:previewLen]))
+		} else {
+			fmt.Printf("[DEBUG] build_logs_json loaded: %d entries\n", len(run.BuildLogsJSON))
+		}
+	} else {
+		fmt.Printf("[DEBUG] build_logs_json is empty for run %s\n", runID)
 	}
 
 	// Get steps

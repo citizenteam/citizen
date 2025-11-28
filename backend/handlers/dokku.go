@@ -642,7 +642,9 @@ func DeployApp(c *fiber.Ctx) error {
 					// Broadcast live logs to WebSocket subscribers
 					BroadcastDeploymentLog(runID, "building", "running", logs)
 					// Also append to database with step info
-					api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs)
+					if err := api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs); err != nil {
+						fmt.Printf("[DEPLOY] Error appending build logs to DB: %v\n", err)
+					}
 				})
 			} else {
 				output, deployErr = platform.GetAdapter().DeployFromGit(appName, authenticatedGitURL, deployData.GitBranch, userID)
