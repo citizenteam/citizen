@@ -613,35 +613,34 @@ type GitHubAppURLUpdate struct {
 	SetupOnUpdate bool     `json:"setup_on_update,omitempty"`
 }
 
-// UpdateGitHubAppURLs updates the GitHub App URLs (webhook, callback, homepage, setup)
+// UpdateGitHubAppURLs updates the GitHub App webhook URL
+// Note: GitHub API only supports updating webhook URL via PATCH /app/hook/config
+// Other URLs (homepage, callback, setup) can only be changed via GitHub UI
 func UpdateGitHubAppURLs(jwtToken string, updates GitHubAppURLUpdate) error {
-	apiURL := "https://api.github.com/app"
+	log.Printf("[GITHUB] UpdateGitHubAppURLs called with: homepage=%s, webhook=%s, callbacks=%v, setup=%s",
+		updates.HomepageURL, updates.WebhookURL, updates.CallbackURLs, updates.SetupURL)
 
-	// Build request body - only include non-empty fields
-	requestBody := make(map[string]interface{})
-
-	if updates.HomepageURL != "" {
-		requestBody["homepage_url"] = updates.HomepageURL
-	}
-	if updates.WebhookURL != "" {
-		requestBody["webhook_url"] = updates.WebhookURL
-	}
-	if len(updates.CallbackURLs) > 0 {
-		requestBody["callback_urls"] = updates.CallbackURLs
-	}
-	if updates.SetupURL != "" {
-		requestBody["setup_url"] = updates.SetupURL
-		requestBody["setup_on_update"] = updates.SetupOnUpdate
+	// GitHub API only supports updating webhook URL programmatically
+	// Homepage, callback URLs, and setup URL can only be changed via GitHub UI
+	if updates.WebhookURL == "" {
+		log.Printf("[GITHUB] No webhook URL provided, skipping update")
+		return nil
 	}
 
-	if len(requestBody) == 0 {
-		return nil // Nothing to update
+	// Update webhook configuration: PATCH /app/hook/config
+	apiURL := "https://api.github.com/app/hook/config"
+
+	requestBody := map[string]interface{}{
+		"url":          updates.WebhookURL,
+		"content_type": "json",
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
+
+	log.Printf("[GITHUB] Updating webhook config: %s", string(jsonBody))
 
 	req, err := http.NewRequest("PATCH", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
@@ -660,12 +659,20 @@ func UpdateGitHubAppURLs(jwtToken string, updates GitHubAppURLUpdate) error {
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+	log.Printf("[GITHUB] UpdateGitHubAppURLs response: status=%d, body=%s", resp.StatusCode, string(body))
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("GitHub API error (%d): %s", resp.StatusCode, string(body))
 	}
 
-	log.Printf("[GITHUB] ✅ App URLs updated successfully")
+	log.Printf("[GITHUB] ✅ Webhook URL updated successfully to: %s", updates.WebhookURL)
+
+	// Warn about URLs that need manual update
+	if updates.HomepageURL != "" || len(updates.CallbackURLs) > 0 || updates.SetupURL != "" {
+		log.Printf("[GITHUB] ⚠️ Note: Homepage, Callback, and Setup URLs must be updated manually in GitHub App settings")
+	}
+
 	return nil
 }
 
