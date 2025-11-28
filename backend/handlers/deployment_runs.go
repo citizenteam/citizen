@@ -497,7 +497,7 @@ func executeDeployment(runID, appName, gitURL, gitBranch, builder string, userID
 
 	// Append full build output
 	if output != "" {
-		api.DeploymentRuns.AppendBuildLogs(ctx, runID, "\n--- Build Output ---\n"+output)
+		api.DeploymentRuns.AppendBuildLogs(ctx, runID, "output", "\n--- Build Output ---\n"+output)
 	}
 }
 

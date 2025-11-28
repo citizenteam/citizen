@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,29 +10,37 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// BuildLogEntry represents a single log entry in the JSONB array
+type BuildLogEntry struct {
+	Timestamp int64  `json:"timestamp"`
+	Step      string `json:"step"`
+	Log       string `json:"log"`
+}
+
 // DeploymentRun represents a single deployment execution
 type DeploymentRun struct {
-	ID              int        `json:"id"`
-	AppName         string     `json:"app_name"`
-	RunID           string     `json:"run_id"`
-	GitURL          *string    `json:"git_url"`
-	GitBranch       string     `json:"git_branch"`
-	GitCommit       *string    `json:"git_commit"`
-	CommitMessage   *string    `json:"commit_message"`
-	Builder         string     `json:"builder"`
-	ImageRef        *string    `json:"image_ref"`
-	Status          string     `json:"status"`
-	StartedAt       time.Time  `json:"started_at"`
-	CompletedAt     *time.Time `json:"completed_at"`
-	DurationSeconds *int       `json:"duration_seconds"`
-	BuildLogs       *string    `json:"build_logs"`
-	ErrorMessage    *string    `json:"error_message"`
-	TriggerType     string     `json:"trigger_type"`
-	TriggeredBy     *int       `json:"triggered_by"`
-	JobName         *string    `json:"job_name"`
-	Namespace       *string    `json:"namespace"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID              int             `json:"id"`
+	AppName         string          `json:"app_name"`
+	RunID           string          `json:"run_id"`
+	GitURL          *string         `json:"git_url"`
+	GitBranch       string          `json:"git_branch"`
+	GitCommit       *string         `json:"git_commit"`
+	CommitMessage   *string         `json:"commit_message"`
+	Builder         string          `json:"builder"`
+	ImageRef        *string         `json:"image_ref"`
+	Status          string          `json:"status"`
+	StartedAt       time.Time       `json:"started_at"`
+	CompletedAt     *time.Time      `json:"completed_at"`
+	DurationSeconds *int            `json:"duration_seconds"`
+	BuildLogs       *string         `json:"build_logs"`
+	BuildLogsJSON   []BuildLogEntry `json:"build_logs_json,omitempty"`
+	ErrorMessage    *string         `json:"error_message"`
+	TriggerType     string          `json:"trigger_type"`
+	TriggeredBy     *int            `json:"triggered_by"`
+	JobName         *string         `json:"job_name"`
+	Namespace       *string         `json:"namespace"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
 // DeploymentStep represents a step within a deployment run
@@ -152,18 +161,25 @@ func (api *DeploymentRunsAPI) CompleteDeploymentRun(ctx context.Context, runID, 
 	return err
 }
 
-// AppendBuildLogs appends logs to a deployment run
-func (api *DeploymentRunsAPI) AppendBuildLogs(ctx context.Context, runID, logs string) error {
+// AppendBuildLogs appends logs to a deployment run using JSONB array
+func (api *DeploymentRunsAPI) AppendBuildLogs(ctx context.Context, runID, step, logs string) error {
 	if DB == nil {
 		return fmt.Errorf("database connection not initialized")
 	}
+
+	// Append to JSONB array with timestamp
 	query := `
 		UPDATE deployment_runs 
-		SET build_logs = COALESCE(build_logs, '') || $1,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE run_id = $2
+		SET build_logs_json = COALESCE(build_logs_json, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+			'timestamp', extract(epoch from now())::bigint,
+			'step', $1,
+			'log', $2
+		)),
+		build_logs = COALESCE(build_logs, '') || $2,
+		updated_at = CURRENT_TIMESTAMP
+		WHERE run_id = $3
 	`
-	_, err := DB.Exec(ctx, query, logs, runID)
+	_, err := DB.Exec(ctx, query, step, logs, runID)
 	return err
 }
 
@@ -216,17 +232,20 @@ func (api *DeploymentRunsAPI) GetDeploymentRun(ctx context.Context, runID string
 	query := `
 		SELECT id, app_name, run_id, git_url, git_branch, git_commit, commit_message,
 			   builder, image_ref, status, started_at, completed_at, duration_seconds,
-			   build_logs, error_message, trigger_type, triggered_by, job_name, namespace,
+			   build_logs, COALESCE(build_logs_json, '[]'::jsonb) as build_logs_json, 
+			   error_message, trigger_type, triggered_by, job_name, namespace,
 			   created_at, updated_at
 		FROM deployment_runs
 		WHERE run_id = $1
 	`
 
 	run := &DeploymentRunWithSteps{}
+	var buildLogsJSON []byte
 	err := DB.QueryRow(ctx, query, runID).Scan(
 		&run.ID, &run.AppName, &run.RunID, &run.GitURL, &run.GitBranch, &run.GitCommit, &run.CommitMessage,
 		&run.Builder, &run.ImageRef, &run.Status, &run.StartedAt, &run.CompletedAt, &run.DurationSeconds,
-		&run.BuildLogs, &run.ErrorMessage, &run.TriggerType, &run.TriggeredBy, &run.JobName, &run.Namespace,
+		&run.BuildLogs, &buildLogsJSON,
+		&run.ErrorMessage, &run.TriggerType, &run.TriggeredBy, &run.JobName, &run.Namespace,
 		&run.CreatedAt, &run.UpdatedAt,
 	)
 	if err != nil {
@@ -234,6 +253,11 @@ func (api *DeploymentRunsAPI) GetDeploymentRun(ctx context.Context, runID string
 			return nil, fmt.Errorf("deployment run not found")
 		}
 		return nil, fmt.Errorf("failed to get deployment run: %w", err)
+	}
+
+	// Parse JSONB build logs
+	if len(buildLogsJSON) > 0 {
+		json.Unmarshal(buildLogsJSON, &run.BuildLogsJSON)
 	}
 
 	// Get steps
