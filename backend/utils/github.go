@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -601,6 +602,71 @@ func GetAppInstallationsWithJWT(jwtToken string) ([]AppInstallation, error) {
 		return nil, err
 	}
 	return installations, nil
+}
+
+// GitHubAppURLUpdate represents the URLs to update on a GitHub App
+type GitHubAppURLUpdate struct {
+	HomepageURL   string   `json:"homepage_url,omitempty"`
+	WebhookURL    string   `json:"webhook_url,omitempty"`
+	CallbackURLs  []string `json:"callback_urls,omitempty"`
+	SetupURL      string   `json:"setup_url,omitempty"`
+	SetupOnUpdate bool     `json:"setup_on_update,omitempty"`
+}
+
+// UpdateGitHubAppURLs updates the GitHub App URLs (webhook, callback, homepage, setup)
+func UpdateGitHubAppURLs(jwtToken string, updates GitHubAppURLUpdate) error {
+	apiURL := "https://api.github.com/app"
+
+	// Build request body - only include non-empty fields
+	requestBody := make(map[string]interface{})
+
+	if updates.HomepageURL != "" {
+		requestBody["homepage_url"] = updates.HomepageURL
+	}
+	if updates.WebhookURL != "" {
+		requestBody["webhook_url"] = updates.WebhookURL
+	}
+	if len(updates.CallbackURLs) > 0 {
+		requestBody["callback_urls"] = updates.CallbackURLs
+	}
+	if updates.SetupURL != "" {
+		requestBody["setup_url"] = updates.SetupURL
+		requestBody["setup_on_update"] = updates.SetupOnUpdate
+	}
+
+	if len(requestBody) == 0 {
+		return nil // Nothing to update
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("PATCH", apiURL, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("GitHub API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("[GITHUB] ✅ App URLs updated successfully")
+	return nil
 }
 
 // GetGitHubInstallationToken returns an installation access token using stored app config

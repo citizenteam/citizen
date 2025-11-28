@@ -1257,6 +1257,7 @@ func ConnectWithPrivateKey(c *fiber.Ctx) error {
 	var connectData struct {
 		AppID      int64  `json:"app_id"`
 		PrivateKey string `json:"private_key"`
+		UpdateURLs bool   `json:"update_urls"` // If true, update GitHub App URLs to this server
 	}
 
 	if err := c.BodyParser(&connectData); err != nil {
@@ -1341,6 +1342,27 @@ func ConnectWithPrivateKey(c *fiber.Ctx) error {
 	}
 	redirectURI := fmt.Sprintf("%s/api/v1/github/auth/callback", baseURL)
 
+	// Update GitHub App URLs if requested
+	var urlsUpdated bool
+	if connectData.UpdateURLs {
+		log.Printf("[GITHUB] Updating GitHub App URLs to: %s", baseURL)
+
+		urlUpdate := utils.GitHubAppURLUpdate{
+			HomepageURL:  baseURL,
+			WebhookURL:   fmt.Sprintf("%s/api/v1/github/webhook", baseURL),
+			CallbackURLs: []string{redirectURI},
+			SetupURL:     fmt.Sprintf("%s/api/v1/github/app/install/callback", baseURL),
+		}
+
+		if err := utils.UpdateGitHubAppURLs(jwtToken, urlUpdate); err != nil {
+			log.Printf("[GITHUB] ⚠️ Failed to update GitHub App URLs: %v", err)
+			// Don't fail the connection, just warn
+		} else {
+			urlsUpdated = true
+			log.Printf("[GITHUB] ✅ GitHub App URLs updated successfully")
+		}
+	}
+
 	// Encrypt sensitive values before saving
 	encryptedClientID, err := utils.EncryptString(clientID)
 	if err != nil {
@@ -1408,15 +1430,23 @@ func ConnectWithPrivateKey(c *fiber.Ctx) error {
 	log.Printf("[GITHUB] ✅ GitHub App connected via private key: %s (ID: %d, Installation: %d)",
 		appInfo.Name, connectData.AppID, installationID)
 
+	message := "GitHub App connected successfully"
+	if urlsUpdated {
+		message = "GitHub App connected and URLs updated successfully"
+	}
+
 	return c.JSON(utils.NewCitizenResponse(
 		true,
-		"GitHub App connected successfully",
+		message,
 		fiber.Map{
 			"app_id":          connectData.AppID,
 			"app_slug":        appInfo.Slug,
 			"app_name":        appInfo.Name,
 			"installation_id": installationID,
 			"configured":      true,
+			"urls_updated":    urlsUpdated,
+			"webhook_url":     fmt.Sprintf("%s/api/v1/github/webhook", baseURL),
+			"callback_url":    redirectURI,
 		},
 	))
 }
