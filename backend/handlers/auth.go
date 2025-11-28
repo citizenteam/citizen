@@ -301,8 +301,8 @@ func getPublicPaths() []string {
 	return paths
 }
 
-// isPublicPath checks if a path is public
-func isPublicPath(uri string) bool {
+// IsPublicPath checks if a path is public (exported for use in middleware)
+func IsPublicPath(uri string) bool {
 	cleanURI := uri
 	if queryIndex := strings.Index(uri, "?"); queryIndex != -1 {
 		cleanURI = uri[:queryIndex]
@@ -786,7 +786,7 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 	utils.RequestDebugLog("VALIDATE", forwardedUri, "Host: %s, Auth: %v", forwardedHost, authHeader != "")
 
 	// Check public paths
-	if isPublicPath(forwardedUri) ||
+	if IsPublicPath(forwardedUri) ||
 		strings.HasPrefix(forwardedUri, "/login") ||
 		strings.HasPrefix(forwardedUri, "/sso/") ||
 		strings.HasPrefix(forwardedUri, "/api/v1/auth/validate") {

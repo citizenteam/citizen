@@ -19,6 +19,11 @@ var permissionSvc = services.NewPermissionService()
 // Protected, SSO session veya JWT ile yetkilendirme gerektirir
 func Protected() fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		// Check if path is public - skip authentication for public paths
+		if handlers.IsPublicPath(c.Path()) {
+			return c.Next()
+		}
+
 		// First check if JWT auth already succeeded
 		if c.Locals("auth_type") == "jwt" {
 			citizenAuthUserID, _ := c.Locals("citizenauth_user_id").(string)
