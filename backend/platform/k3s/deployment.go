@@ -646,19 +646,35 @@ func (k *K3sAdapter) streamPodLogs(namespace, appName string, tail int, follow b
 
 // streamPodLogsByLabel returns logs from pods matching a label
 func (k *K3sAdapter) streamPodLogsByLabel(namespace, processType string, tail int) (string, error) {
-	// Find pods with matching process-type label
+	// First try with process-type label
 	labelSelector := fmt.Sprintf("citizen.dev/process-type=%s", processType)
-
 	pods, err := k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
+
+	// If no pods found with process-type label, try with app label
+	if err == nil && len(pods.Items) == 0 {
+		// Extract app name from namespace (citizen-app-<appname>)
+		appName := strings.TrimPrefix(namespace, "citizen-app-")
+		labelSelector = fmt.Sprintf("app=%s", appName)
+		pods, err = k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{
+			LabelSelector: labelSelector,
+		})
+	}
 
 	if err != nil {
 		return "", fmt.Errorf("failed to list pods: %w", err)
 	}
 
 	if len(pods.Items) == 0 {
-		return fmt.Sprintf("No pods found for process type: %s", processType), nil
+		// Last resort: list all pods in namespace
+		pods, err = k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{})
+		if err != nil {
+			return "", fmt.Errorf("failed to list pods: %w", err)
+		}
+		if len(pods.Items) == 0 {
+			return fmt.Sprintf("No pods found in namespace: %s", namespace), nil
+		}
 	}
 
 	// Get logs from first matching pod
