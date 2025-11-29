@@ -4,6 +4,7 @@ import (
 	"backend/platform"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -205,6 +206,7 @@ func (k *K3sAdapter) DeployFromGit(appName, gitURL, branch string, userID *int) 
 
 // DeployFromGitWithLogs triggers build pipeline with live log streaming
 func (k *K3sAdapter) DeployFromGitWithLogs(appName, gitURL, branch string, userID *int, logCallback LogCallback) (string, error) {
+	log.Printf("[K3S] DeployFromGitWithLogs ENTRY: appName='%s', gitURL='%s', branch='%s'", appName, gitURL, branch)
 	if appName == "" {
 		return "", fmt.Errorf("app name is required")
 	}
