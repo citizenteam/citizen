@@ -230,13 +230,14 @@ func PodLogsSSE(c *fiber.Ctx) error {
 			case <-ticker.C:
 				// Heartbeat to keep connection alive
 				if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
-					log.Printf("[SSE] Pod logs heartbeat error for %s", appName)
+					log.Printf("[SSE] Pod logs heartbeat WRITE error for %s: %v", appName, err)
 					return
 				}
 				if err := w.Flush(); err != nil {
-					log.Printf("[SSE] Pod logs heartbeat error for %s", appName)
+					log.Printf("[SSE] Pod logs heartbeat FLUSH error for %s: %v", appName, err)
 					return
 				}
+				log.Printf("[SSE] Pod logs heartbeat OK for %s", appName)
 			}
 		}
 	})

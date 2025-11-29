@@ -496,6 +496,8 @@ func (w *Watcher) writeBaseServices(sb *strings.Builder) bool {
 
 	sb.WriteString(fmt.Sprintf("    %s:\n", apiServiceName))
 	sb.WriteString("      loadBalancer:\n")
+	sb.WriteString("        responseForwarding:\n")
+	sb.WriteString("          flushInterval: 1ms\n")
 	sb.WriteString("        servers:\n")
 	sb.WriteString(fmt.Sprintf("          - url: \"%s\"\n\n", serviceURL))
 
