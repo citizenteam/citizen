@@ -819,7 +819,6 @@ func DeployApp(c *fiber.Ctx) error {
 		// Don't fail the entire deployment because of DB issues
 	}
 
-	// Note: Traefik reload will be triggered automatically by dokku-traefik-watcher
 	// after the container is restarted and fully ready
 
 	// Success response with port detection info

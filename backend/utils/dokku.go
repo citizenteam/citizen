@@ -16,7 +16,7 @@ import (
 func CitizenCommand(args ...string) (string, error) {
 	// Join command (no need to add doktu prefix, as we connect to dokku user via SSH)
 	command := strings.Join(args, " ")
-	
+
 	// Execute command via SSH
 	return RunSSHCommand(command)
 }
@@ -27,10 +27,10 @@ func ListApps() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	var apps []string
-	
+
 	// Skip first line (header line)
 	if len(lines) > 1 {
 		for i := 1; i < len(lines); i++ {
@@ -40,7 +40,7 @@ func ListApps() ([]string, error) {
 			}
 		}
 	}
-	
+
 	return apps, nil
 }
 
@@ -50,7 +50,7 @@ func ListDomains(appName string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Extract domains from output
 	// Find "Domains app vhosts:" line
 	var domains []string
@@ -80,7 +80,7 @@ func ListDomains(appName string) ([]string, error) {
 			}
 		}
 	}
-	
+
 	return domains, nil
 }
 
@@ -117,16 +117,14 @@ func GitDeploy(appName, gitURL string) (string, error) {
 	return DeployFromGit(appName, gitURL, "main", nil)
 }
 
-
-
 // SetEnv, set environment variables for an application
 func SetEnv(appName string, envVars map[string]string) (string, error) {
 	args := []string{"config:set", appName}
-	
+
 	for key, value := range envVars {
 		args = append(args, key+"="+value)
 	}
-	
+
 	return CitizenCommand(args...)
 }
 
@@ -141,24 +139,24 @@ func GetEnv(appName string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	envVars := make(map[string]string)
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	
-	// Skip header lines that start with ===== or are empty (for example: "=====> node-js-app app information")	
+
+	// Skip header lines that start with ===== or are empty (for example: "=====> node-js-app app information")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "====") || strings.HasPrefix(line, "===") {
 			continue
 		}
-		
+
 		// Look for KEY: VALUE format (with colon and spaces)
 		if strings.Contains(line, ":") {
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
 				key := strings.TrimSpace(parts[0])
 				value := strings.TrimSpace(parts[1])
-				
+
 				// Include PORT but exclude other system variables
 				if key != "" && (key == "PORT" || (!strings.HasPrefix(key, "DOKKU_") && key != "GIT_REV")) {
 					envVars[key] = value
@@ -166,7 +164,7 @@ func GetEnv(appName string) (map[string]string, error) {
 			}
 		}
 	}
-	
+
 	return envVars, nil
 }
 
@@ -177,52 +175,52 @@ func GetAllAppsInfo() (map[string]map[string]interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list apps: %w", err)
 	}
-	
+
 	if len(apps) == 0 {
 		return make(map[string]map[string]interface{}), nil
 	}
-	
+
 	// Run apps:report for all applications (single command)
 	appsOutput, err := CitizenCommand("apps:report")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get apps report: %w", err)
 	}
-	
+
 	// Run ps:report for all applications (single command)
 	psOutput, err := CitizenCommand("ps:report")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ps report: %w", err)
 	}
-	
+
 	// Run domains:report for all applications (single command)
 	domainsOutput, err := CitizenCommand("domains:report")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get domains report: %w", err)
 	}
-	
+
 	// Merge information for each application
 	result := make(map[string]map[string]interface{})
-	
+
 	// Parse apps report
 	appsData := parseAppsReport(appsOutput)
-	
+
 	// Parse ps report
 	psData := parsePsReport(psOutput)
-	
+
 	// Parse domains report
 	domainsData := parseDomainsReport(domainsOutput)
-	
+
 	// Merge information for each application
 	for _, appName := range apps {
 		appInfo := make(map[string]interface{})
-		
+
 		// Add apps report information
 		if appData, exists := appsData[appName]; exists {
 			for key, value := range appData {
 				appInfo[key] = value
 			}
 		}
-		
+
 		// Add ps report information
 		var isRunning, isDeployed bool
 		if psAppData, exists := psData[appName]; exists {
@@ -233,7 +231,7 @@ func GetAllAppsInfo() (map[string]map[string]interface{}, error) {
 				isDeployed = deployed == "true"
 			}
 		}
-		
+
 		// Add domain information
 		var domains []string
 		if domainsAppData, exists := domainsData[appName]; exists {
@@ -253,7 +251,7 @@ func GetAllAppsInfo() (map[string]map[string]interface{}, error) {
 				}
 			}
 		}
-		
+
 		// Add port information
 		ports := make(map[string]string)
 		if appData, exists := appsData[appName]; exists {
@@ -264,21 +262,21 @@ func GetAllAppsInfo() (map[string]map[string]interface{}, error) {
 				}
 			}
 		}
-		
+
 		// If port information is not available, set default 5000
 		if len(ports) == 0 {
 			ports["http"] = "5000"
 		}
-		
+
 		// Create result object
 		appInfo["running"] = isRunning
 		appInfo["deployed"] = isDeployed
 		appInfo["domains"] = domains
 		appInfo["ports"] = ports
-		
+
 		result[appName] = appInfo
 	}
-	
+
 	return result, nil
 }
 
@@ -286,15 +284,15 @@ func GetAllAppsInfo() (map[string]map[string]interface{}, error) {
 func parseAppsReport(output string) map[string]map[string]string {
 	result := make(map[string]map[string]string)
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	
+
 	var currentApp string
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		
+
 		// Find app header (example: "=====> node-js-app app information")
 		if strings.HasPrefix(line, "=====> ") && strings.HasSuffix(line, " app information") {
 			// Extract app name
@@ -305,7 +303,7 @@ func parseAppsReport(output string) map[string]map[string]string {
 			}
 			continue
 		}
-		
+
 		// Parse information lines
 		if currentApp != "" && strings.Contains(line, ":") {
 			parts := strings.SplitN(line, ":", 2)
@@ -316,7 +314,7 @@ func parseAppsReport(output string) map[string]map[string]string {
 			}
 		}
 	}
-	
+
 	return result
 }
 
@@ -324,15 +322,15 @@ func parseAppsReport(output string) map[string]map[string]string {
 func parsePsReport(output string) map[string]map[string]string {
 	result := make(map[string]map[string]string)
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	
+
 	var currentApp string
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		
+
 		// Find app header (example: "=====> node-js-app ps information")
 		if strings.HasPrefix(line, "=====> ") && strings.HasSuffix(line, " ps information") {
 			// Extract app name
@@ -343,7 +341,7 @@ func parsePsReport(output string) map[string]map[string]string {
 			}
 			continue
 		}
-		
+
 		// Parse information lines
 		if currentApp != "" && strings.Contains(line, ":") {
 			parts := strings.SplitN(line, ":", 2)
@@ -354,7 +352,7 @@ func parsePsReport(output string) map[string]map[string]string {
 			}
 		}
 	}
-	
+
 	return result
 }
 
@@ -362,15 +360,15 @@ func parsePsReport(output string) map[string]map[string]string {
 func parseDomainsReport(output string) map[string]map[string]string {
 	result := make(map[string]map[string]string)
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	
+
 	var currentApp string
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		
+
 		// Find app header (example: "=====> node-js-app domains information")
 		if strings.HasPrefix(line, "=====> ") && strings.HasSuffix(line, " domains information") {
 			// Extract app name
@@ -381,7 +379,7 @@ func parseDomainsReport(output string) map[string]map[string]string {
 			}
 			continue
 		}
-		
+
 		// Parse information lines
 		if currentApp != "" && strings.Contains(line, ":") {
 			parts := strings.SplitN(line, ":", 2)
@@ -392,7 +390,7 @@ func parseDomainsReport(output string) map[string]map[string]string {
 			}
 		}
 	}
-	
+
 	return result
 }
 
@@ -403,23 +401,23 @@ func GetAppInfo(appName string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Get ps status
 	psOutput, _ := CitizenCommand("ps:report", appName)
-	
+
 	// Get domains information (from Dokku)
 	dokkuDomains, _ := ListDomains(appName)
-	
+
 	// Get custom domains information (from Database)
 	var customDomains []string
 	dbDomains, err := api.Settings.GetCustomDomains(context.Background(), appName)
 	if err == nil {
 		customDomains = dbDomains
 	}
-	
+
 	info := make(map[string]interface{})
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	
+
 	// Parse raw report information
 	for _, line := range lines {
 		parts := strings.SplitN(line, ":", 2)
@@ -429,11 +427,11 @@ func GetAppInfo(appName string) (map[string]interface{}, error) {
 			info[key] = value
 		}
 	}
-	
+
 	// Determine app status
 	isRunning := false
 	isDeployed := false
-	
+
 	// Get status from ps output
 	if psOutput != "" {
 		psLines := strings.Split(strings.TrimSpace(psOutput), "\n")
@@ -456,7 +454,7 @@ func GetAppInfo(appName string) (map[string]interface{}, error) {
 			}
 		}
 	}
-	
+
 	// Get port information
 	ports := make(map[string]string)
 	if val, exists := info["App ports"]; exists {
@@ -468,22 +466,22 @@ func GetAppInfo(appName string) (map[string]interface{}, error) {
 			}
 		}
 	}
-	
+
 	// If port information is not available, set default 5000
 	if len(ports) == 0 {
 		ports["http"] = "5000"
 	}
-	
+
 	// Create result object
 	result := map[string]interface{}{
 		"running":        isRunning,
 		"deployed":       isDeployed,
-		"domains":        dokkuDomains,     // Domains from Dokku
-		"custom_domains": customDomains,    // Domains from Database
+		"domains":        dokkuDomains,  // Domains from Dokku
+		"custom_domains": customDomains, // Domains from Database
 		"ports":          ports,
 		"raw":            info,
 	}
-	
+
 	return result, nil
 }
 
@@ -500,10 +498,10 @@ func ListBuildpacks(appName string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	var buildpacks []string
-	
+
 	// Extract buildpack URLs
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -511,7 +509,7 @@ func ListBuildpacks(appName string) ([]string, error) {
 			buildpacks = append(buildpacks, line)
 		}
 	}
-	
+
 	return buildpacks, nil
 }
 
@@ -544,10 +542,10 @@ func GetBuildpackReport(appName string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	report := make(map[string]interface{})
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	
+
 	for _, line := range lines {
 		if strings.Contains(line, ":") {
 			parts := strings.SplitN(line, ":", 2)
@@ -558,7 +556,7 @@ func GetBuildpackReport(appName string) (map[string]interface{}, error) {
 			}
 		}
 	}
-	
+
 	return report, nil
 }
 
@@ -573,10 +571,10 @@ func GetBuilderReport(appName string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	report := make(map[string]interface{})
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	
+
 	for _, line := range lines {
 		if strings.Contains(line, ":") {
 			parts := strings.SplitN(line, ":", 2)
@@ -587,7 +585,7 @@ func GetBuilderReport(appName string) (map[string]interface{}, error) {
 			}
 		}
 	}
-	
+
 	return report, nil
 }
 
@@ -612,59 +610,57 @@ func (r CitizenResponse) ToJSON() ([]byte, error) {
 	return json.Marshal(r)
 }
 
-
-
 // LOG MANAGEMENT FUNCTIONS
 
 // stripANSIColors removes ANSI color codes from log output
 func stripANSIColors(text string) string {
 	// Comprehensive ANSI escape sequence regex patterns
 	patterns := []string{
-		`\x1b\[[0-9;]*m`,      // Standard color codes
+		`\x1b\[[0-9;]*m`,       // Standard color codes
 		`\x1b\[[0-9;]*[mGKHF]`, // Cursor movement and other codes
-		`\x1b\[?[0-9]*[hl]`,   // Mode settings
-		`\x1b\[[0-9]*[ABCD]`,  // Cursor directions
-		`\x1b\[[0-9]*[JK]`,    // Erase functions
-		`\x1b\[s`,             // Save cursor position
-		`\x1b\[u`,             // Restore cursor position
-		`\x1b\[2J`,            // Clear screen
-		`\x1b\[H`,             // Home cursor
+		`\x1b\[?[0-9]*[hl]`,    // Mode settings
+		`\x1b\[[0-9]*[ABCD]`,   // Cursor directions
+		`\x1b\[[0-9]*[JK]`,     // Erase functions
+		`\x1b\[s`,              // Save cursor position
+		`\x1b\[u`,              // Restore cursor position
+		`\x1b\[2J`,             // Clear screen
+		`\x1b\[H`,              // Home cursor
 		`\x1b\[0?[0-9]*[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz]`, // General catch-all
 	}
-	
+
 	result := text
 	for _, pattern := range patterns {
 		regex := regexp.MustCompile(pattern)
 		result = regex.ReplaceAllString(result, "")
 	}
-	
+
 	return result
 }
 
 // GetAppLogs, get logs of an application
 func GetAppLogs(appName string, tail int, follow bool) (string, error) {
 	args := []string{"logs", appName}
-	
+
 	// Use -n/--num parameter as per Citizen documentation
 	if tail > 0 {
 		args = append(args, "-n", fmt.Sprintf("%d", tail))
 	}
-	
+
 	// Remove -q parameter - use timestamps and colors for detailed logs
 	// args = append(args, "-q")
-	
+
 	// Get web process logs (nginx, app, etc.)
 	args = append(args, "-p", "web")
-	
+
 	if follow {
 		args = append(args, "-t")
 	}
-	
+
 	result, err := CitizenCommand(args...)
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Clean ANSI color codes
 	return stripANSIColors(result), nil
 }
@@ -672,19 +668,19 @@ func GetAppLogs(appName string, tail int, follow bool) (string, error) {
 // GetAllProcessLogs, get logs of all processes (more detailed)
 func GetAllProcessLogs(appName string, tail int) (string, error) {
 	args := []string{"logs", appName}
-	
+
 	if tail > 0 {
 		args = append(args, "-n", fmt.Sprintf("%d", tail))
 	}
-	
+
 	// Get logs of all processes (-p parameter is not used)
 	// Use timestamps and details
-	
+
 	result, err := CitizenCommand(args...)
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Clean ANSI color codes
 	return stripANSIColors(result), nil
 }
@@ -692,21 +688,21 @@ func GetAllProcessLogs(appName string, tail int) (string, error) {
 // GetProcessSpecificLogs, get logs of a specific process
 func GetProcessSpecificLogs(appName, processType string, tail int) (string, error) {
 	args := []string{"logs", appName}
-	
+
 	if tail > 0 {
 		args = append(args, "-n", fmt.Sprintf("%d", tail))
 	}
-	
+
 	// Specific process type (web, worker, etc.)
 	if processType != "" {
 		args = append(args, "-p", processType)
 	}
-	
+
 	result, err := CitizenCommand(args...)
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Clean ANSI color codes
 	return stripANSIColors(result), nil
 }
@@ -725,13 +721,13 @@ func GetBuildLogs(appName string) (string, error) {
 		// If no build output in database, return simple message
 		return fmt.Sprintf("No build logs found for %s. App may not have been deployed yet.", appName), nil
 	}
-	
+
 	if strings.TrimSpace(buildOutput) != "" {
 		// Clean and show deploy output
 		cleanOutput := stripANSIColors(buildOutput)
 		return cleanOutput, nil
 	}
-	
+
 	// If no build output in database, return simple message
 	return fmt.Sprintf("No build logs found for %s. App may not have been deployed yet.", appName), nil
 }
@@ -754,13 +750,13 @@ func GetLogInfo(appName string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	logInfo := map[string]interface{}{
-		"app_running": appInfo["running"],
-		"app_deployed": appInfo["deployed"],
+		"app_running":   appInfo["running"],
+		"app_deployed":  appInfo["deployed"],
 		"log_available": appInfo["deployed"],
 	}
-	
+
 	return logInfo, nil
 }
 
@@ -846,7 +842,7 @@ func DeployFromGit(appName, gitURL, branch string, userID *int) (string, error) 
 
 	// Use git:sync command with branch specification and --build flag for immediate build
 	result, err := CitizenCommand("git:sync", "--build", appName, authGitURL, branch)
-	
+
 	// 🚀 Signal Traefik Watcher for immediate route regeneration
 	if err == nil {
 		// Create signal file to trigger immediate Traefik route update
@@ -857,18 +853,18 @@ func DeployFromGit(appName, gitURL, branch string, userID *int) (string, error) 
 			fmt.Printf("[DEPLOY] ⚠️ Failed to send Traefik signal: %v\n", signalErr)
 		}
 	}
-	
+
 	// After deploy, immediately get build logs (for deploy process)
 	if err == nil {
 		// Deploy successful - get build logs
 		buildLogs, buildErr := GetBuildLogs(appName)
 		if buildErr == nil && strings.TrimSpace(buildLogs) != "" {
 			// Combine deploy output with build logs
-			combinedOutput := "=== Deploy Command Output ===\n" + result + 
-							  "\n\n=== Build Process Logs ===\n" + buildLogs
+			combinedOutput := "=== Deploy Command Output ===\n" + result +
+				"\n\n=== Build Process Logs ===\n" + buildLogs
 			return combinedOutput, nil
 		}
 	}
-	
+
 	return result, err
-} 
+}
