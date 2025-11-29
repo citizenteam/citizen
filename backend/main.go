@@ -143,8 +143,9 @@ func main() {
 	app := fiber.New(fiber.Config{
 		AppName:      "Citizen API",
 		BodyLimit:    10 * 1024 * 1024, // 10MB max request body
-		ReadTimeout:  30 * time.Second, // 30 second read timeout
-		WriteTimeout: 30 * time.Second, // 30 second write timeout
+		ReadTimeout:  10 * time.Minute, // 10 min (SSE needs long timeout)
+		WriteTimeout: 10 * time.Minute, // 10 min (SSE needs long timeout)
+		IdleTimeout:  2 * time.Minute,  // 2 min idle (prevents zombie connections)
 		ServerHeader: "",               // Hide server info
 		ErrorHandler: customErrorHandler,
 	})
