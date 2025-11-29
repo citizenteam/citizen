@@ -180,23 +180,58 @@ func PodLogsSSE(c *fiber.Ctx) error {
 		// Stream new logs
 		namespace := fmt.Sprintf("citizen-app-%s", appName)
 
-		// Start streaming in this goroutine
-		err = k3sAdapter.StreamPodLogs(namespace, appName, func(logLine string) {
-			data, _ := json.Marshal(map[string]interface{}{
-				"type": "log",
-				"logs": logLine,
-			})
-			fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
-			w.Flush()
-		})
+		// Channel for log lines
+		logChan := make(chan string, 100)
+		done := make(chan struct{})
 
-		if err != nil {
-			errData, _ := json.Marshal(map[string]interface{}{
-				"type":  "error",
-				"error": err.Error(),
+		// Start streaming in goroutine
+		go func() {
+			defer close(done)
+			err := k3sAdapter.StreamPodLogs(namespace, appName, func(logLine string) {
+				select {
+				case logChan <- logLine:
+				default:
+					// Channel full, skip
+				}
 			})
-			fmt.Fprintf(w, "event: message\ndata: %s\n\n", errData)
-			w.Flush()
+			if err != nil {
+				log.Printf("[SSE] StreamPodLogs error for %s: %v", appName, err)
+			}
+		}()
+
+		// Heartbeat ticker
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case logLine := <-logChan:
+				data, _ := json.Marshal(map[string]interface{}{
+					"type": "log",
+					"logs": logLine,
+				})
+				fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
+				if err := w.Flush(); err != nil {
+					log.Printf("[SSE] Pod logs flush error for %s: %v", appName, err)
+					return
+				}
+
+			case <-ticker.C:
+				// Heartbeat
+				if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
+					log.Printf("[SSE] Pod logs heartbeat write error for %s: %v", appName, err)
+					return
+				}
+				if err := w.Flush(); err != nil {
+					log.Printf("[SSE] Pod logs heartbeat flush error for %s: %v", appName, err)
+					return
+				}
+
+			case <-done:
+				// Stream ended
+				log.Printf("[SSE] Pod logs stream ended for %s", appName)
+				return
+			}
 		}
 	})
 
