@@ -97,7 +97,6 @@ func (k *K3sAdapter) ensureNamespace(name string) error {
 
 // createDeployment creates a new Deployment resource
 func (k *K3sAdapter) createDeployment(namespace, appName, image string, port int32, env map[string]string) error {
-	fmt.Printf("[K3S] createDeployment called with namespace: '%s', appName: '%s', image: '%s'\n", namespace, appName, image)
 	replicas := int32(1)
 
 	// Convert env map to Kubernetes EnvVar slice

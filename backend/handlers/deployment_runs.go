@@ -581,55 +581,32 @@ func PodLogsWebSocketHandler(c *fiber.Ctx) error {
 			}
 		}()
 
-		// Stream logs with retry
+		// Stream logs - single stream, no retry loop
 		namespace := fmt.Sprintf("citizen-app-%s", appName)
 
-		for {
+		err := k3sAdapter.StreamPodLogs(namespace, appName, func(logLine string) {
 			select {
 			case <-done:
-				log.Printf("[WS] Client disconnected for app %s", appName)
 				return
 			default:
-			}
-
-			err := k3sAdapter.StreamPodLogs(namespace, appName, func(logLine string) {
-				select {
-				case <-done:
-					return
-				default:
-					conn.WriteJSON(map[string]interface{}{
-						"type":    "log",
-						"content": logLine,
-						"app":     appName,
-						"process": processType,
-					})
-				}
-			})
-
-			if err != nil {
-				// Send error but keep connection open
 				conn.WriteJSON(map[string]interface{}{
-					"type":    "info",
-					"content": fmt.Sprintf("Waiting for pods... (%s)\n", err.Error()),
+					"type":    "log",
+					"content": logLine,
+					"app":     appName,
+					"process": processType,
 				})
-
-				// Wait before retrying
-				select {
-				case <-done:
-					return
-				case <-time.After(5 * time.Second):
-					continue
-				}
 			}
+		})
 
-			// Stream ended normally, wait a bit and restart
-			select {
-			case <-done:
-				return
-			case <-time.After(2 * time.Second):
-				continue
-			}
+		if err != nil {
+			conn.WriteJSON(map[string]interface{}{
+				"type":  "error",
+				"error": err.Error(),
+			})
 		}
+
+		// Wait for client disconnect or stream end
+		<-done
 	})
 
 	if err != nil {
