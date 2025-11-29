@@ -537,7 +537,25 @@ else
 
   if command -v ctr >/dev/null 2>&1 && [ -S "${ctr_sock}" ]; then
     echo "Importing image into containerd namespace k8s.io via ${ctr_sock}"
-    docker save "${IMAGE_REF}" | ctr --address "${ctr_sock}" -n k8s.io images import -
+    echo "This may take a while for large images..."
+    
+    # Save to temp file first to show progress
+    tmp_tar="/tmp/image-${APP_NAME}-$$.tar"
+    echo "Saving Docker image to temporary file..."
+    docker save -o "${tmp_tar}" "${IMAGE_REF}"
+    echo "Docker image saved ($(du -h ${tmp_tar} | cut -f1))"
+    
+    echo "Importing into containerd..."
+    ctr --address "${ctr_sock}" -n k8s.io images import "${tmp_tar}"
+    import_result=$?
+    
+    rm -f "${tmp_tar}"
+    
+    if [ $import_result -eq 0 ]; then
+      echo "Image successfully imported into containerd"
+    else
+      echo "Warning: Failed to import image into containerd (exit code: $import_result)"
+    fi
   else
     echo "Warning: containerd socket not found or ctr unavailable; image will only exist in Docker daemon"
   fi
