@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"backend/database"
@@ -23,16 +22,10 @@ import (
 )
 
 // ============================================================================
-// LEGACY AUTH SYSTEM - Kept for backward compatibility
-// Primary authentication now handled by CitizenAuth
-// Legacy SSO sessions still supported for gradual migration
+// SSO SESSION MANAGEMENT
+// Primary authentication handled by CitizenAuth
+// SSO sessions stored in Redis for cluster-safe operation
 // ============================================================================
-
-// SSO sessions - for cross-domain authentication (legacy)
-var (
-	ssoSessions = make(map[string]*SSOSession)
-	ssoMutex    = &sync.RWMutex{}
-)
 
 // SSOSession structure
 type SSOSession struct {
@@ -303,7 +296,7 @@ func generateSecureID() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-// Create or update SSO session
+// Create or update SSO session (Redis-only storage)
 func createOrUpdateSSOSession(userID int, mainDomain string, deviceID string, organizationID *string) string {
 	sessionID := generateSecureID()
 
@@ -318,114 +311,88 @@ func createOrUpdateSSOSession(userID int, mainDomain string, deviceID string, or
 		ExpiresAt:      time.Now().Add(24 * time.Hour),
 	}
 
-	// Store in memory
-	ssoMutex.Lock()
-	ssoSessions[sessionID] = session
-	ssoMutex.Unlock()
-
-	// Store in Redis if available
+	// Store in Redis only (cluster-safe)
 	if data, err := json.Marshal(session); err == nil {
-		database.SetWithTTL("sso_session:"+sessionID, string(data), 24*time.Hour)
+		if err := database.SetWithTTL("sso_session:"+sessionID, string(data), 24*time.Hour); err != nil {
+			utils.ErrorLog("Failed to store SSO session in Redis: %v", err)
+		}
 	}
 
 	return sessionID
 }
 
-// GetSSOSession retrieves an SSO session by ID
+// GetSSOSession retrieves an SSO session by ID from Redis
 func GetSSOSession(sessionID string) (*SSOSession, error) {
 	utils.SessionDebugLog(sessionID, "GetSSOSession called")
 
-	// Try Redis first
-	if data, err := database.Get("sso_session:" + sessionID); err == nil && data != "" {
-		utils.SessionDebugLog(sessionID, "Found session in Redis")
-		var session SSOSession
-		if err := json.Unmarshal([]byte(data), &session); err == nil {
-			if time.Now().After(session.ExpiresAt) {
-				utils.SessionDebugLog(sessionID, "Session expired in Redis. ExpiresAt: %v, Now: %v", session.ExpiresAt, time.Now())
-				return nil, fmt.Errorf("session expired")
-			}
-			utils.SessionDebugLog(sessionID, "Valid session found in Redis, UserID: %d", session.UserID)
-			return &session, nil
-		} else {
-			utils.SessionDebugLog(sessionID, "Failed to unmarshal Redis data: %v", err)
-		}
-	} else {
+	data, err := database.Get("sso_session:" + sessionID)
+	if err != nil || data == "" {
 		utils.SessionDebugLog(sessionID, "Session not found in Redis: %v", err)
-	}
-
-	// Fallback to memory
-	ssoMutex.RLock()
-	defer ssoMutex.RUnlock()
-
-	session, exists := ssoSessions[sessionID]
-	if !exists {
-		utils.SessionDebugLog(sessionID, "Session not found in memory")
 		return nil, fmt.Errorf("session not found")
 	}
 
+	utils.SessionDebugLog(sessionID, "Found session in Redis")
+	var session SSOSession
+	if err := json.Unmarshal([]byte(data), &session); err != nil {
+		utils.SessionDebugLog(sessionID, "Failed to unmarshal Redis data: %v", err)
+		return nil, fmt.Errorf("invalid session data")
+	}
+
 	if time.Now().After(session.ExpiresAt) {
-		utils.SessionDebugLog(sessionID, "Session expired in memory. ExpiresAt: %v, Now: %v", session.ExpiresAt, time.Now())
+		utils.SessionDebugLog(sessionID, "Session expired in Redis. ExpiresAt: %v, Now: %v", session.ExpiresAt, time.Now())
+		// Clean up expired session
+		database.Delete("sso_session:" + sessionID)
 		return nil, fmt.Errorf("session expired")
 	}
 
-	utils.SessionDebugLog(sessionID, "Valid session found in memory, UserID: %d", session.UserID)
-	return session, nil
+	utils.SessionDebugLog(sessionID, "Valid session found in Redis, UserID: %d", session.UserID)
+	return &session, nil
 }
 
-// Clear all SSO sessions for a user (global logout)
+// Clear all SSO sessions for a user (global logout) - Redis-only
 func clearUserSSOSessions(userID int) {
-	ssoMutex.Lock()
-	defer ssoMutex.Unlock()
+	if database.RedisClient == nil {
+		utils.WarnLog("Redis client not available, cannot clear SSO sessions")
+		return
+	}
 
 	deletedCount := 0
+	ctx := context.Background()
 
-	// 1. Clear from memory map
-	for sessionID, session := range ssoSessions {
+	// Scan all sso_session keys
+	iter := database.RedisClient.Scan(ctx, 0, "sso_session:*", 100).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+
+		// Get session data from Redis
+		sessionData, err := database.RedisClient.Get(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+
+		// Parse session to check UserID
+		var session SSOSession
+		if err := json.Unmarshal([]byte(sessionData), &session); err != nil {
+			continue
+		}
+
+		// If this session belongs to the user, delete it
 		if session.UserID == userID {
-			delete(ssoSessions, sessionID)
-			deletedCount++
-		}
-	}
-
-	// 2. Clear from Redis (scan all sso_session:* keys)
-	if database.RedisClient != nil {
-		ctx := context.Background()
-
-		// Scan all sso_session keys
-		iter := database.RedisClient.Scan(ctx, 0, "sso_session:*", 100).Iterator()
-		for iter.Next(ctx) {
-			key := iter.Val()
-
-			// Get session data from Redis
-			sessionData, err := database.RedisClient.Get(ctx, key).Result()
+			err := database.RedisClient.Del(ctx, key).Err()
 			if err != nil {
-				continue
+				utils.ErrorLog("Failed to delete session from Redis: %v", err)
+			} else {
+				deletedCount++
+				utils.DebugLog("Deleted SSO session from Redis: %s", key)
 			}
-
-			// Parse session to check UserID
-			var session SSOSession
-			if err := json.Unmarshal([]byte(sessionData), &session); err != nil {
-				continue
-			}
-
-			// If this session belongs to the user, delete it
-			if session.UserID == userID {
-				err := database.RedisClient.Del(ctx, key).Err()
-				if err != nil {
-					log.Printf("❌ [SSO] Failed to delete session from Redis: %v", err)
-				} else {
-					deletedCount++
-					log.Printf("🗑️  [SSO] Deleted session from Redis: %s", key)
-				}
-			}
-		}
-
-		if err := iter.Err(); err != nil {
-			log.Printf("❌ [SSO] Redis scan error: %v", err)
 		}
 	}
 
-	log.Printf("✅ [SSO] Cleared %d sessions for user %d", deletedCount, userID)
+	if err := iter.Err(); err != nil {
+		utils.ErrorLog("Redis scan error during SSO session cleanup: %v", err)
+	}
+
+	utils.DebugLog("Cleared %d SSO sessions for user %d", deletedCount, userID)
 }
 
 // ==================== HTTP Handlers ====================
@@ -449,7 +416,10 @@ func SSOInit(c *fiber.Ctx) error {
 	// No valid authentication, redirect to CitizenAuth SSO Init
 	citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
 	if citizenAuthURL == "" {
-		citizenAuthURL = "https://ustun.tech"
+		utils.WarnLog("CITIZENAUTH_URL not set, SSO redirect will fail")
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "CitizenAuth not configured",
+		})
 	}
 
 	ssoInitURL := fmt.Sprintf("%s/sso/init?redirect=%s", citizenAuthURL, url.QueryEscape(targetURL))
@@ -1186,7 +1156,10 @@ func redirectToLogin(c *fiber.Ctx, originalURL string) error {
 	// Redirect to CitizenAuth SSO Init instead of local login
 	citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
 	if citizenAuthURL == "" {
-		citizenAuthURL = "https://ustun.tech"
+		utils.WarnLog("CITIZENAUTH_URL not set, cannot redirect to login")
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "CitizenAuth not configured",
+		})
 	}
 
 	// Add CORS headers for redirect response
@@ -1244,26 +1217,43 @@ func getSSOCheckHTML(authenticated bool, ssoSessionID string, allowedOrigin stri
 
 // ==================== Cleanup Functions ====================
 
+// CleanExpiredSSOTokens cleans up expired SSO sessions from Redis
+// Note: Redis TTL handles expiration automatically, but this function
+// can be used for explicit cleanup if needed
 func CleanExpiredSSOTokens() {
-	ssoMutex.Lock()
-	defer ssoMutex.Unlock()
+	if database.RedisClient == nil {
+		return
+	}
 
+	ctx := context.Background()
+	deletedCount := 0
 	now := time.Now()
-	for sessionID, session := range ssoSessions {
+
+	// Scan all sso_session keys
+	iter := database.RedisClient.Scan(ctx, 0, "sso_session:*", 100).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+
+		sessionData, err := database.RedisClient.Get(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+
+		var session SSOSession
+		if err := json.Unmarshal([]byte(sessionData), &session); err != nil {
+			// Invalid data, delete it
+			database.RedisClient.Del(ctx, key)
+			deletedCount++
+			continue
+		}
+
 		if now.After(session.ExpiresAt) {
-			delete(ssoSessions, sessionID)
+			database.RedisClient.Del(ctx, key)
+			deletedCount++
 		}
 	}
-}
 
-func init() {
-	// Start periodic cleanup
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			CleanExpiredSSOTokens()
-		}
-	}()
+	if deletedCount > 0 {
+		utils.DebugLog("Cleaned up %d expired SSO sessions from Redis", deletedCount)
+	}
 }

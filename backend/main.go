@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"backend/database"
@@ -70,7 +72,6 @@ func main() {
 	if os.Getenv("SKIP_DB_PING") != "true" {
 		utils.StartupLog("Connecting to database...")
 		database.ConnectDB()
-		defer database.CloseDB()
 
 		// Run migrations
 		utils.StartupLog("Running database migrations...")
@@ -159,7 +160,42 @@ func main() {
 	utils.StartupLog("🎯 Server starting on port %s", port)
 	utils.StartupLog("✅ Citizen Backend ready!")
 
-	log.Fatal(app.Listen(":" + port))
+	// Graceful shutdown setup
+	shutdownChan := make(chan os.Signal, 1)
+	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+	// Start server in goroutine
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := app.Listen(":" + port); err != nil {
+			serverErr <- err
+		}
+	}()
+
+	// Wait for shutdown signal or server error
+	select {
+	case err := <-serverErr:
+		log.Fatalf("Server error: %v", err)
+	case sig := <-shutdownChan:
+		utils.StartupLog("🛑 Received signal %v, initiating graceful shutdown...", sig)
+	}
+
+	// Graceful shutdown with timeout
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	utils.StartupLog("Shutting down server...")
+	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
+		utils.ErrorLog("Server shutdown error: %v", err)
+	}
+
+	utils.StartupLog("Closing database connections...")
+	database.CloseDB()
+
+	utils.StartupLog("Closing Redis connections...")
+	database.CloseRedis()
+
+	utils.StartupLog("✅ Graceful shutdown complete")
 }
 
 // setupMiddleware configures all middleware
@@ -257,11 +293,21 @@ func setupCORS(app *fiber.App, isProduction bool) {
 			}
 			citizenAuthURL := strings.TrimSpace(os.Getenv("CITIZENAUTH_URL"))
 			if citizenAuthURL == "" {
-				citizenAuthURL = "https://ustun.tech"
+				utils.WarnLog("CITIZENAUTH_URL not set in production, CORS may not work correctly for CitizenAuth")
+			} else {
+				corsOrigins = fmt.Sprintf("https://%s,https://*.%s,%s", mainDomain, mainDomain, citizenAuthURL)
 			}
-			corsOrigins = fmt.Sprintf("https://%s,https://*.%s,%s", mainDomain, mainDomain, citizenAuthURL)
+			if corsOrigins == "" {
+				corsOrigins = fmt.Sprintf("https://%s,https://*.%s", mainDomain, mainDomain)
+			}
 		} else {
-			corsOrigins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,https://ustun.tech"
+			// Development defaults
+			citizenAuthURL := strings.TrimSpace(os.Getenv("CITIZENAUTH_URL"))
+			if citizenAuthURL != "" {
+				corsOrigins = fmt.Sprintf("http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,%s", citizenAuthURL)
+			} else {
+				corsOrigins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173"
+			}
 			allowedMethods = "GET,POST,PUT,DELETE,OPTIONS,PATCH,HEAD"
 			allowedHeaders = "Origin,Content-Type,Accept,Authorization,X-Requested-With,Cookie,X-Forwarded-For,X-Real-IP,User-Agent,Referer"
 		}
