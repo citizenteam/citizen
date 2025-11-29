@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/pointer"
 )
 
 // =============================================================================
@@ -715,11 +714,12 @@ func (k *K3sAdapter) StreamPodLogs(namespace, appName string, callback func(stri
 		}
 	}
 
-	// Stream logs from first pod
+	// Stream logs from first pod (only NEW logs, initial_logs already sent)
 	pod := pods.Items[0]
+	sinceSeconds := int64(1) // Only logs from last 1 second (essentially new logs)
 	req := k.client.CoreV1().Pods(namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		Follow:    true,
-		TailLines: pointer.Int64(100),
+		Follow:       true,
+		SinceSeconds: &sinceSeconds,
 	})
 
 	stream, err := req.Stream(k.ctx)

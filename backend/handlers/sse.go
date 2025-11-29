@@ -130,7 +130,7 @@ func PodLogsSSE(c *fiber.Ctx) error {
 		))
 	}
 
-	tailLines := c.QueryInt("tail", 100)
+	tailLines := c.QueryInt("tail", 500)
 
 	// Check Accept header for SSE
 	accept := c.Get("Accept")
