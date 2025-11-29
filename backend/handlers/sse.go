@@ -229,7 +229,9 @@ func SSEPublishStepUpdate(runID, step, status string) {
 		"status": status,
 	}
 	jsonData, _ := json.Marshal(data)
-	pubsub.GlobalHub.PublishToChannel(topic, jsonData)
+	count := pubsub.GlobalHub.PublishToChannel(topic, jsonData)
+	log.Printf("[SSE] Published step_update to %d subscribers (run: %s, step: %s, status: %s)",
+		count, runID, step, status)
 }
 
 // SSEPublishRunUpdate publishes run status change
@@ -244,5 +246,7 @@ func SSEPublishRunUpdate(runID, status string, appUrl ...string) {
 		data["app_url"] = appUrl[0]
 	}
 	jsonData, _ := json.Marshal(data)
-	pubsub.GlobalHub.PublishToChannel(topic, jsonData)
+	count := pubsub.GlobalHub.PublishToChannel(topic, jsonData)
+	log.Printf("[SSE] Published run_update to %d subscribers (run: %s, status: %s)",
+		count, runID, status)
 }
