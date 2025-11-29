@@ -184,6 +184,14 @@ func (w *Watcher) generateTraefikConfig(apps []AppInfo) string {
 		sb.WriteString("    {}\n")
 	}
 
+	// SSE transport with long timeout (10 minutes)
+	sb.WriteString("  serversTransports:\n")
+	sb.WriteString("    sse-transport:\n")
+	sb.WriteString("      forwardingTimeouts:\n")
+	sb.WriteString("        dialTimeout: 30s\n")
+	sb.WriteString("        responseHeaderTimeout: 600s\n")
+	sb.WriteString("        idleConnTimeout: 600s\n\n")
+
 	sb.WriteString("  services:\n")
 	servicesWritten := w.writeBaseServices(&sb)
 	for _, app := range apps {
@@ -349,6 +357,15 @@ func (w *Watcher) writePlatformSecureRoutes(sb *strings.Builder, safeDomain stri
 	sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
 	sb.WriteString("      priority: 115\n\n")
 
+	// SSE endpoints with long timeout service
+	sb.WriteString("    sse-api-https:\n")
+	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api/v1/sse/`)\"\n", safeDomain))
+	sb.WriteString("      service: sse-api-service\n")
+	sb.WriteString("      entryPoints:\n        - websecure\n")
+	sb.WriteString("      middlewares:\n        - auth-api\n        - security-headers\n")
+	sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
+	sb.WriteString("      priority: 135\n\n")
+
 	sb.WriteString("    protected-api-https:\n")
 	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api`)\"\n", safeDomain))
 	sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
@@ -496,6 +513,17 @@ func (w *Watcher) writeBaseServices(sb *strings.Builder) bool {
 
 	sb.WriteString(fmt.Sprintf("    %s:\n", apiServiceName))
 	sb.WriteString("      loadBalancer:\n")
+	sb.WriteString("        responseForwarding:\n")
+	sb.WriteString("          flushInterval: 1ms\n")
+	sb.WriteString("        servers:\n")
+	sb.WriteString(fmt.Sprintf("          - url: \"%s\"\n\n", serviceURL))
+
+	// SSE service with long timeout transport
+	sb.WriteString("    sse-api-service:\n")
+	sb.WriteString("      loadBalancer:\n")
+	sb.WriteString("        serversTransport: sse-transport\n")
+	sb.WriteString("        responseForwarding:\n")
+	sb.WriteString("          flushInterval: 1ms\n")
 	sb.WriteString("        servers:\n")
 	sb.WriteString(fmt.Sprintf("          - url: \"%s\"\n\n", serviceURL))
 
