@@ -42,11 +42,12 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 		return c.JSON(utils.NewCitizenResponse(true, "Deployment run", run))
 	}
 
-	// SSE headers
+	// SSE headers - important for streaming
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
-	c.Set("X-Accel-Buffering", "no") // Disable nginx buffering
+	c.Set("X-Accel-Buffering", "no")
+	c.Set("Transfer-Encoding", "chunked")
 
 	log.Printf("[SSE] Deployment logs stream started for run %s", runID)
 
@@ -56,8 +57,8 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 
 	// Stream context - subscription must happen INSIDE the stream writer
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
-		// Create message channel and subscribe INSIDE the stream
-		msgChan := make(chan []byte, 100)
+		// Large buffer for fast log streaming
+		msgChan := make(chan []byte, 10000)
 		topic := pubsub.DeploymentTopic(runID)
 		pubsub.GlobalHub.SubscribeChannel(topic, msgChan)
 		defer pubsub.GlobalHub.UnsubscribeChannel(topic, msgChan)
@@ -71,10 +72,13 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 				"run":  run,
 			})
 			fmt.Fprintf(w, "event: message\ndata: %s\n\n", initialState)
-			w.Flush()
+			if err := w.Flush(); err != nil {
+				log.Printf("[SSE] Initial flush error for run %s: %v", runID, err)
+				return
+			}
 		}
 
-		// Heartbeat ticker - keep connection alive (3s for stability)
+		// Heartbeat ticker - keep connection alive
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 
@@ -82,13 +86,15 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 			select {
 			case msg := <-msgChan:
 				fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
-				w.Flush()
+				if err := w.Flush(); err != nil {
+					log.Printf("[SSE] Deployment logs write error for run %s: %v", runID, err)
+					return
+				}
 
 				// Check if run completed
 				var data map[string]interface{}
 				if json.Unmarshal(msg, &data) == nil {
 					if msgType, ok := data["type"].(string); ok && msgType == "run_update" {
-						// Safely check for status field
 						if statusVal, ok := data["status"].(string); ok {
 							if statusVal == "completed" || statusVal == "failed" {
 								log.Printf("[SSE] Run %s completed with status %s, closing stream", runID, statusVal)
@@ -101,13 +107,12 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 
 			case <-ticker.C:
 				// Heartbeat to keep connection alive
-				_, err := fmt.Fprintf(w, ": heartbeat\n\n")
-				if err != nil {
-					log.Printf("[SSE] Heartbeat error for run %s, client disconnected", runID)
+				if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
+					log.Printf("[SSE] Deployment heartbeat error for run %s", runID)
 					return
 				}
 				if err := w.Flush(); err != nil {
-					log.Printf("[SSE] Heartbeat error for run %s, client disconnected", runID)
+					log.Printf("[SSE] Deployment heartbeat error for run %s", runID)
 					return
 				}
 			}
