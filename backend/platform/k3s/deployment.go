@@ -2,6 +2,7 @@ package k3s
 
 import (
 	"backend/platform"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -696,9 +697,12 @@ func (k *K3sAdapter) streamPodLogsByLabel(namespace, processType string, tail in
 
 // StreamPodLogs streams pod logs in real-time via callback
 func (k *K3sAdapter) StreamPodLogs(namespace, appName string, callback func(string)) error {
+	// Use background context for long-running stream (not k.ctx which may timeout)
+	ctx := context.Background()
+
 	// Find pods
 	labelSelector := fmt.Sprintf("app=%s", appName)
-	pods, err := k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{
+	pods, err := k.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
 
@@ -708,7 +712,7 @@ func (k *K3sAdapter) StreamPodLogs(namespace, appName string, callback func(stri
 
 	if len(pods.Items) == 0 {
 		// Try without label selector
-		pods, err = k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{})
+		pods, err = k.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to list pods: %w", err)
 		}
@@ -725,7 +729,7 @@ func (k *K3sAdapter) StreamPodLogs(namespace, appName string, callback func(stri
 		SinceSeconds: &sinceSeconds,
 	})
 
-	stream, err := req.Stream(k.ctx)
+	stream, err := req.Stream(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to stream logs: %w", err)
 	}

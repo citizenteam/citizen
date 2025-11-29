@@ -147,11 +147,12 @@ func PodLogsSSE(c *fiber.Ctx) error {
 		return c.JSON(utils.NewCitizenResponse(true, "Logs", fiber.Map{"logs": logs}))
 	}
 
-	// SSE headers
+	// SSE headers - important for streaming
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
 	c.Set("X-Accel-Buffering", "no")
+	c.Set("Transfer-Encoding", "chunked")
 
 	log.Printf("[SSE] Pod logs stream started for app %s", appName)
 
