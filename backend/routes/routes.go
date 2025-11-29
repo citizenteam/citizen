@@ -1,8 +1,18 @@
 package routes
 
 import (
-	"backend/handlers"
+	apitokenshandlers "backend/api_tokens/handlers"
+	appshandlers "backend/apps/handlers"
+	authhandlers "backend/auth/handlers"
+	authservices "backend/auth/services"
+	citizenauthhandlers "backend/citizenauth/handlers"
+	deploymenthandlers "backend/deployments/handlers"
+	dockerhandlers "backend/docker/handlers"
+	githubhandlers "backend/github/handlers"
+	healthhandlers "backend/health/handlers"
 	"backend/middleware"
+	ssehandlers "backend/sse/handlers"
+	webhookshandlers "backend/webhooks/handlers"
 	"fmt"
 
 	"github.com/gofiber/fiber/v2"
@@ -23,7 +33,7 @@ func SetupRoutes(app *fiber.App) {
 		ssoSessionID := c.Cookies("sso_session")
 		if ssoSessionID != "" {
 			// Validate session
-			session, err := handlers.GetSSOSession(ssoSessionID)
+			session, err := authservices.GetSSOSession(ssoSessionID)
 			if err == nil && session != nil {
 				// Logged in - show welcome message
 				return c.SendString("✅ Citizen - App Management Platform. You are logged in! (User ID: " + fmt.Sprintf("%d", session.UserID) + ")")
@@ -31,22 +41,22 @@ func SetupRoutes(app *fiber.App) {
 		}
 
 		// Not logged in - redirect to CitizenAuth
-		return handlers.RedirectToCitizenAuth(c)
+		return citizenauthhandlers.RedirectToCitizenAuth(c)
 	})
 
 	// SSO endpoints
 	sso := app.Group("/sso")
 	{
 		// SSO init - redirect to CitizenAuth
-		sso.Get("/init", handlers.RedirectToCitizenAuth)
+		sso.Get("/init", citizenauthhandlers.RedirectToCitizenAuth)
 		// SSO callback - set cookie for this domain
-		sso.Get("/callback", handlers.SSOCallback)
+		sso.Get("/callback", authhandlers.SSOCallback)
 	}
 
 	// Health check endpoints (public)
-	app.Get("/health", handlers.HealthCheck)
-	app.Get("/redis-status", handlers.RedisStatus)
-	app.Post("/clear-test-data", handlers.ClearRedisTestData)
+	app.Get("/health", healthhandlers.HealthCheck)
+	app.Get("/redis-status", healthhandlers.RedisStatus)
+	app.Post("/clear-test-data", healthhandlers.ClearRedisTestData)
 
 	// API v1 routes
 	api := app.Group("/api/v1")
@@ -55,12 +65,12 @@ func SetupRoutes(app *fiber.App) {
 	auth := api.Group("/auth")
 
 	// Redirect to CitizenAuth for login/logout
-	auth.Get("/login", handlers.RedirectToCitizenAuth)
-	auth.Post("/login", handlers.RedirectToCitizenAuth)
-	auth.Post("/logout", handlers.RedirectToCitizenAuth)
+	auth.Get("/login", citizenauthhandlers.RedirectToCitizenAuth)
+	auth.Post("/login", citizenauthhandlers.RedirectToCitizenAuth)
+	auth.Post("/logout", citizenauthhandlers.RedirectToCitizenAuth)
 
 	// Traefik forward auth endpoint (validates SSO session - eski sistem)
-	auth.Get("/validate", handlers.ValidateForTraefik)
+	auth.Get("/validate", authhandlers.ValidateForTraefik)
 
 	// Cross-domain cookie endpoints (removed - not needed)
 
@@ -70,108 +80,108 @@ func SetupRoutes(app *fiber.App) {
 	citizen.Use(middleware.Protected()) // Fallback to SSO session
 
 	// User profile
-	citizen.Get("/profile", handlers.GetProfile)
+	citizen.Get("/profile", authhandlers.GetProfile)
 
 	// App management
-	citizen.Get("/apps", handlers.ListApps)
-	citizen.Get("/apps-info", handlers.GetAllAppsInfo) // Get all apps info
-	citizen.Post("/apps", handlers.CreateApp)
-	citizen.Get("/apps/:app_name", handlers.GetAppInfo)
-	citizen.Delete("/apps/:app_name", handlers.DestroyApp)
-	citizen.Post("/apps/:app_name/restart", handlers.RestartApp)
+	citizen.Get("/apps", appshandlers.ListApps)
+	citizen.Get("/apps-info", appshandlers.GetAllAppsInfo) // Get all apps info
+	citizen.Post("/apps", appshandlers.CreateApp)
+	citizen.Get("/apps/:app_name", appshandlers.GetAppInfo)
+	citizen.Delete("/apps/:app_name", appshandlers.DestroyApp)
+	citizen.Post("/apps/:app_name/restart", appshandlers.RestartApp)
 
 	// Domains
-	citizen.Get("/apps/:app_name/domains", handlers.ListDomains)
-	citizen.Post("/apps/:app_name/domains", handlers.AddDomain)
-	citizen.Post("/apps/:app_name/domain", handlers.AddDomain)
-	citizen.Delete("/apps/:app_name/domain", handlers.RemoveDomain)
+	citizen.Get("/apps/:app_name/domains", appshandlers.ListDomains)
+	citizen.Post("/apps/:app_name/domains", appshandlers.AddDomain)
+	citizen.Post("/apps/:app_name/domain", appshandlers.AddDomain)
+	citizen.Delete("/apps/:app_name/domain", appshandlers.RemoveDomain)
 
 	// Port settings
-	citizen.Post("/apps/:app_name/port", handlers.SetPort)
+	citizen.Post("/apps/:app_name/port", appshandlers.SetPort)
 
 	// Build settings
-	citizen.Get("/apps/:app_name/build-settings", handlers.GetBuildSettings)
-	citizen.Post("/apps/:app_name/build-settings", handlers.SetBuildSettings)
-	citizen.Post("/apps/:app_name/builder", handlers.SetBuilderType)
+	citizen.Get("/apps/:app_name/build-settings", appshandlers.GetBuildSettings)
+	citizen.Post("/apps/:app_name/build-settings", appshandlers.SetBuildSettings)
+	citizen.Post("/apps/:app_name/builder", appshandlers.SetBuilderType)
 
 	// Git deploy
-	citizen.Post("/apps/:app_name/git-deploy", handlers.DeployApp)
-	citizen.Post("/apps/:app_name/deploy", handlers.DeployApp)
+	citizen.Post("/apps/:app_name/git-deploy", appshandlers.DeployApp)
+	citizen.Post("/apps/:app_name/deploy", appshandlers.DeployApp)
 
 	// Environment variables
-	citizen.Get("/apps/:app_name/env", handlers.GetEnv)
-	citizen.Post("/apps/:app_name/env", handlers.SetEnv)
-	citizen.Delete("/apps/:app_name/env", handlers.RemoveEnv)
-	citizen.Post("/apps/:app_name/config", handlers.SetEnv)
+	citizen.Get("/apps/:app_name/env", appshandlers.GetEnv)
+	citizen.Post("/apps/:app_name/env", appshandlers.SetEnv)
+	citizen.Delete("/apps/:app_name/env", appshandlers.RemoveEnv)
+	citizen.Post("/apps/:app_name/config", appshandlers.SetEnv)
 
 	// Custom domain management
-	citizen.Post("/apps/:app_name/custom-domain", handlers.SetCustomDomain)
-	citizen.Get("/apps/:app_name/custom-domains", handlers.GetCustomDomains)
-	citizen.Delete("/apps/:app_name/custom-domain", handlers.RemoveCustomDomain)
-	citizen.Get("/custom-domains", handlers.GetAllActiveCustomDomains)
+	citizen.Post("/apps/:app_name/custom-domain", appshandlers.SetCustomDomain)
+	citizen.Get("/apps/:app_name/custom-domains", appshandlers.GetCustomDomains)
+	citizen.Delete("/apps/:app_name/custom-domain", appshandlers.RemoveCustomDomain)
+	citizen.Get("/custom-domains", appshandlers.GetAllActiveCustomDomains)
 
 	// Public app settings
-	citizen.Post("/apps/:app_name/public-setting", handlers.SetPublicApp)
-	citizen.Get("/apps/:app_name/public-setting", handlers.GetPublicAppSetting)
+	citizen.Post("/apps/:app_name/public-setting", appshandlers.SetPublicApp)
+	citizen.Get("/apps/:app_name/public-setting", appshandlers.GetPublicAppSetting)
 
 	// API Token management
-	citizen.Post("/api-tokens", handlers.CreateAPIToken)
-	citizen.Get("/api-tokens", handlers.ListAPITokens)
-	citizen.Delete("/api-tokens/:token_id", handlers.DeleteAPIToken)
+	citizen.Post("/api-tokens", apitokenshandlers.CreateAPIToken)
+	citizen.Get("/api-tokens", apitokenshandlers.ListAPITokens)
+	citizen.Delete("/api-tokens/:token_id", apitokenshandlers.DeleteAPIToken)
 
 	// App API Access management
-	citizen.Get("/apps/:app_name/api-access", handlers.GetAppAPIAccess)
-	citizen.Post("/apps/:app_name/api-access", handlers.SetAppAPIAccess)
-	citizen.Get("/api-operations", handlers.GetAvailableOperations)
+	citizen.Get("/apps/:app_name/api-access", apitokenshandlers.GetAppAPIAccess)
+	citizen.Post("/apps/:app_name/api-access", apitokenshandlers.SetAppAPIAccess)
+	citizen.Get("/api-operations", apitokenshandlers.GetAvailableOperations)
 
 	// Docker Hub connection endpoints
-	citizen.Post("/docker/connection", handlers.CreateDockerConnection)
-	citizen.Get("/docker/connection", handlers.GetDockerConnection)
-	citizen.Delete("/docker/connection", handlers.DeleteDockerConnection)
-	citizen.Post("/docker/test", handlers.TestDockerConnection)
+	citizen.Post("/docker/connection", dockerhandlers.CreateDockerConnection)
+	citizen.Get("/docker/connection", dockerhandlers.GetDockerConnection)
+	citizen.Delete("/docker/connection", dockerhandlers.DeleteDockerConnection)
+	citizen.Post("/docker/test", dockerhandlers.TestDockerConnection)
 
 	// Buildpack management
-	citizen.Get("/apps/:app_name/buildpacks", handlers.ListBuildpacks)
-	citizen.Post("/apps/:app_name/buildpacks", handlers.AddBuildpack)
-	citizen.Put("/apps/:app_name/buildpacks", handlers.SetBuildpack)
-	citizen.Delete("/apps/:app_name/buildpacks", handlers.RemoveBuildpack)
-	citizen.Delete("/apps/:app_name/buildpacks/clear", handlers.ClearBuildpacks)
-	citizen.Get("/apps/:app_name/buildpacks/report", handlers.GetBuildpackReport)
+	citizen.Get("/apps/:app_name/buildpacks", appshandlers.ListBuildpacks)
+	citizen.Post("/apps/:app_name/buildpacks", appshandlers.AddBuildpack)
+	citizen.Put("/apps/:app_name/buildpacks", appshandlers.SetBuildpack)
+	citizen.Delete("/apps/:app_name/buildpacks", appshandlers.RemoveBuildpack)
+	citizen.Delete("/apps/:app_name/buildpacks/clear", appshandlers.ClearBuildpacks)
+	citizen.Get("/apps/:app_name/buildpacks/report", appshandlers.GetBuildpackReport)
 
 	// Builder management
-	citizen.Post("/apps/:app_name/builder", handlers.SetBuilder)
-	citizen.Get("/apps/:app_name/builder", handlers.GetBuilderReport)
+	citizen.Post("/apps/:app_name/builder", appshandlers.SetBuilder)
+	citizen.Get("/apps/:app_name/builder", appshandlers.GetBuilderReport)
 
 	// App deployment info
-	citizen.Get("/deployments", handlers.GetAllAppDeployments)
-	citizen.Get("/apps/:app_name/deployment", handlers.GetAppDeployment)
-	citizen.Put("/apps/:app_name/deployment", handlers.UpdateAppDeployment)
-	citizen.Put("/apps/:app_name/deployment/status", handlers.UpdateAppDeploymentStatus)
+	citizen.Get("/deployments", deploymenthandlers.GetAllAppDeployments)
+	citizen.Get("/apps/:app_name/deployment", deploymenthandlers.GetAppDeployment)
+	citizen.Put("/apps/:app_name/deployment", deploymenthandlers.UpdateAppDeployment)
+	citizen.Put("/apps/:app_name/deployment/status", deploymenthandlers.UpdateAppDeploymentStatus)
 
 	// Deployment runs (K3s only) - Netlify-style deployment tracking
-	citizen.Get("/apps/:app_name/runs", handlers.GetDeploymentRuns)
-	citizen.Get("/apps/:app_name/runs/latest", handlers.GetLatestDeploymentRun)
-	citizen.Get("/runs/:run_id", handlers.GetDeploymentRun)
-	citizen.Post("/apps/:app_name/trigger-deploy", handlers.TriggerDeployment)
+	citizen.Get("/apps/:app_name/runs", deploymenthandlers.GetDeploymentRuns)
+	citizen.Get("/apps/:app_name/runs/latest", deploymenthandlers.GetLatestDeploymentRun)
+	citizen.Get("/runs/:run_id", deploymenthandlers.GetDeploymentRun)
+	citizen.Post("/apps/:app_name/trigger-deploy", deploymenthandlers.TriggerDeployment)
 
 	// Log management
-	citizen.Get("/apps/:app_name/logs", handlers.GetAppLogs)
-	citizen.Get("/apps/:app_name/logs/stream", handlers.StreamAppLogs)
-	citizen.Get("/apps/:app_name/logs/info", handlers.GetLogInfo)
-	citizen.Get("/apps/:app_name/logs/live-build", handlers.GetLiveBuildLogs)
+	citizen.Get("/apps/:app_name/logs", appshandlers.GetAppLogs)
+	citizen.Get("/apps/:app_name/logs/stream", appshandlers.StreamAppLogs)
+	citizen.Get("/apps/:app_name/logs/info", appshandlers.GetLogInfo)
+	citizen.Get("/apps/:app_name/logs/live-build", appshandlers.GetLiveBuildLogs)
 
 	// Activities
-	citizen.Get("/apps/:app_name/activities", handlers.GetAppActivities)
+	citizen.Get("/apps/:app_name/activities", appshandlers.GetAppActivities)
 
 	// GitHub integration endpoints
 
 	// PUBLIC GitHub endpoints (no auth required - have their own security mechanisms)
 	// These are registered directly on api group to avoid middleware inheritance issues
-	api.Post("/github/webhook", handlers.GitHubWebhookHandler)                // HMAC signature validation
-	api.Get("/github/auth/callback", handlers.GitHubAuthCallback)             // State token validation
-	api.Get("/github/app/manifest/callback", handlers.GitHubManifestCallback) // State token validation
-	api.Get("/github/app/manifest/redirect", handlers.GitHubManifestRedirect) // State token validation
-	api.Get("/github/app/install/callback", handlers.GitHubInstallCallback)   // State token validation
+	api.Post("/github/webhook", githubhandlers.GitHubWebhookHandler)                // HMAC signature validation
+	api.Get("/github/auth/callback", githubhandlers.GitHubAuthCallback)             // State token validation
+	api.Get("/github/app/manifest/callback", githubhandlers.GitHubManifestCallback) // State token validation
+	api.Get("/github/app/manifest/redirect", githubhandlers.GitHubManifestRedirect) // State token validation
+	api.Get("/github/app/install/callback", githubhandlers.GitHubInstallCallback)   // State token validation
 
 	// PROTECTED GitHub endpoints (JWT or SSO session required)
 	github := api.Group("/github")
@@ -179,31 +189,31 @@ func SetupRoutes(app *fiber.App) {
 	github.Use(middleware.Protected()) // Fallback to SSO session
 	{
 		// GitHub config endpoints (admin only)
-		github.Post("/config", handlers.SetupGitHubConfig)
-		github.Get("/config", handlers.GetGitHubConfig)
-		github.Delete("/config", handlers.DeleteGitHubConfig)
-		github.Post("/app/manifest/start", handlers.StartGitHubManifest)
+		github.Post("/config", githubhandlers.SetupGitHubConfig)
+		github.Get("/config", githubhandlers.GetGitHubConfig)
+		github.Delete("/config", githubhandlers.DeleteGitHubConfig)
+		github.Post("/app/manifest/start", githubhandlers.StartGitHubManifest)
 
 		// Existing GitHub App connection (App ID + Private Key)
-		github.Post("/app/connect-with-key", handlers.ConnectWithPrivateKey)
+		github.Post("/app/connect-with-key", githubhandlers.ConnectWithPrivateKey)
 
 		// GitHub OAuth endpoints
-		github.Get("/auth/init", handlers.GitHubAuthInit)
-		github.Get("/status", handlers.GetGitHubStatus)
-		github.Delete("/disconnect", handlers.DisconnectGitHubAccount) // Disconnect GitHub account
-		github.Get("/repositories", handlers.ListGitHubRepositories)
-		github.Get("/repos/:owner/:repo/branches", handlers.GetRepositoryBranches)
-		github.Get("/connections", handlers.GetRepositoryConnections)
-		github.Post("/connect", handlers.ConnectRepository)
-		github.Post("/apps/:app_name/connect", handlers.ConnectExistingAppToRepository) // Connect existing app to repo
-		github.Delete("/apps/:app_name/disconnect", handlers.DisconnectRepository)
-		github.Put("/apps/:app_name/auto-deploy", handlers.ToggleAutoDeploy)
-		github.Post("/app/install/start", handlers.StartGitHubInstall)
+		github.Get("/auth/init", githubhandlers.GitHubAuthInit)
+		github.Get("/status", githubhandlers.GetGitHubStatus)
+		github.Delete("/disconnect", githubhandlers.DisconnectGitHubAccount) // Disconnect GitHub account
+		github.Get("/repositories", githubhandlers.ListGitHubRepositories)
+		github.Get("/repos/:owner/:repo/branches", githubhandlers.GetRepositoryBranches)
+		github.Get("/connections", githubhandlers.GetRepositoryConnections)
+		github.Post("/connect", githubhandlers.ConnectRepository)
+		github.Post("/apps/:app_name/connect", githubhandlers.ConnectExistingAppToRepository) // Connect existing app to repo
+		github.Delete("/apps/:app_name/disconnect", githubhandlers.DisconnectRepository)
+		github.Put("/apps/:app_name/auto-deploy", githubhandlers.ToggleAutoDeploy)
+		github.Post("/app/install/start", githubhandlers.StartGitHubInstall)
 	}
 
 	// SSE endpoints for real-time streaming (auth via middleware)
-	api.Get("/sse/runs/:run_id", handlers.DeploymentLogsSSE)
-	api.Get("/sse/apps/:app_name/logs", handlers.PodLogsSSE)
+	api.Get("/sse/runs/:run_id", ssehandlers.DeploymentLogsSSE)
+	api.Get("/sse/apps/:app_name/logs", ssehandlers.PodLogsSSE)
 
 	// ===== CITIZENAUTH INTEGRATION ENDPOINTS =====
 
@@ -216,9 +226,9 @@ func SetupRoutes(app *fiber.App) {
 		webhooks.Use(middleware.RequireServiceAuth())
 		webhooks.Use(middleware.RequireScope("webhooks"))
 		{
-			webhooks.Post("/permission-update", handlers.WebhookPermissionUpdate)
-			webhooks.Post("/session-update", handlers.WebhookSessionUpdate) // Login/Logout events
-			webhooks.Post("/instance-lifecycle", handlers.WebhookInstanceLifecycle)
+			webhooks.Post("/permission-update", webhookshandlers.WebhookPermissionUpdate)
+			webhooks.Post("/session-update", webhookshandlers.WebhookSessionUpdate) // Login/Logout events
+			webhooks.Post("/instance-lifecycle", webhookshandlers.WebhookInstanceLifecycle)
 		}
 
 		// Permission API (CitizenAuth reads permissions for UI)
@@ -227,10 +237,10 @@ func SetupRoutes(app *fiber.App) {
 		permissions.Use(middleware.RequireServiceAuth())
 		permissions.Use(middleware.RequireScope("permissions:read"))
 		{
-			permissions.Get("/", handlers.GetPermissionsForCitizenAuth)
+			permissions.Get("/", webhookshandlers.GetPermissionsForCitizenAuth)
 		}
 
 		// Instance handshake (no middleware - handler does its own auth)
-		service.Post("/instances/handshake", handlers.InstanceHandshake)
+		service.Post("/instances/handshake", citizenauthhandlers.InstanceHandshake)
 	}
 }

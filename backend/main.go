@@ -11,8 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	authservices "backend/auth/services"
 	"backend/database"
-	"backend/handlers"
+	githubhandlers "backend/github/handlers"
 	"backend/middleware"
 	"backend/routes"
 	"backend/services"
@@ -400,7 +401,7 @@ func startBackgroundTasks() {
 
 	for range ticker.C {
 		// Clean expired SSO tokens
-		handlers.CleanExpiredSSOTokens()
+		authservices.CleanExpiredSSOTokens()
 		utils.DebugLog("Expired SSO tokens cleanup completed")
 	}
 }
@@ -410,7 +411,7 @@ func loadGitHubConfigFromDB() {
 	utils.DatabaseDebugLog("Loading GitHub config from database...")
 
 	// Try to load config from database
-	clientID, clientSecret, redirectURI, webhookSecret, appID, appSlug, appName, privateKey, installationID, err := handlers.LoadGitHubConfigFromDB()
+	clientID, clientSecret, redirectURI, webhookSecret, appID, appSlug, appName, privateKey, installationID, err := githubhandlers.LoadGitHubConfigFromDB()
 	if err != nil {
 		utils.DatabaseDebugLog("No GitHub config found in database: %v", err)
 		return

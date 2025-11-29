@@ -1,8 +1,9 @@
 package middleware
 
 import (
+	authhandlers "backend/auth/handlers"
+	authservices "backend/auth/services"
 	"backend/database"
-	"backend/handlers"
 	"backend/models"
 	"backend/services"
 	"backend/utils"
@@ -20,7 +21,7 @@ var permissionSvc = services.NewPermissionService()
 func Protected() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Check if path is public - skip authentication for public paths
-		if handlers.IsPublicPath(c.Path()) {
+		if authhandlers.IsPublicPath(c.Path()) {
 			return c.Next()
 		}
 
@@ -76,7 +77,7 @@ func Protected() fiber.Handler {
 		}
 
 		// Validate SSO session
-		session, err := handlers.GetSSOSession(ssoSessionID)
+		session, err := authservices.GetSSOSession(ssoSessionID)
 		if err != nil || session == nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
 				false,
