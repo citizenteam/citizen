@@ -3,200 +3,39 @@ package handlers
 import (
 	"backend/database/api"
 	"backend/platform"
-	"backend/platform/k3s"
 	"backend/utils"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v2"
-	"github.com/valyala/fasthttp"
 )
 
-// DeploymentLogBroadcaster handles real-time log broadcasting
-type DeploymentLogBroadcaster struct {
-	mu          sync.RWMutex
-	subscribers map[string]map[*websocket.Conn]bool // runID -> connections
-}
+// =============================================================================
+// Broadcast Functions - SSE only
+// =============================================================================
 
-var logBroadcaster = &DeploymentLogBroadcaster{
-	subscribers: make(map[string]map[*websocket.Conn]bool),
-}
-
-// Subscribe adds a websocket connection to a deployment run
-func (b *DeploymentLogBroadcaster) Subscribe(runID string, conn *websocket.Conn) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.subscribers[runID] == nil {
-		b.subscribers[runID] = make(map[*websocket.Conn]bool)
-	}
-	b.subscribers[runID][conn] = true
-	log.Printf("[WS] Client subscribed to deployment %s", runID)
-}
-
-// Unsubscribe removes a websocket connection
-func (b *DeploymentLogBroadcaster) Unsubscribe(runID string, conn *websocket.Conn) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.subscribers[runID] != nil {
-		delete(b.subscribers[runID], conn)
-		if len(b.subscribers[runID]) == 0 {
-			delete(b.subscribers, runID)
-		}
-	}
-	log.Printf("[WS] Client unsubscribed from deployment %s", runID)
-}
-
-// Broadcast sends a message to all subscribers of a deployment run
-func (b *DeploymentLogBroadcaster) Broadcast(runID string, message interface{}) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	if b.subscribers[runID] == nil {
-		return
-	}
-
-	data, err := json.Marshal(message)
-	if err != nil {
-		log.Printf("[WS] Failed to marshal message: %v", err)
-		return
-	}
-
-	for conn := range b.subscribers[runID] {
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Printf("[WS] Failed to send message: %v", err)
-		}
-	}
-}
-
-// BroadcastLog sends a log update to subscribers
+// BroadcastDeploymentLog sends a log update to SSE subscribers
 func BroadcastDeploymentLog(runID, stepName, status, logs string) {
-	logBroadcaster.Broadcast(runID, map[string]interface{}{
-		"type":      "log",
-		"run_id":    runID,
-		"step":      stepName,
-		"status":    status,
-		"logs":      logs,
-		"timestamp": time.Now().Unix(),
-	})
+	SSEPublishDeploymentLog(runID, stepName, status, logs)
 }
 
-// BroadcastStepUpdate sends a step status update to subscribers
+// BroadcastStepUpdate sends a step status update to SSE subscribers
 func BroadcastStepUpdate(runID, stepName, status string) {
-	logBroadcaster.Broadcast(runID, map[string]interface{}{
-		"type":      "step_update",
-		"run_id":    runID,
-		"step":      stepName,
-		"status":    status,
-		"timestamp": time.Now().Unix(),
-	})
+	SSEPublishStepUpdate(runID, stepName, status)
 }
 
-// BroadcastRunUpdate sends a run status update to subscribers
+// BroadcastRunUpdate sends a run status update to SSE subscribers
 func BroadcastRunUpdate(runID, status string) {
-	logBroadcaster.Broadcast(runID, map[string]interface{}{
-		"type":      "run_update",
-		"run_id":    runID,
-		"status":    status,
-		"timestamp": time.Now().Unix(),
-	})
+	SSEPublishRunUpdate(runID, status)
 }
 
-// WebSocket upgrader configuration
-var wsUpgrader = websocket.FastHTTPUpgrader{
-	CheckOrigin: func(ctx *fasthttp.RequestCtx) bool {
-		return true // Allow all origins for now, can be restricted later
-	},
-}
-
-// DeploymentLogsWebSocketHandler handles WebSocket connections for deployment logs
-func DeploymentLogsWebSocketHandler(c *fiber.Ctx) error {
-	runID := c.Params("run_id")
-	if runID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"run_id is required",
-			nil,
-		))
-	}
-
-	// Check if it's a websocket upgrade request
-	if !websocket.FastHTTPIsWebSocketUpgrade(c.Context()) {
-		// If not a WebSocket request, return the deployment run data via REST
-		ctx := context.Background()
-		run, err := api.DeploymentRuns.GetDeploymentRun(ctx, runID)
-		if err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(utils.NewCitizenResponse(
-				false,
-				"Deployment run not found: "+err.Error(),
-				nil,
-			))
-		}
-		return c.JSON(utils.NewCitizenResponse(
-			true,
-			"Deployment run retrieved successfully",
-			run,
-		))
-	}
-
-	// Upgrade to WebSocket
-	err := wsUpgrader.Upgrade(c.Context(), func(conn *websocket.Conn) {
-		defer conn.Close()
-
-		log.Printf("[WS] New connection for deployment %s", runID)
-
-		// Subscribe to this deployment
-		logBroadcaster.Subscribe(runID, conn)
-		defer logBroadcaster.Unsubscribe(runID, conn)
-
-		// Send current state
-		ctx := context.Background()
-		run, err := api.DeploymentRuns.GetDeploymentRun(ctx, runID)
-		if err == nil && run != nil {
-			initialState, _ := json.Marshal(map[string]interface{}{
-				"type": "initial_state",
-				"run":  run,
-			})
-			conn.WriteMessage(websocket.TextMessage, initialState)
-		}
-
-		// Keep connection alive and listen for messages
-		for {
-			messageType, msg, err := conn.ReadMessage()
-			if err != nil {
-				log.Printf("[WS] Connection closed for deployment %s: %v", runID, err)
-				break
-			}
-
-			// Handle ping/pong
-			if messageType == websocket.PingMessage {
-				conn.WriteMessage(websocket.PongMessage, nil)
-			}
-
-			// Handle client messages (if needed)
-			log.Printf("[WS] Received message from client: %s", string(msg))
-		}
-	})
-
-	if err != nil {
-		log.Printf("[WS] Upgrade error for deployment %s: %v", runID, err)
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			"WebSocket upgrade failed",
-			nil,
-		))
-	}
-
-	return nil
-}
+// =============================================================================
+// REST API Handlers
+// =============================================================================
 
 // GetDeploymentRuns returns deployment runs for an app
 func GetDeploymentRuns(c *fiber.Ctx) error {
@@ -422,14 +261,14 @@ func executeDeployment(runID, appName, gitURL, gitBranch, builder string, userID
 	if strings.Contains(gitURL, "github.com") {
 		// Try GitHub App installation token first (preferred)
 		if tokenResp, tokenErr := utils.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
-			log.Printf("[DEPLOY] 🔑 Using GitHub App installation token for authentication")
+			log.Printf("[DEPLOY] Using GitHub App installation token for authentication")
 			authenticatedGitURL = strings.Replace(gitURL, "https://github.com/",
 				fmt.Sprintf("https://x-access-token:%s@github.com/", tokenResp.Token), 1)
 		} else if userID != nil {
 			// Fallback to user's GitHub access token
 			accessToken, tokenErr := api.GitHub.GetUserGitHubAccessToken(ctx, *userID)
 			if tokenErr == nil && accessToken != "" {
-				log.Printf("[DEPLOY] 🔑 Using user's GitHub access token for authentication")
+				log.Printf("[DEPLOY] Using user's GitHub access token for authentication")
 				authenticatedGitURL = strings.Replace(gitURL, "https://github.com/",
 					fmt.Sprintf("https://x-access-token:%s@github.com/", accessToken), 1)
 			}
@@ -506,117 +345,4 @@ func updateStep(ctx context.Context, runID, stepName, status string, logs *strin
 	if err := api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, stepName, status, logs); err != nil {
 		log.Printf("[DEPLOY] Failed to update step %s: %v", stepName, err)
 	}
-}
-
-// PodLogsWebSocketHandler streams pod logs via WebSocket
-func PodLogsWebSocketHandler(c *fiber.Ctx) error {
-	appName := c.Params("app_name")
-	if appName == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"app_name is required",
-			nil,
-		))
-	}
-
-	processType := c.Query("process", "web")
-	tailLines := c.QueryInt("tail", 100)
-
-	// Check if it's a websocket upgrade request
-	if !websocket.FastHTTPIsWebSocketUpgrade(c.Context()) {
-		// If not WebSocket, return logs via REST
-		k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter)
-		if !ok {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				"Pod logs only supported for K3s adapter",
-				nil,
-			))
-		}
-		logs, err := k3sAdapter.GetAppLogs(appName, tailLines, false)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-				false,
-				"Failed to get logs: "+err.Error(),
-				nil,
-			))
-		}
-		return c.JSON(utils.NewCitizenResponse(true, "Logs retrieved", fiber.Map{"logs": logs}))
-	}
-
-	// Upgrade to WebSocket
-	err := wsUpgrader.Upgrade(c.Context(), func(conn *websocket.Conn) {
-		defer conn.Close()
-
-		log.Printf("[WS] Pod logs connection for app %s, process %s", appName, processType)
-
-		// Get K3s adapter for streaming
-		k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter)
-		if !ok {
-			conn.WriteJSON(map[string]interface{}{
-				"type":  "error",
-				"error": "Pod log streaming only supported for K3s adapter",
-			})
-			return
-		}
-
-		// Send initial connection message
-		conn.WriteJSON(map[string]interface{}{
-			"type":    "connected",
-			"app":     appName,
-			"process": processType,
-		})
-
-		// Channel for graceful shutdown
-		done := make(chan struct{})
-
-		// Read from client to detect disconnect
-		go func() {
-			defer close(done)
-			for {
-				_, _, err := conn.ReadMessage()
-				if err != nil {
-					return
-				}
-			}
-		}()
-
-		// Stream logs - single stream, no retry loop
-		namespace := fmt.Sprintf("citizen-app-%s", appName)
-
-		err := k3sAdapter.StreamPodLogs(namespace, appName, func(logLine string) {
-			select {
-			case <-done:
-				return
-			default:
-				conn.WriteJSON(map[string]interface{}{
-					"type":    "log",
-					"content": logLine,
-					"app":     appName,
-					"process": processType,
-				})
-			}
-		})
-
-		if err != nil {
-			conn.WriteJSON(map[string]interface{}{
-				"type":  "error",
-				"error": err.Error(),
-			})
-		}
-
-		// Wait for client disconnect or stream end
-		<-done
-	})
-
-	if err != nil {
-		log.Printf("[WS] Pod logs upgrade error: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			"WebSocket upgrade failed",
-			nil,
-		))
-	}
-
-	return nil
 }

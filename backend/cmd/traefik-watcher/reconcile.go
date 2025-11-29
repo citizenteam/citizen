@@ -169,13 +169,6 @@ func (w *Watcher) generateTraefikConfig(apps []AppInfo) string {
 	sb.WriteString("# DO NOT EDIT MANUALLY - This file is auto-generated\n\n")
 
 	sb.WriteString("http:\n")
-	sb.WriteString("  serversTransports:\n")
-	sb.WriteString("    wsTransport:\n")
-	sb.WriteString("      forwardingTimeouts:\n")
-	sb.WriteString("        dialTimeout: 30s\n")
-	sb.WriteString("        responseHeaderTimeout: 0s\n")
-	sb.WriteString("        idleConnTimeout: 90s\n")
-	sb.WriteString("\n")
 	sb.WriteString("  routers:\n")
 	routersWritten := w.writeBaseRouters(&sb)
 	for _, app := range apps {
@@ -264,14 +257,6 @@ func (w *Watcher) writeBaseRouters(sb *strings.Builder) bool {
 
 		w.writePlatformSecureRoutes(sb, safeDomain)
 	} else {
-		// WebSocket endpoint for deployment logs (no forwardAuth - auth via cookie in backend)
-		sb.WriteString("    ws-deployment-logs-http:\n")
-		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api/v1/ws/`)\"\n", safeDomain))
-		sb.WriteString("      service: ws-api-service\n")
-		sb.WriteString("      entryPoints:\n        - web\n")
-		sb.WriteString("      middlewares:\n        - security-headers\n")
-		sb.WriteString("      priority: 135\n\n")
-
 		sb.WriteString("    sso-http:\n")
 		sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/sso/`)\"\n", safeDomain))
 		sb.WriteString(fmt.Sprintf("      service: %s\n", apiServiceName))
@@ -321,14 +306,6 @@ func (w *Watcher) writeBaseRouters(sb *strings.Builder) bool {
 }
 
 func (w *Watcher) writePlatformSecureRoutes(sb *strings.Builder, safeDomain string) {
-	// WebSocket endpoint for deployment logs (no forwardAuth - auth via cookie in backend)
-	sb.WriteString("    ws-deployment-logs-https:\n")
-	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/api/v1/ws/`)\"\n", safeDomain))
-	sb.WriteString("      service: ws-api-service\n")
-	sb.WriteString("      entryPoints:\n        - websecure\n")
-	sb.WriteString("      middlewares:\n        - security-headers\n")
-	sb.WriteString("      tls:\n        certResolver: letsencrypt\n")
-	sb.WriteString("      priority: 135\n\n")
 
 	sb.WriteString("    sso-https:\n")
 	sb.WriteString(fmt.Sprintf("      rule: \"Host(`%s`) && PathPrefix(`/sso/`)\"\n", safeDomain))
@@ -519,13 +496,6 @@ func (w *Watcher) writeBaseServices(sb *strings.Builder) bool {
 
 	sb.WriteString(fmt.Sprintf("    %s:\n", apiServiceName))
 	sb.WriteString("      loadBalancer:\n")
-	sb.WriteString("        servers:\n")
-	sb.WriteString(fmt.Sprintf("          - url: \"%s\"\n\n", serviceURL))
-
-	// WebSocket service with transport for long-lived connections
-	sb.WriteString("    ws-api-service:\n")
-	sb.WriteString("      loadBalancer:\n")
-	sb.WriteString("        serversTransport: wsTransport\n")
 	sb.WriteString("        servers:\n")
 	sb.WriteString(fmt.Sprintf("          - url: \"%s\"\n\n", serviceURL))
 

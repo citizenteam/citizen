@@ -1,0 +1,259 @@
+package handlers
+
+import (
+	"backend/database/api"
+	"backend/platform"
+	"backend/platform/k3s"
+	"backend/pubsub"
+	"backend/utils"
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+)
+
+// SSE - Server-Sent Events handlers
+// No WebSocket needed - works over regular HTTP
+
+// DeploymentLogsSSE streams deployment logs via SSE
+func DeploymentLogsSSE(c *fiber.Ctx) error {
+	runID := c.Params("run_id")
+	if runID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+			false, "run_id is required", nil,
+		))
+	}
+
+	// Check Accept header for SSE
+	accept := c.Get("Accept")
+	if accept != "text/event-stream" {
+		// REST fallback - return current state
+		ctx := context.Background()
+		run, err := api.DeploymentRuns.GetDeploymentRun(ctx, runID)
+		if err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(utils.NewCitizenResponse(
+				false, "Deployment run not found", nil,
+			))
+		}
+		return c.JSON(utils.NewCitizenResponse(true, "Deployment run", run))
+	}
+
+	// SSE headers
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+	c.Set("X-Accel-Buffering", "no") // Disable nginx buffering
+
+	log.Printf("[SSE] Deployment logs stream started for run %s", runID)
+
+	// Create message channel
+	msgChan := make(chan []byte, 100)
+	done := make(chan struct{})
+
+	// Subscribe to pubsub
+	topic := pubsub.DeploymentTopic(runID)
+	pubsub.GlobalHub.SubscribeChannel(topic, msgChan)
+	defer pubsub.GlobalHub.UnsubscribeChannel(topic, msgChan)
+
+	// Send initial state
+	ctx := context.Background()
+	run, err := api.DeploymentRuns.GetDeploymentRun(ctx, runID)
+	if err == nil && run != nil {
+		initialState, _ := json.Marshal(map[string]interface{}{
+			"type": "initial_state",
+			"run":  run,
+		})
+		sendSSE(c, "message", initialState)
+	}
+
+	// Stream context
+	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		// Send initial state again (for stream)
+		if run != nil {
+			initialState, _ := json.Marshal(map[string]interface{}{
+				"type": "initial_state",
+				"run":  run,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", initialState)
+			w.Flush()
+		}
+
+		// Heartbeat ticker
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case msg := <-msgChan:
+				fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
+				w.Flush()
+
+				// Check if run completed
+				var data map[string]interface{}
+				if json.Unmarshal(msg, &data) == nil {
+					if msgType, ok := data["type"].(string); ok && msgType == "run_update" {
+						if status, ok := data["data"].(map[string]interface{})["status"].(string); ok {
+							if status == "completed" || status == "failed" {
+								// Send final message and close
+								time.Sleep(500 * time.Millisecond)
+								close(done)
+								return
+							}
+						}
+					}
+				}
+
+			case <-ticker.C:
+				// Heartbeat to keep connection alive
+				fmt.Fprintf(w, ": heartbeat\n\n")
+				w.Flush()
+
+			case <-done:
+				return
+			}
+		}
+	})
+
+	return nil
+}
+
+// PodLogsSSE streams pod logs via SSE
+func PodLogsSSE(c *fiber.Ctx) error {
+	appName := c.Params("app_name")
+	if appName == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+			false, "app_name is required", nil,
+		))
+	}
+
+	tailLines := c.QueryInt("tail", 100)
+
+	// Check Accept header for SSE
+	accept := c.Get("Accept")
+	if accept != "text/event-stream" {
+		// REST fallback
+		k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter)
+		if !ok {
+			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+				false, "Pod logs only supported for K3s", nil,
+			))
+		}
+		logs, err := k3sAdapter.GetAppLogs(appName, tailLines, false)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
+				false, "Failed to get logs: "+err.Error(), nil,
+			))
+		}
+		return c.JSON(utils.NewCitizenResponse(true, "Logs", fiber.Map{"logs": logs}))
+	}
+
+	// SSE headers
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
+
+	log.Printf("[SSE] Pod logs stream started for app %s", appName)
+
+	k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter)
+	if !ok {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
+			false, "Pod logs only supported for K3s", nil,
+		))
+	}
+
+	// Stream context
+	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		// Send initial logs
+		logs, err := k3sAdapter.GetAppLogs(appName, tailLines, false)
+		if err == nil {
+			initialData, _ := json.Marshal(map[string]interface{}{
+				"type": "initial_logs",
+				"logs": logs,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", initialData)
+			w.Flush()
+		}
+
+		// Stream new logs
+		namespace := fmt.Sprintf("citizen-app-%s", appName)
+
+		// Start streaming in this goroutine
+		err = k3sAdapter.StreamPodLogs(namespace, appName, func(logLine string) {
+			data, _ := json.Marshal(map[string]interface{}{
+				"type": "log",
+				"logs": logLine,
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
+			w.Flush()
+		})
+
+		if err != nil {
+			errData, _ := json.Marshal(map[string]interface{}{
+				"type":  "error",
+				"error": err.Error(),
+			})
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", errData)
+			w.Flush()
+		}
+	})
+
+	return nil
+}
+
+// sendSSE helper to send SSE message
+func sendSSE(c *fiber.Ctx, event string, data []byte) {
+	c.WriteString(fmt.Sprintf("event: %s\ndata: %s\n\n", event, data))
+}
+
+// =============================================================================
+// Publish helpers - for deployment code to call
+// =============================================================================
+
+// SSEPublishDeploymentLog publishes deployment log via pubsub (for SSE subscribers)
+func SSEPublishDeploymentLog(runID, step, status, logs string) {
+	topic := pubsub.DeploymentTopic(runID)
+	data := map[string]interface{}{
+		"type":   "log",
+		"run_id": runID,
+		"step":   step,
+		"status": status,
+		"logs":   logs,
+	}
+	jsonData, _ := json.Marshal(data)
+	count := pubsub.GlobalHub.PublishToChannel(topic, jsonData)
+	log.Printf("[SSE] Published deployment log to %d subscribers (run: %s, step: %s, len: %d)",
+		count, runID, step, len(logs))
+}
+
+// SSEPublishStepUpdate publishes step status change
+func SSEPublishStepUpdate(runID, step, status string) {
+	topic := pubsub.DeploymentTopic(runID)
+	data := map[string]interface{}{
+		"type":   "step_update",
+		"run_id": runID,
+		"step":   step,
+		"status": status,
+	}
+	jsonData, _ := json.Marshal(data)
+	pubsub.GlobalHub.PublishToChannel(topic, jsonData)
+}
+
+// SSEPublishRunUpdate publishes run status change
+func SSEPublishRunUpdate(runID, status string, appUrl ...string) {
+	topic := pubsub.DeploymentTopic(runID)
+	data := map[string]interface{}{
+		"type":   "run_update",
+		"run_id": runID,
+		"status": status,
+	}
+	if len(appUrl) > 0 && appUrl[0] != "" {
+		data["app_url"] = appUrl[0]
+	}
+	jsonData, _ := json.Marshal(data)
+	pubsub.GlobalHub.PublishToChannel(topic, jsonData)
+}
