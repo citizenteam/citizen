@@ -74,10 +74,9 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 			w.Flush()
 		}
 
-		// Heartbeat ticker - keep connection alive
-		ticker := time.NewTicker(5 * time.Second)
+		// Heartbeat ticker - keep connection alive (3s for stability)
+		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
-		log.Printf("[SSE] Heartbeat ticker started for run %s (every 5s)", runID)
 
 		for {
 			select {
@@ -104,14 +103,13 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 				// Heartbeat to keep connection alive
 				_, err := fmt.Fprintf(w, ": heartbeat\n\n")
 				if err != nil {
-					log.Printf("[SSE] Heartbeat write error for run %s: %v", runID, err)
+					log.Printf("[SSE] Heartbeat error for run %s, client disconnected", runID)
 					return
 				}
 				if err := w.Flush(); err != nil {
-					log.Printf("[SSE] Heartbeat flush error for run %s: %v", runID, err)
+					log.Printf("[SSE] Heartbeat error for run %s, client disconnected", runID)
 					return
 				}
-				log.Printf("[SSE] Heartbeat sent for run %s", runID)
 			}
 		}
 	})
@@ -164,8 +162,12 @@ func PodLogsSSE(c *fiber.Ctx) error {
 		))
 	}
 
-	// Stream context
+	// Stream context with channel-based communication
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		// Channel for messages (logs + control) - large buffer for fast logs
+		msgChan := make(chan []byte, 10000)
+		stopChan := make(chan struct{})
+
 		// Send initial logs
 		logs, err := k3sAdapter.GetAppLogs(appName, tailLines, false)
 		if err == nil {
@@ -174,63 +176,66 @@ func PodLogsSSE(c *fiber.Ctx) error {
 				"logs": logs,
 			})
 			fmt.Fprintf(w, "event: message\ndata: %s\n\n", initialData)
-			w.Flush()
+			if err := w.Flush(); err != nil {
+				log.Printf("[SSE] Initial flush error for %s: %v", appName, err)
+				return
+			}
 		}
 
-		// Stream new logs
+		// Start log streaming goroutine
 		namespace := fmt.Sprintf("citizen-app-%s", appName)
-
-		// Channel for log lines
-		logChan := make(chan string, 100)
-		done := make(chan struct{})
-
-		// Start streaming in goroutine
 		go func() {
-			defer close(done)
+			defer close(msgChan)
 			err := k3sAdapter.StreamPodLogs(namespace, appName, func(logLine string) {
 				select {
-				case logChan <- logLine:
+				case <-stopChan:
+					return
 				default:
-					// Channel full, skip
+					data, _ := json.Marshal(map[string]interface{}{
+						"type": "log",
+						"logs": logLine,
+					})
+					select {
+					case msgChan <- data:
+					case <-stopChan:
+						return
+					}
 				}
 			})
 			if err != nil {
-				log.Printf("[SSE] StreamPodLogs error for %s: %v", appName, err)
+				log.Printf("[SSE] StreamPodLogs ended for %s: %v", appName, err)
 			}
 		}()
 
 		// Heartbeat ticker
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
+		defer close(stopChan)
 
 		for {
 			select {
-			case logLine := <-logChan:
-				data, _ := json.Marshal(map[string]interface{}{
-					"type": "log",
-					"logs": logLine,
-				})
-				fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
+			case msg, ok := <-msgChan:
+				if !ok {
+					// Channel closed, stream ended
+					log.Printf("[SSE] Pod logs stream ended for %s", appName)
+					return
+				}
+				fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
 				if err := w.Flush(); err != nil {
-					log.Printf("[SSE] Pod logs flush error for %s: %v", appName, err)
+					log.Printf("[SSE] Pod logs write error for %s: %v", appName, err)
 					return
 				}
 
 			case <-ticker.C:
-				// Heartbeat
+				// Heartbeat to keep connection alive
 				if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
-					log.Printf("[SSE] Pod logs heartbeat write error for %s: %v", appName, err)
+					log.Printf("[SSE] Pod logs heartbeat error for %s", appName)
 					return
 				}
 				if err := w.Flush(); err != nil {
-					log.Printf("[SSE] Pod logs heartbeat flush error for %s: %v", appName, err)
+					log.Printf("[SSE] Pod logs heartbeat error for %s", appName)
 					return
 				}
-
-			case <-done:
-				// Stream ended
-				log.Printf("[SSE] Pod logs stream ended for %s", appName)
-				return
 			}
 		}
 	})
