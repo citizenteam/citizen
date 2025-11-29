@@ -88,10 +88,10 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 				var data map[string]interface{}
 				if json.Unmarshal(msg, &data) == nil {
 					if msgType, ok := data["type"].(string); ok && msgType == "run_update" {
-						if status, ok := data["data"].(map[string]interface{})["status"].(string); ok {
-							if status == "completed" || status == "failed" {
-								// Send final message and close
-								log.Printf("[SSE] Run %s completed with status %s, closing stream", runID, status)
+						// Safely check for status field
+						if statusVal, ok := data["status"].(string); ok {
+							if statusVal == "completed" || statusVal == "failed" {
+								log.Printf("[SSE] Run %s completed with status %s, closing stream", runID, statusVal)
 								time.Sleep(500 * time.Millisecond)
 								return
 							}

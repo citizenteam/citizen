@@ -136,7 +136,8 @@ func GetLatestDeploymentRun(c *fiber.Ctx) error {
 
 // TriggerDeployment triggers a new deployment and returns immediately with run_id
 func TriggerDeployment(c *fiber.Ctx) error {
-	appName := c.Params("app_name")
+	// Copy string to avoid Fiber's context pooling issues with goroutines
+	appName := string([]byte(c.Params("app_name")))
 	if appName == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
 			false,

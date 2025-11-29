@@ -399,7 +399,9 @@ func RemoveDomain(c *fiber.Ctx) error {
 
 // DeployApp deploys an app from a git repository
 func DeployApp(c *fiber.Ctx) error {
-	appName := c.Params("app_name")
+	// IMPORTANT: Copy the string to avoid Fiber's context pooling issues
+	// c.Params() returns a string from Fiber's pool which may be reused after handler returns
+	appName := string([]byte(c.Params("app_name")))
 	fmt.Printf("[DEPLOY] DeployApp called with appName: '%s'\n", appName)
 	if appName == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
