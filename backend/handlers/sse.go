@@ -74,9 +74,10 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 			w.Flush()
 		}
 
-		// Heartbeat ticker
-		ticker := time.NewTicker(15 * time.Second)
+		// Heartbeat ticker - keep connection alive
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+		log.Printf("[SSE] Heartbeat ticker started for run %s (every 5s)", runID)
 
 		for {
 			select {
@@ -101,8 +102,16 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 
 			case <-ticker.C:
 				// Heartbeat to keep connection alive
-				fmt.Fprintf(w, ": heartbeat\n\n")
-				w.Flush()
+				_, err := fmt.Fprintf(w, ": heartbeat\n\n")
+				if err != nil {
+					log.Printf("[SSE] Heartbeat write error for run %s: %v", runID, err)
+					return
+				}
+				if err := w.Flush(); err != nil {
+					log.Printf("[SSE] Heartbeat flush error for run %s: %v", runID, err)
+					return
+				}
+				log.Printf("[SSE] Heartbeat sent for run %s", runID)
 			}
 		}
 	})
