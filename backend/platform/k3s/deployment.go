@@ -4,6 +4,7 @@ import (
 	"backend/platform"
 	"fmt"
 	"io"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,6 +97,7 @@ func (k *K3sAdapter) ensureNamespace(name string) error {
 
 // createDeployment creates a new Deployment resource
 func (k *K3sAdapter) createDeployment(namespace, appName, image string, port int32, env map[string]string) error {
+	log.Printf("[K3S] createDeployment called: namespace=%s, appName=%s, image=%s", namespace, appName, image)
 	replicas := int32(1)
 
 	// Convert env map to Kubernetes EnvVar slice
@@ -195,6 +197,7 @@ func (k *K3sAdapter) createDeployment(namespace, appName, image string, port int
 
 // ensureDeploymentExists creates a deployment if it doesn't exist
 func (k *K3sAdapter) ensureDeploymentExists(namespace, appName string, port int32, env map[string]string) error {
+	log.Printf("[K3S] ensureDeploymentExists: namespace=%s, appName=%s", namespace, appName)
 	_, err := k.client.AppsV1().Deployments(namespace).Get(k.ctx, appName, metav1.GetOptions{})
 	if err == nil {
 		return nil

@@ -50,30 +50,22 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 
 	log.Printf("[SSE] Deployment logs stream started for run %s", runID)
 
-	// Create message channel
-	msgChan := make(chan []byte, 100)
-	done := make(chan struct{})
-
-	// Subscribe to pubsub
-	topic := pubsub.DeploymentTopic(runID)
-	pubsub.GlobalHub.SubscribeChannel(topic, msgChan)
-	defer pubsub.GlobalHub.UnsubscribeChannel(topic, msgChan)
-
-	// Send initial state
+	// Get initial state before streaming
 	ctx := context.Background()
 	run, err := api.DeploymentRuns.GetDeploymentRun(ctx, runID)
-	if err == nil && run != nil {
-		initialState, _ := json.Marshal(map[string]interface{}{
-			"type": "initial_state",
-			"run":  run,
-		})
-		sendSSE(c, "message", initialState)
-	}
 
-	// Stream context
+	// Stream context - subscription must happen INSIDE the stream writer
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
-		// Send initial state again (for stream)
-		if run != nil {
+		// Create message channel and subscribe INSIDE the stream
+		msgChan := make(chan []byte, 100)
+		topic := pubsub.DeploymentTopic(runID)
+		pubsub.GlobalHub.SubscribeChannel(topic, msgChan)
+		defer pubsub.GlobalHub.UnsubscribeChannel(topic, msgChan)
+
+		log.Printf("[SSE] Stream started for run %s, subscribed to topic %s", runID, topic)
+
+		// Send initial state
+		if err == nil && run != nil {
 			initialState, _ := json.Marshal(map[string]interface{}{
 				"type": "initial_state",
 				"run":  run,
@@ -99,8 +91,8 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 						if status, ok := data["data"].(map[string]interface{})["status"].(string); ok {
 							if status == "completed" || status == "failed" {
 								// Send final message and close
+								log.Printf("[SSE] Run %s completed with status %s, closing stream", runID, status)
 								time.Sleep(500 * time.Millisecond)
-								close(done)
 								return
 							}
 						}
@@ -111,9 +103,6 @@ func DeploymentLogsSSE(c *fiber.Ctx) error {
 				// Heartbeat to keep connection alive
 				fmt.Fprintf(w, ": heartbeat\n\n")
 				w.Flush()
-
-			case <-done:
-				return
 			}
 		}
 	})
