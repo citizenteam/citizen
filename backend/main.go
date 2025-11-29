@@ -59,15 +59,11 @@ func main() {
 	}
 	utils.StartupLog("Encryption system initialized successfully")
 
-	// Initialize platform adapter
-	utils.StartupLog("Initializing platform adapter...")
+	// Initialize K3s platform adapter
+	utils.StartupLog("Initializing K3s platform adapter...")
 	if err := initPlatformAdapter(); err != nil {
-		utils.ErrorLog("Platform adapter initialization failed: %v", err)
-		log.Fatalf("Platform adapter initialization failed: %v", err)
-	}
-	runtimeAdapter := strings.ToLower(strings.TrimSpace(os.Getenv("PLATFORM_ADAPTER")))
-	if runtimeAdapter == "" {
-		runtimeAdapter = "k3s"
+		utils.ErrorLog("K3s adapter initialization failed: %v", err)
+		log.Fatalf("K3s adapter initialization failed: %v", err)
 	}
 
 	// Start database connection (check skip flag)
@@ -120,22 +116,6 @@ func main() {
 		loadGitHubConfigFromDB()
 	} else {
 		utils.WarnLog("SKIP_DB_PING=true - Database connection skipped")
-	}
-
-	if runtimeAdapter == "dokku" {
-		// Test SSH connection (non-blocking)
-		go func() {
-			utils.StartupLog("Testing SSH connection...")
-			err := utils.SSHConnect()
-			if err != nil {
-				utils.WarnLog("SSH connection failed during startup: %v", err)
-				utils.InfoLog("SSH connection will be retried on first API call")
-			} else {
-				utils.StartupLog("SSH connection established successfully")
-			}
-		}()
-	} else {
-		utils.StartupLog("Skipping SSH connection; runtime adapter=%s", runtimeAdapter)
 	}
 
 	// Start Fiber application
@@ -372,13 +352,10 @@ func startBackgroundTasks() {
 
 	utils.StartupLog("Background cleanup tasks started")
 
-	for {
-		select {
-		case <-ticker.C:
-			// Clean expired SSO tokens
-			handlers.CleanExpiredSSOTokens()
-			utils.DebugLog("Expired SSO tokens cleanup completed")
-		}
+	for range ticker.C {
+		// Clean expired SSO tokens
+		handlers.CleanExpiredSSOTokens()
+		utils.DebugLog("Expired SSO tokens cleanup completed")
 	}
 }
 

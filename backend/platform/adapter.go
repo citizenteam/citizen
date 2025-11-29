@@ -58,26 +58,37 @@ type Adapter interface {
 
 var (
 	adapterMu sync.RWMutex
-	adapter   Adapter = newDokkuAdapter()
+	adapter   Adapter
 
 	// ErrAppNotFound indicates that the requested application does not exist on the runtime.
 	ErrAppNotFound = errors.New("app not found")
 )
 
 // GetAdapter returns the currently configured platform adapter.
+// Note: SetAdapter must be called during initialization (e.g., in main.go)
+// to configure the K3s adapter before any platform operations are performed.
 func GetAdapter() Adapter {
 	adapterMu.RLock()
 	defer adapterMu.RUnlock()
+	if adapter == nil {
+		panic("platform adapter not initialized - call SetAdapter during startup")
+	}
 	return adapter
 }
 
-// SetAdapter overrides the current adapter (primarily for tests or future runtimes).
+// SetAdapter sets the platform adapter (must be called during initialization).
 func SetAdapter(a Adapter) {
 	adapterMu.Lock()
 	defer adapterMu.Unlock()
 	if a == nil {
-		adapter = newDokkuAdapter()
-		return
+		panic("cannot set nil adapter")
 	}
 	adapter = a
+}
+
+// IsAdapterInitialized returns true if an adapter has been set.
+func IsAdapterInitialized() bool {
+	adapterMu.RLock()
+	defer adapterMu.RUnlock()
+	return adapter != nil
 }

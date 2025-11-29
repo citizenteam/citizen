@@ -2,11 +2,10 @@ package handlers
 
 import (
 	"backend/database"
+	"backend/platform"
 	"backend/utils"
-	"fmt"
 	"os"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -80,9 +79,9 @@ func HealthCheck(c *fiber.Ctx) error {
 	redisHealth := checkRedisHealth()
 	healthStatus.Components["redis"] = redisHealth
 
-	// Check SSH connectivity (optional - don't fail on SSH issues)
-	sshHealth := checkSSHHealth()
-	healthStatus.Components["ssh"] = sshHealth
+	// Check K3s platform health (optional - don't fail on platform issues)
+	platformHealth := checkPlatformHealth()
+	healthStatus.Components["platform"] = platformHealth
 
 	// Determine overall health status
 	overallHealthy := true
@@ -182,39 +181,36 @@ func checkRedisHealth() ComponentHealth {
 	}
 }
 
-// checkSSHHealth performs SSH connectivity check
-func checkSSHHealth() ComponentHealth {
+// checkPlatformHealth performs K3s platform health check
+func checkPlatformHealth() ComponentHealth {
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	runtimeAdapter := strings.ToLower(strings.TrimSpace(os.Getenv("PLATFORM_ADAPTER")))
-	if runtimeAdapter == "" {
-		runtimeAdapter = "dokku"
-	}
-
-	if runtimeAdapter != "dokku" {
+	// Check if platform adapter is initialized
+	if !platform.IsAdapterInitialized() {
 		return ComponentHealth{
-			Status:    "not_applicable",
-			Message:   fmt.Sprintf("SSH disabled (adapter=%s)", runtimeAdapter),
+			Status:    "unhealthy",
+			Message:   "Platform adapter not initialized",
 			LastCheck: now,
 		}
 	}
 
-	sshHost := os.Getenv("SSH_HOST")
-	if sshHost == "" {
+	// Try to list apps as a basic health check
+	apps, err := platform.GetAdapter().ListApps()
+	if err != nil {
 		return ComponentHealth{
-			Status:    "not_configured",
-			Message:   "SSH connection not configured",
+			Status:    "degraded",
+			Message:   "Platform adapter connection issue",
+			Error:     err.Error(),
 			LastCheck: now,
 		}
 	}
 
-	// For now, just return configured status
-	// A more comprehensive check could be implemented later
 	return ComponentHealth{
-		Status:  "configured",
-		Message: "SSH connection configured",
+		Status:  "healthy",
+		Message: "K3s platform adapter healthy",
 		Details: map[string]interface{}{
-			"ssh_host": sshHost,
+			"adapter":   "k3s",
+			"app_count": len(apps),
 		},
 		LastCheck: now,
 	}

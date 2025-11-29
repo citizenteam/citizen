@@ -226,7 +226,7 @@ func watcherMode(useK8s bool) string {
 	if useK8s {
 		return "kubernetes"
 	}
-	return "docker/dokku"
+	return "docker"
 }
 
 func getEnvBool(key string, defaultValue bool) bool {

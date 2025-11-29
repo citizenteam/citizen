@@ -2,6 +2,7 @@ package k3s
 
 import (
 	"backend/platform"
+	"backend/utils"
 	"context"
 	"fmt"
 	"log"
@@ -170,18 +171,28 @@ func (k *K3sAdapter) RemoveDomain(appName, domain string) (string, error) {
 	return fmt.Sprintf("Domain %s removed (IngressRoute will be updated by watcher)", domain), nil
 }
 
-// DetectPortFromGitRepo detects port from git repo
+// DetectPortFromGitRepo detects port from git repo config files
 func (k *K3sAdapter) DetectPortFromGitRepo(gitURL, gitBranch string, userID *int) (*platform.ConfigPort, error) {
-	// Default port - will be overridden by actual app detection
-	// For Nixpacks builds, port is detected automatically
-	return &platform.ConfigPort{Port: 3000, Source: "default"}, nil
+	port, err := utils.DetectPortFromGitRepo(gitURL, gitBranch, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &platform.ConfigPort{
+		Port:   port.Port,
+		Source: port.Source,
+	}, nil
 }
 
 // ExtractPortFromPackageJson extracts port from package.json
 func (k *K3sAdapter) ExtractPortFromPackageJson(gitURL, gitBranch string, userID *int) (*platform.ConfigPort, error) {
-	// Package.json parsing is handled by utils package
-	// This adapter delegates to shared utility functions
-	return &platform.ConfigPort{Port: 3000, Source: "package.json"}, nil
+	port, err := utils.ExtractPortFromPackageJson(gitURL, gitBranch, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &platform.ConfigPort{
+		Port:   port.Port,
+		Source: port.Source,
+	}, nil
 }
 
 // SetEnv adds env variables to deployment

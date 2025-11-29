@@ -250,11 +250,6 @@ func PodLogsSSE(c *fiber.Ctx) error {
 	return nil
 }
 
-// sendSSE helper to send SSE message
-func sendSSE(c *fiber.Ctx, event string, data []byte) {
-	c.WriteString(fmt.Sprintf("event: %s\ndata: %s\n\n", event, data))
-}
-
 // =============================================================================
 // Publish helpers - for deployment code to call
 // =============================================================================

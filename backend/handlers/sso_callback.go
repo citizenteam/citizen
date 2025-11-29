@@ -18,13 +18,13 @@ var callbackJWTValidator *services.JWTValidator
 func SSOCallback(c *fiber.Ctx) error {
 	token := c.Query("token")
 	redirect := c.Query("redirect", "/")
-	
+
 	log.Printf("📨 [SSO-CALLBACK] Received callback: redirect=%s", redirect)
-	
+
 	if token == "" {
 		return c.Status(fiber.StatusBadRequest).SendString("Missing token parameter")
 	}
-	
+
 	// Initialize validator if not already
 	if callbackJWTValidator == nil {
 		jwksURL := os.Getenv("CITIZENAUTH_JWKS_URL")
@@ -32,29 +32,29 @@ func SSOCallback(c *fiber.Ctx) error {
 			callbackJWTValidator = services.NewJWTValidator(jwksURL)
 		}
 	}
-	
+
 	// Validate CitizenAuth JWT
 	if callbackJWTValidator == nil {
 		log.Println("❌ [SSO-CALLBACK] JWT validator not configured")
 		return c.Status(fiber.StatusServiceUnavailable).SendString("JWT validator not configured")
 	}
-	
+
 	claims, err := callbackJWTValidator.ValidateToken(token)
 	if err != nil {
 		log.Printf("❌ [SSO-CALLBACK] Invalid token: %v", err)
 		return c.Status(fiber.StatusUnauthorized).SendString("Invalid token")
 	}
-	
-log.Printf("✅ [SSO-CALLBACK] JWT validated: %s (%s)", claims.UserID, claims.Email)
 
-if claims.OrganizationID == nil || *claims.OrganizationID == "" {
-    log.Println("❌ [SSO-CALLBACK] Missing organization ID in token")
-    return c.Status(fiber.StatusUnauthorized).SendString("Missing organization scope")
-}
+	log.Printf("✅ [SSO-CALLBACK] JWT validated: %s (%s)", claims.UserID, claims.Email)
 
-organizationID := *claims.OrganizationID
-permissionSvc := services.NewPermissionService()
-assigned, err := permissionSvc.IsUserAssignedToInstance(c.Context(), claims.UserID, organizationID)
+	if claims.OrganizationID == nil || *claims.OrganizationID == "" {
+		log.Println("❌ [SSO-CALLBACK] Missing organization ID in token")
+		return c.Status(fiber.StatusUnauthorized).SendString("Missing organization scope")
+	}
+
+	organizationID := *claims.OrganizationID
+	permissionSvc := services.NewPermissionService()
+	assigned, err := permissionSvc.IsUserAssignedToInstance(c.Context(), claims.UserID, organizationID)
 	if err != nil {
 		log.Printf("❌ [SSO-CALLBACK] Failed to verify instance assignment: %v", err)
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to verify access")
@@ -63,46 +63,41 @@ assigned, err := permissionSvc.IsUserAssignedToInstance(c.Context(), claims.User
 		log.Printf("🚫 [SSO-CALLBACK] Access denied for user %s (not assigned to this instance)", claims.UserID)
 		return c.Status(fiber.StatusForbidden).SendString("You do not have access to this Citizen instance.")
 	}
-	
-// Get or create local user (map CitizenAuth UUID to local user)
-var localUserID int
-query := `SELECT get_or_create_local_user($1, $2, $3, $4)`
-err = database.DB.QueryRow(c.Context(), query, 
-    claims.UserID, 
-    claims.Email, 
-    claims.Name,
-    organizationID,
-).Scan(&localUserID)
-	
+
+	// Get or create local user (map CitizenAuth UUID to local user)
+	var localUserID int
+	query := `SELECT get_or_create_local_user($1, $2, $3, $4)`
+	err = database.DB.QueryRow(c.Context(), query,
+		claims.UserID,
+		claims.Email,
+		claims.Name,
+		organizationID,
+	).Scan(&localUserID)
+
 	if err != nil {
 		log.Printf("❌ [SSO-CALLBACK] Failed to get/create local user: %v", err)
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to create user mapping")
 	}
-	
-	log.Printf("🔗 [SSO-CALLBACK] Mapped CitizenAuth user %s to local user %d", claims.UserID, localUserID)
-	
-// Create Citizen SSO session (local Redis)
-deviceID := c.Get("User-Agent")
-ssoSessionID := createOrUpdateSSOSession(localUserID, c.Hostname(), deviceID, &organizationID)
 
-// Persist organization context for downstream handlers
-c.Locals("organization_id", organizationID)
-	
+	log.Printf("🔗 [SSO-CALLBACK] Mapped CitizenAuth user %s to local user %d", claims.UserID, localUserID)
+
+	// Create Citizen SSO session (local Redis)
+	deviceID := c.Get("User-Agent")
+	ssoSessionID := createOrUpdateSSOSession(localUserID, c.Hostname(), deviceID, &organizationID)
+
+	// Persist organization context for downstream handlers
+	c.Locals("organization_id", organizationID)
+
 	log.Printf("🔄 [SSO-CALLBACK] Created local SSO session: %s for user %d", ssoSessionID, localUserID)
-	
+
 	// Set SSO session cookie (Citizen's own cookie)
 	setSSOCookie(c, ssoSessionID, c.Hostname())
-	
+
 	log.Printf("🍪 [SSO-CALLBACK] SSO cookie set for domain: %s", c.Hostname())
 	utils.SecurityLog("User %d LOGIN via CitizenAuth SSO - Session: %s", localUserID, ssoSessionID)
-	
+
 	log.Printf("➡️  [SSO-CALLBACK] Redirecting to: %s", redirect)
-	
+
 	// Redirect to original destination
 	return c.Redirect(redirect, fiber.StatusTemporaryRedirect)
-}
-
-func isSecure() bool {
-	forceHTTPS := os.Getenv("FORCE_HTTPS")
-	return forceHTTPS == "true"
 }

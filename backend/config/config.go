@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 )
 
 // Config structure holds the application configuration settings
@@ -18,28 +17,16 @@ type Config struct {
 	EncryptionKey string
 	Port          string
 
-	// SSH Connection Settings
-	SSHHost     string
-	SSHPort     int
-	SSHUser     string
-	SSHPassword string
-	SSHKeyPath  string
-
 	// Redis Configuration
 	RedisHost     string
 	RedisPort     string
 	RedisPassword string
 	RedisDB       int
-
-	RequiresSSH bool
 }
 
 // LoadConfig loads configuration settings from environment variables
 func LoadConfig() (*Config, error) {
 	var missingVars []string
-
-	runtimeAdapter := strings.ToLower(getEnvWithDefault("PLATFORM_ADAPTER", "k3s"))
-	requiresSSH := runtimeAdapter == "" || runtimeAdapter == "dokku"
 
 	// Required environment variables check
 	requiredVars := map[string]string{
@@ -47,11 +34,6 @@ func LoadConfig() (*Config, error) {
 		"DB_USER":     os.Getenv("DB_USER"),
 		"DB_PASSWORD": os.Getenv("DB_PASSWORD"),
 		"DB_NAME":     os.Getenv("DB_NAME"),
-	}
-
-	if requiresSSH {
-		requiredVars["SSH_HOST"] = os.Getenv("SSH_HOST")
-		requiredVars["SSH_USER"] = os.Getenv("SSH_USER")
 	}
 
 	for key, value := range requiredVars {
@@ -70,14 +52,6 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("invalid DB_PORT: %w", err)
 	}
 
-	sshPort := 22
-	if requiresSSH {
-		sshPort, err = parsePort("SSH_PORT", "22")
-		if err != nil {
-			return nil, fmt.Errorf("invalid SSH_PORT: %w", err)
-		}
-	}
-
 	redisDB, err := parseRedisDB("REDIS_DB", "0")
 	if err != nil {
 		return nil, fmt.Errorf("invalid REDIS_DB: %w", err)
@@ -93,19 +67,11 @@ func LoadConfig() (*Config, error) {
 		EncryptionKey: os.Getenv("ENCRYPTION_KEY"),                 // No default - will be validated elsewhere
 		Port:          getEnvWithDefault("PORT", "3000"),
 
-		// SSH Settings
-		SSHHost:     os.Getenv("SSH_HOST"),
-		SSHPort:     sshPort,
-		SSHUser:     os.Getenv("SSH_USER"),
-		SSHPassword: os.Getenv("SSH_PASSWORD"), // Can be empty if using key auth
-		SSHKeyPath:  getEnvWithDefault("SSH_KEY_PATH", "~/.ssh/id_rsa"),
-
-		// Redis Configuration - optional, can have defaults for non-critical services
+		// Redis Configuration
 		RedisHost:     getEnvWithDefault("REDIS_HOST", "localhost"),
 		RedisPort:     getEnvWithDefault("REDIS_PORT", "6379"),
 		RedisPassword: os.Getenv("REDIS_PASSWORD"), // No default for security
 		RedisDB:       redisDB,
-		RequiresSSH:   requiresSSH,
 	}, nil
 }
 
@@ -164,14 +130,6 @@ func (c *Config) ValidateConfig() error {
 	}
 	if c.DBName == "" {
 		errors = append(errors, "DB_NAME is required")
-	}
-	if c.RequiresSSH {
-		if c.SSHHost == "" {
-			errors = append(errors, "SSH_HOST is required")
-		}
-		if c.SSHUser == "" {
-			errors = append(errors, "SSH_USER is required")
-		}
 	}
 
 	if len(errors) > 0 {

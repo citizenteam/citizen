@@ -3,32 +3,12 @@ package main
 import (
 	"backend/platform"
 	"backend/platform/k3s"
-	"fmt"
 	"log"
 	"os"
-	"strings"
 )
 
-// initPlatformAdapter initializes the platform adapter based on configuration
+// initPlatformAdapter initializes the K3s platform adapter
 func initPlatformAdapter() error {
-	adapterType := strings.ToLower(getEnvOrDefault("PLATFORM_ADAPTER", "k3s"))
-
-	log.Printf("🔧 Initializing platform adapter: %s", adapterType)
-
-	switch adapterType {
-	case "k3s":
-		return initK3sAdapter()
-	case "dokku":
-		// Dokku adapter is the default, already set in platform package
-		log.Println("✅ Using Dokku adapter (default)")
-		return nil
-	default:
-		return fmt.Errorf("unknown platform adapter: %s (supported: dokku, k3s)", adapterType)
-	}
-}
-
-// initK3sAdapter initializes the k3s adapter
-func initK3sAdapter() error {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	inCluster := getEnvOrDefault("K3S_IN_CLUSTER", "false") == "true"
 
@@ -50,7 +30,7 @@ func initK3sAdapter() error {
 	}
 
 	if err != nil {
-		return fmt.Errorf("failed to initialize k3s adapter: %w", err)
+		return err
 	}
 
 	platform.SetAdapter(adapter)

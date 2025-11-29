@@ -962,7 +962,7 @@ func GitHubWebhookHandler(c *fiber.Ctx) error {
 			// Update GitHub deployment status as successful
 			database.UpdateGitHubDeploymentStatus(appName, pushEvent.HeadCommit.ID, "success", &output, nil)
 
-			// Note: Traefik reload will be triggered automatically by dokku-traefik-watcher
+			// Note: Traefik reload will be triggered automatically by traefik-watcher
 			// after the container is restarted and fully ready
 		}
 	}()
@@ -2231,10 +2231,7 @@ func (s *stateStore) validate(state string, maxAge time.Duration) bool {
 	}
 	// Always delete to ensure single-use (replay protection)
 	delete(s.items, state)
-	if time.Since(created) > maxAge {
-		return false
-	}
-	return true
+	return time.Since(created) <= maxAge
 }
 
 func (s *stateStore) exists(state string) bool {

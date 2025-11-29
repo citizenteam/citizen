@@ -3,9 +3,10 @@ package handlers
 import (
 	"backend/services"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
-	"log"
+
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -88,7 +89,7 @@ func ValidateJWTForTraefik(c *fiber.Ctx) error {
 
 	// Get JWT validator (lazy loading)
 	validator := getOrInitValidator()
-	
+
 	// Validate JWT locally (fast path - no network call)
 	if validator != nil {
 		claims, err := validator.ValidateToken(token)
@@ -98,7 +99,7 @@ func ValidateJWTForTraefik(c *fiber.Ctx) error {
 			c.Set("X-Auth-Email", claims.Email)
 			c.Set("X-Auth-Name", claims.Name)
 			c.Set("X-Auth-Session-ID", claims.SessionID)
-			
+
 			if claims.OrganizationID != nil {
 				c.Set("X-Auth-Organization-ID", *claims.OrganizationID)
 			}
@@ -108,33 +109,14 @@ func ValidateJWTForTraefik(c *fiber.Ctx) error {
 			if claims.IsSuperAdmin {
 				c.Set("X-Auth-Super-Admin", "true")
 			}
-			
+
 			log.Printf("✅ [FORWARDAUTH] JWT validated for %s", claims.Email)
 			return c.SendStatus(fiber.StatusOK)
 		}
-		
+
 		log.Printf("❌ [FORWARDAUTH] Invalid token: %v", err)
 	}
 
 	// Token invalid - return 401 (Traefik will handle redirect)
 	return c.SendStatus(fiber.StatusUnauthorized)
 }
-
-func redirectToCitizenAuthLogin(c *fiber.Ctx, host, uri string) error {
-	citizenAuthURL := os.Getenv("CITIZENAUTH_URL")
-	if citizenAuthURL == "" {
-		citizenAuthURL = "http://localhost:8080"
-	}
-
-	proto := c.Get("X-Forwarded-Proto")
-	if proto == "" {
-		proto = "http"
-	}
-
-	originalURL := fmt.Sprintf("%s://%s%s", proto, host, uri)
-	loginURL := fmt.Sprintf("%s/login?redirect=%s", citizenAuthURL, url.QueryEscape(originalURL))
-
-	c.Set("Location", loginURL)
-	return c.SendStatus(fiber.StatusTemporaryRedirect)
-}
-

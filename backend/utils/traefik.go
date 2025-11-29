@@ -7,7 +7,7 @@ import (
 )
 
 func ReloadTraefik() error {
-	// Create a signal file that dokku-traefik-watcher will detect
+	// Create a signal file that traefik-watcher will detect
 	signalPath := "/tmp/traefik-reload-signal"
 	
 	// Create or touch the signal file

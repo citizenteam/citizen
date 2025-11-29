@@ -237,36 +237,6 @@ func clearSSOCookie(c *fiber.Ctx, host string) {
 	utils.AuthDebugLog("Cleared SSO cookie for host %s", host)
 }
 
-// extractSSOSessionFromURI removed - using cookie-only approach for security
-
-// buildSSOInitURL builds the SSO initialization URL
-func buildSSOInitURL(targetURL string) string {
-	protocol := "http://"
-	if isHttpsRequired() {
-		protocol = "https://"
-	}
-
-	loginHost := getLoginHost()
-	return fmt.Sprintf("%s%s/sso/init?target=%s", protocol, loginHost, url.QueryEscape(targetURL))
-}
-
-// buildLoginURL builds the login URL with redirect
-func buildLoginURL(targetURL string) string {
-	protocol := "http://"
-	if isHttpsRequired() {
-		protocol = "https://"
-	}
-
-	loginHost := getLoginHost()
-	cleanedURL := cleanViteParams(targetURL)
-
-	if isHttpsRequired() && strings.HasPrefix(cleanedURL, "http://") {
-		cleanedURL = strings.Replace(cleanedURL, "http://", "https://", 1)
-	}
-
-	return fmt.Sprintf("%s%s/login?redirect=%s", protocol, loginHost, url.QueryEscape(cleanedURL))
-}
-
 // validateAndGetSSOSession validates SSO session from cookie only (secure approach)
 func validateAndGetSSOSession(c *fiber.Ctx, forwardedUri string) (*SSOSession, string) {
 	// Debug: Log all cookies
@@ -1232,30 +1202,6 @@ func redirectToLogin(c *fiber.Ctx, originalURL string) error {
 	log.Printf("[AUTH] Redirecting to SSO Init: %s", ssoInitURL)
 	c.Set("Location", ssoInitURL)
 	return c.SendStatus(fiber.StatusTemporaryRedirect)
-}
-
-func cleanViteParams(originalURL string) string {
-	viteParams := []string{"?t=", "&t="}
-
-	cleanedURL := originalURL
-	for _, param := range viteParams {
-		if strings.Contains(cleanedURL, param) {
-			parts := strings.Split(cleanedURL, param)
-			if len(parts) > 1 {
-				afterParam := parts[1]
-				if ampIndex := strings.Index(afterParam, "&"); ampIndex != -1 {
-					cleanedURL = parts[0] + "&" + afterParam[ampIndex+1:]
-				} else {
-					cleanedURL = parts[0]
-				}
-			}
-		}
-	}
-
-	cleanedURL = strings.TrimSuffix(cleanedURL, "?")
-	cleanedURL = strings.TrimSuffix(cleanedURL, "&")
-
-	return cleanedURL
 }
 
 // ==================== HTML Templates ====================
