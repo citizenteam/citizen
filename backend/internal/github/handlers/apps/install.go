@@ -3,14 +3,16 @@ package apps
 import (
 	"backend/internal/database/api"
 	githubservices "backend/internal/github/services"
-	"backend/internal/utils"
+	"backend/pkg/logger"
+	"backend/pkg/response"
 	"fmt"
-	"log"
 	"net/url"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+var logInstall = logger.Default().WithComponent("github-apps")
 
 // StartGitHubInstall generates an install URL for existing app
 func StartGitHubInstall(c *fiber.Ctx) error {
@@ -31,25 +33,17 @@ func StartGitHubInstall(c *fiber.Ctx) error {
 	}
 
 	if appSlug == nil || appID == nil {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"GitHub App not configured yet",
-			nil,
-		))
+		return response.BadRequest(c, "GitHub App not configured yet")
 	}
 	stateService := githubservices.GetStateService()
 	state := stateService.GenerateInstallState()
 	installURL := fmt.Sprintf("https://github.com/apps/%s/installations/new?state=%s&redirect_url=%s",
 		url.QueryEscape(*appSlug), url.QueryEscape(state), url.QueryEscape(githubservices.GetAppInstallCallbackURL(c.BaseURL())))
 
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		"GitHub App install URL generated",
-		fiber.Map{
-			"install_url": installURL,
-			"state":       state,
-		},
-	))
+	return response.SuccessWithMessage(c, "GitHub App install URL generated", fiber.Map{
+		"install_url": installURL,
+		"state":       state,
+	})
 }
 
 // GitHubInstallCallback stores installation ID after user installs the App
@@ -64,39 +58,46 @@ func GitHubInstallCallback(c *fiber.Ctx) error {
 	} else {
 		statePreview = state
 	}
-	log.Printf("[GITHUB] Install callback received: installation_id=%d, state=%s, setup_action=%s",
-		installationID, statePreview, setupAction)
+	logInstall.WithFields(map[string]interface{}{
+		"installation_id": installationID,
+		"state":           statePreview,
+		"setup_action":    setupAction,
+	}).Info("Install callback received")
 
 	// State validation: either valid state from our store, or GitHub's setup_url redirect (has setup_action)
 	// GitHub's setup_url redirect doesn't preserve our state, so we accept requests with setup_action
 	stateService := githubservices.GetStateService()
 	if state != "" && !stateService.ValidateInstallState(state, 30*time.Minute) {
-		log.Printf("[GITHUB] Invalid state provided in install callback")
+		logInstall.Warn("Invalid state provided in install callback")
 		return c.Status(fiber.StatusBadRequest).SendString("Invalid state - please try again")
 	}
 
 	// If no state and no setup_action, this is an invalid request
 	if state == "" && setupAction == "" {
-		log.Printf("[GITHUB] Missing both state and setup_action in install callback - rejecting")
+		logInstall.Warn("Missing both state and setup_action in install callback - rejecting")
 		return c.Status(fiber.StatusBadRequest).SendString("Invalid request - missing state or setup_action")
 	}
 
 	if installationID == 0 {
-		log.Printf("[GITHUB] Missing installation_id in callback")
+		logInstall.Warn("Missing installation_id in callback")
 		return c.Status(fiber.StatusBadRequest).SendString("Missing installation_id")
 	}
 
 	if err := api.GitHub.UpdateGitHubInstallationID(c.Context(), int64(installationID)); err != nil {
-		log.Printf("[GITHUB] Failed to store installation ID: %v", err)
+		logInstall.WithField("error", err.Error()).Error("Failed to store installation ID")
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to save installation")
 	}
 
 	// Update in-memory config with latest installation
-	appID, appSlug, appName, privateKey, _ := githubservices.GetGitHubAppConfig()
-	if appID != nil && privateKey != nil {
+	appID, appSlug, appName, _, _ := githubservices.GetGitHubAppConfig()
+	if appID != nil && githubservices.HasPrivateKey() {
 		inst := int64(installationID)
-		githubservices.SetupGitHubApp(*appID, appSlug, privateKey, &inst, appName)
-		log.Printf("[GITHUB] ✅ GitHub App installed successfully: app_id=%d, installation_id=%d", *appID, installationID)
+		// Pass nil for privateKey - it's stored in DB, not in memory
+		githubservices.SetupGitHubApp(*appID, appSlug, nil, &inst, appName)
+		logInstall.WithFields(map[string]interface{}{
+			"app_id":          *appID,
+			"installation_id": installationID,
+		}).Info("GitHub App installed successfully")
 	}
 
 	// Override CSP for this page to allow postMessage to parent
@@ -145,15 +146,20 @@ func GitHubInstallCallback(c *fiber.Ctx) error {
 </div>
 <script>
   // Notify parent window and close
-  setTimeout(function() {
-    if (window.opener) {
-      window.opener.postMessage({ 
-        type: 'github-app-install-success',
-        installation_id: ` + fmt.Sprintf("%d", installationID) + `
-      }, '*');
-      window.close();
-    }
-  }, 1500);
+  (function() {
+    var targetOrigin = '` + c.BaseURL() + `';
+    setTimeout(function() {
+      if (window.opener) {
+        try {
+          window.opener.postMessage({ 
+            type: 'github-app-install-success',
+            installation_id: ` + fmt.Sprintf("%d", installationID) + `
+          }, targetOrigin);
+        } catch(e) { console.error('postMessage failed:', e); }
+        window.close();
+      }
+    }, 1500);
+  })();
   
   // Fallback: show close button after 3 seconds
   setTimeout(function() {

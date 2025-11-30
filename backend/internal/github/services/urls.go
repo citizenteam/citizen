@@ -1,6 +1,7 @@
 package services
 
 import (
+	"backend/pkg/errors"
 	"fmt"
 	"strings"
 )
@@ -34,7 +35,7 @@ func GetAppInstallCallbackURL(baseURL string) string {
 func ParseRepositoryFullName(fullName string) (owner, repo string, err error) {
 	parts := strings.Split(fullName, "/")
 	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid repository full name format (should be owner/repo): %s", fullName)
+		return "", "", errors.BadRequestf("invalid repository full name format (should be owner/repo): %s", fullName)
 	}
 	return parts[0], parts[1], nil
 }

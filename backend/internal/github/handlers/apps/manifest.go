@@ -3,16 +3,18 @@ package apps
 import (
 	handlers "backend/internal/github/handlers"
 	githubservices "backend/internal/github/services"
-	"backend/internal/utils"
+	"backend/pkg/logger"
+	"backend/pkg/response"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+var log = logger.Default().WithComponent("github-apps")
 
 // StartGitHubManifest kicks off GitHub App manifest flow (instance-owned app)
 // This returns a URL to the manifest redirect endpoint which will POST the manifest to GitHub
@@ -26,16 +28,12 @@ func StartGitHubManifest(c *fiber.Ctx) error {
 	// Return URL to our manifest redirect endpoint which will handle the POST
 	manifestURL := fmt.Sprintf("%s/api/v1/github/app/manifest/redirect?state=%s", baseURL, url.QueryEscape(state))
 
-	log.Printf("[GITHUB] Starting manifest flow with state: %s", state[:8]+"...")
+	log.WithField("state", state[:8]+"...").Info("Starting manifest flow")
 
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		"GitHub App manifest URL generated",
-		fiber.Map{
-			"manifest_url": manifestURL,
-			"state":        state,
-		},
-	))
+	return response.SuccessWithMessage(c, "GitHub App manifest URL generated", fiber.Map{
+		"manifest_url": manifestURL,
+		"state":        state,
+	})
 }
 
 // GitHubManifestRedirect renders an auto-submitting form to POST manifest to GitHub
@@ -48,7 +46,7 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 	// Validate state exists in our store (but don't consume it yet - callback will do that)
 	stateService := githubservices.GetStateService()
 	if !stateService.ExistsManifestState(state) {
-		log.Printf("[GITHUB] Invalid or expired state in manifest redirect: %s", state[:8]+"...")
+		log.WithField("state", state[:8]+"...").Warn("Invalid or expired state in manifest redirect")
 		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state - please try again")
 	}
 
@@ -93,13 +91,13 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 
 	body, err := json.Marshal(manifest)
 	if err != nil {
-		log.Printf("[GITHUB] Failed to marshal manifest: %v", err)
+		log.WithField("error", err.Error()).Error("Failed to marshal manifest")
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to create manifest")
 	}
 
 	action := fmt.Sprintf("https://github.com/settings/apps/new?state=%s", url.QueryEscape(state))
 
-	log.Printf("[GITHUB] Rendering manifest redirect form for app: %s", appName)
+	log.WithField("app_name", appName).Info("Rendering manifest redirect form")
 
 	// Override CSP for this page to allow form submission to GitHub
 	c.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; form-action 'self' https://github.com")
@@ -174,30 +172,33 @@ func GitHubManifestCallback(c *fiber.Ctx) error {
 	code := c.Query("code")
 	state := c.Query("state")
 
-	log.Printf("[GITHUB] Manifest callback received: code=%s, state=%s",
-		code[:min(8, len(code))]+"...", state[:min(8, len(state))]+"...")
+	log.WithFields(map[string]interface{}{
+		"code":  code[:min(8, len(code))] + "...",
+		"state": state[:min(8, len(state))] + "...",
+	}).Info("Manifest callback received")
 
 	if code == "" {
-		log.Printf("[GITHUB] Missing manifest code in callback")
+		log.Warn("Missing manifest code in callback")
 		return c.Status(fiber.StatusBadRequest).SendString("Missing manifest code - GitHub did not return a code")
 	}
 	stateService := githubservices.GetStateService()
 	if state == "" || !stateService.ValidateManifestState(state, 15*time.Minute) {
-		log.Printf("[GITHUB] Invalid or expired state in manifest callback")
+		log.Warn("Invalid or expired state in manifest callback")
 		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state - please try again")
 	}
 
 	// Convert the manifest code to get app credentials
 	manifestResp, err := githubservices.ConvertManifestCode(code)
 	if err != nil {
-		log.Printf("[GITHUB] Failed to convert manifest code: %v", err)
+		log.WithField("error", err.Error()).Error("Failed to convert manifest code")
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to convert manifest code - please try again")
 	}
 
-	log.Printf("[GITHUB] ✅ GitHub App created: id=%d, slug=%s, name=%s",
-		manifestResp.ID, manifestResp.Slug, manifestResp.Name)
-
-	redirectURI := githubservices.GetRedirectURI(c.BaseURL())
+	log.WithFields(map[string]interface{}{
+		"id":   manifestResp.ID,
+		"slug": manifestResp.Slug,
+		"name": manifestResp.Name,
+	}).Info("GitHub App created")
 
 	appID := manifestResp.ID
 	appSlug := manifestResp.Slug
@@ -205,16 +206,16 @@ func GitHubManifestCallback(c *fiber.Ctx) error {
 	privateKey := manifestResp.Pem
 
 	// Save the GitHub App configuration to database (including private key)
-	if err := githubservices.SaveGitHubConfigToDB(manifestResp.ClientID, manifestResp.ClientSecret, redirectURI, manifestResp.WebhookSecret, &appID, &appSlug, &appName, &privateKey, nil); err != nil {
-		log.Printf("[GITHUB] Failed to save manifest config to database: %v", err)
+	if err := githubservices.SaveGitHubAppConfigToDB(manifestResp.WebhookSecret, appID, appSlug, appName, privateKey, nil); err != nil {
+		log.WithField("error", err.Error()).Error("Failed to save manifest config to database")
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed to save GitHub App config")
 	}
 
 	// Setup in-memory caches
-	_ = githubservices.SetupGitHubOAuth(manifestResp.ClientID, manifestResp.ClientSecret, redirectURI, manifestResp.WebhookSecret)
+	githubservices.SetupGitHubWebhookSecret(manifestResp.WebhookSecret)
 	githubservices.SetupGitHubApp(appID, &appSlug, &privateKey, nil, &appName)
 
-	log.Printf("[GITHUB] GitHub App config saved successfully, redirecting to installation...")
+	log.Info("GitHub App config saved successfully, redirecting to installation...")
 
 	// Generate install state and redirect to GitHub App installation
 	installStateService := githubservices.GetStateService()

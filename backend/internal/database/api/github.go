@@ -370,6 +370,23 @@ func (g *GitHubAPI) SaveGitHubConfig(ctx context.Context, clientID, clientSecret
 	return nil
 }
 
+// SaveGitHubAppConfig saves GitHub App configuration to database (without OAuth fields)
+func (g *GitHubAPI) SaveGitHubAppConfig(ctx context.Context, webhookSecret string, appID int64, appSlug, appName string, privateKey string, installationID *int64) error {
+	query := `
+		WITH deactivated AS (
+			UPDATE github_config SET is_active = false WHERE is_active = true
+		)
+		INSERT INTO github_config (client_id, client_secret, webhook_secret, redirect_uri, app_id, app_slug, app_name, private_key, installation_id, is_active)
+		VALUES ('', '', $1, '', $2, $3, $4, $5, $6, true)`
+
+	_, err := Exec(ctx, query, webhookSecret, appID, appSlug, appName, privateKey, installationID)
+	if err != nil {
+		return fmt.Errorf("failed to save GitHub App config: %w", err)
+	}
+
+	return nil
+}
+
 // UpdateGitHubInstallationID updates installation id for active GitHub app config
 func (g *GitHubAPI) UpdateGitHubInstallationID(ctx context.Context, installationID int64) error {
 	query := `

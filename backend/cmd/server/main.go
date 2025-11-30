@@ -406,27 +406,26 @@ func startBackgroundTasks() {
 	}
 }
 
-// loadGitHubConfigFromDB loads GitHub configuration from database on startup
+// loadGitHubConfigFromDB loads GitHub App configuration from database on startup
 func loadGitHubConfigFromDB() {
 	utils.DatabaseDebugLog("Loading GitHub config from database...")
 
 	// Try to load config from database
-	clientID, clientSecret, redirectURI, webhookSecret, appID, appSlug, appName, privateKey, installationID, err := githubservices.LoadGitHubConfigFromDB()
+	webhookSecret, appID, appSlug, appName, installationID, err := githubservices.LoadGitHubConfigFromDB()
 	if err != nil {
 		utils.DatabaseDebugLog("No GitHub config found in database: %v", err)
 		return
 	}
 
-	// Setup GitHub OAuth in memory
-	err = githubservices.SetupGitHubOAuth(clientID, clientSecret, redirectURI, webhookSecret)
-	if err != nil {
-		utils.ErrorLog("Failed to setup GitHub OAuth from database: %v", err)
-		return
+	// Setup webhook secret in memory
+	githubservices.SetupGitHubWebhookSecret(webhookSecret)
+
+	// Setup GitHub App in memory (private key is loaded from DB when needed)
+	if appID != nil {
+		// Mark that private key exists (actual key is fetched from DB when needed)
+		privateKeyPlaceholder := "exists"
+		githubservices.SetupGitHubApp(*appID, appSlug, &privateKeyPlaceholder, installationID, appName)
 	}
 
-	if appID != nil && privateKey != nil {
-		githubservices.SetupGitHubApp(*appID, appSlug, privateKey, installationID, appName)
-	}
-
-	utils.StartupLog("GitHub configuration loaded from database")
+	utils.StartupLog("GitHub App configuration loaded from database")
 }

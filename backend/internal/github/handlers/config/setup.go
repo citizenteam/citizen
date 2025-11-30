@@ -4,35 +4,29 @@ import (
 	"backend/internal/database/api"
 	githubmodels "backend/internal/github/models"
 	githubservices "backend/internal/github/services"
-	"backend/internal/utils"
+	"backend/pkg/logger"
+	"backend/pkg/response"
 	"context"
-	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
 
-// SetupGitHubConfig handles GitHub OAuth configuration setup
+var log = logger.Default().WithComponent("github-config")
+
+// SetupGitHubConfig handles GitHub App configuration setup
 func SetupGitHubConfig(c *fiber.Ctx) error {
 	var req githubmodels.ConfigRequest
 
 	if err := c.BodyParser(&req); err != nil {
-		log.Printf("[GITHUB] Failed to parse request body: %v", err)
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid request body",
-			nil,
-		))
+		log.WithField("error", err.Error()).Warn("Failed to parse request body")
+		return response.BadRequest(c, "Invalid request body")
 	}
 
-	log.Printf("[GITHUB] SetupGitHubConfig called")
+	log.Debug("SetupGitHubConfig called")
 
-	// Normalize/trim user input to avoid hidden whitespace issues
-	req.ClientID = strings.TrimSpace(req.ClientID)
-	req.ClientSecret = strings.TrimSpace(req.ClientSecret)
-	req.RedirectURI = strings.TrimSpace(req.RedirectURI)
+	// Normalize/trim user input
 	if req.AppSlug != nil {
 		s := strings.TrimSpace(*req.AppSlug)
 		req.AppSlug = &s
@@ -46,20 +40,22 @@ func SetupGitHubConfig(c *fiber.Ctx) error {
 		req.PrivateKey = &pk
 	}
 
-	// Validate: either OAuth App (client_id/secret) or GitHub App (app_id)
-	hasOAuth := req.ClientID != "" && req.ClientSecret != ""
-	hasApp := req.AppID != nil
-	if !hasOAuth && !hasApp {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Provide either Client ID/Secret or App ID",
-			nil,
-		))
+	// Validate: GitHub App requires app_id and private_key
+	if req.AppID == nil {
+		return response.BadRequest(c, "App ID is required")
+	}
+	if req.PrivateKey == nil || *req.PrivateKey == "" {
+		return response.BadRequest(c, "Private Key is required")
 	}
 
-	// Default redirect URI
-	if req.RedirectURI == "" {
-		req.RedirectURI = githubservices.GetRedirectURI(c.BaseURL())
+	// App slug and name are required
+	appSlug := ""
+	if req.AppSlug != nil {
+		appSlug = *req.AppSlug
+	}
+	appName := ""
+	if req.AppName != nil {
+		appName = *req.AppName
 	}
 
 	// Generate webhook secret if not provided
@@ -68,112 +64,54 @@ func SetupGitHubConfig(c *fiber.Ctx) error {
 		webhookSecret = *req.WebhookSecretIn
 	} else {
 		webhookSecret = githubservices.GenerateSecureSecret()
-		log.Printf("[GITHUB] Generated new webhook secret")
+		log.Debug("Generated new webhook secret")
 	}
 
 	// Save to database (encrypted)
-	err := githubservices.SaveGitHubConfigToDB(
-		req.ClientID,
-		req.ClientSecret,
-		req.RedirectURI,
+	err := githubservices.SaveGitHubAppConfigToDB(
 		webhookSecret,
-		req.AppID,
-		req.AppSlug,
-		req.AppName,
-		req.PrivateKey,
+		*req.AppID,
+		appSlug,
+		appName,
+		*req.PrivateKey,
 		req.InstallationID,
 	)
 	if err != nil {
-		log.Printf("[GITHUB] Failed to save GitHub config: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			fmt.Sprintf("Failed to save GitHub configuration: %v", err),
-			nil,
-		))
+		log.WithField("error", err.Error()).Error("Failed to save GitHub config")
+		return response.InternalServerError(c, "Failed to save GitHub configuration")
 	}
 
-	// Setup GitHub OAuth in memory
-	if hasOAuth {
-		err = githubservices.SetupGitHubOAuth(req.ClientID, req.ClientSecret, req.RedirectURI, webhookSecret)
-		if err != nil {
-			log.Printf("[GITHUB] Failed to setup GitHub OAuth: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-				false,
-				"Failed to setup GitHub OAuth",
-				nil,
-			))
-		}
-	}
-	if hasApp && req.PrivateKey != nil {
-		githubservices.SetupGitHubApp(*req.AppID, req.AppSlug, req.PrivateKey, req.InstallationID, req.AppName)
-	}
+	// Setup in-memory config
+	githubservices.SetupGitHubWebhookSecret(webhookSecret)
+	githubservices.SetupGitHubApp(*req.AppID, req.AppSlug, req.PrivateKey, req.InstallationID, req.AppName)
 
-	log.Printf("[GITHUB] ✅ GitHub OAuth setup completed")
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		"GitHub OAuth setup completed successfully",
-		fiber.Map{
-			"configured": true,
-		},
-	))
+	log.Info("GitHub App setup completed")
+	return response.SuccessWithMessage(c, "GitHub App setup completed successfully", fiber.Map{
+		"configured": true,
+	})
 }
 
 // GetGitHubConfig returns current GitHub configuration (without secrets)
 func GetGitHubConfig(c *fiber.Ctx) error {
-	log.Printf("[CONFIG] GetGitHubConfig called")
+	log.Debug("GetGitHubConfig called")
 
 	// Check if configured
 	if !githubservices.IsGitHubConfigured() {
-		log.Printf("[CONFIG] GitHub not configured")
-		return c.JSON(utils.NewCitizenResponse(
-			true,
-			"GitHub not configured",
-			fiber.Map{
-				"configured": false,
-			},
-		))
+		log.Debug("GitHub not configured")
+		return response.Success(c, fiber.Map{"configured": false})
 	}
 
-	log.Printf("[CONFIG] GitHub is configured, fetching from DB")
+	log.Debug("GitHub is configured, fetching from DB")
 
 	// Get config from database
 	config, err := api.GitHub.GetGitHubConfig(context.Background())
 	if err != nil {
-		log.Printf("[CONFIG] Failed to load GitHub config from DB: %v", err)
-		// Config doesn't exist in DB, return not configured
-		return c.JSON(utils.NewCitizenResponse(
-			true,
-			"GitHub not configured",
-			fiber.Map{
-				"configured": false,
-			},
-		))
+		log.WithField("error", err.Error()).Debug("Failed to load GitHub config from DB")
+		return response.Success(c, fiber.Map{"configured": false})
 	}
 
-	// Decrypt only client ID for display
-	clientID, err := utils.DecryptString(config.ClientID)
-	if err != nil {
-		log.Printf("[CONFIG] Failed to decrypt config: %v", err)
-		// Decryption failed, config is corrupted - return not configured
-		return c.JSON(utils.NewCitizenResponse(
-			true,
-			"GitHub not configured",
-			fiber.Map{
-				"configured": false,
-			},
-		))
-	}
-
-	// Mask client ID for security (show only first 8 chars)
-	maskedClientID := clientID
-	if len(clientID) > 8 {
-		maskedClientID = clientID[:8] + "..."
-	}
-
-	response := fiber.Map{
+	configData := fiber.Map{
 		"configured":      true,
-		"client_id":       maskedClientID,
-		"redirect_uri":    config.RedirectURI,
 		"is_active":       true,
 		"configured_at":   config.CreatedAt.Format(time.RFC3339),
 		"app_id":          config.AppID,
@@ -182,12 +120,8 @@ func GetGitHubConfig(c *fiber.Ctx) error {
 		"installation_id": config.InstallationID,
 	}
 
-	log.Printf("[CONFIG] Returning response: %+v", response)
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		"GitHub configuration loaded",
-		response,
-	))
+	log.WithField("config", configData).Debug("Returning config response")
+	return response.Success(c, configData)
 }
 
 // DeleteGitHubConfig removes GitHub configuration
@@ -195,13 +129,9 @@ func DeleteGitHubConfig(c *fiber.Ctx) error {
 	// Soft delete - mark as inactive
 	err := api.GitHub.DeleteGitHubConfig(context.Background())
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to delete GitHub config",
-		})
+		return response.InternalServerError(c, "Failed to delete GitHub config")
 	}
 
-	log.Printf("[GITHUB] ✅ GitHub config deleted")
-	return c.JSON(fiber.Map{
-		"message": "GitHub configuration deleted successfully",
-	})
+	log.Info("GitHub config deleted")
+	return response.SuccessWithMessage(c, "GitHub configuration deleted successfully", nil)
 }

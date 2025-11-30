@@ -2,22 +2,6 @@ package models
 
 import "time"
 
-// OAuthResponse represents GitHub OAuth access token response
-type OAuthResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	Scope       string `json:"scope"`
-}
-
-// User represents GitHub user information
-type User struct {
-	ID        int    `json:"id"`
-	Login     string `json:"login"`
-	Name      string `json:"name"`
-	Email     string `json:"email"`
-	AvatarURL string `json:"avatar_url"`
-}
-
 // Repository represents GitHub repository information
 type Repository struct {
 	ID            int64  `json:"id"`
@@ -127,12 +111,8 @@ type PushEvent struct {
 	} `json:"head_commit"`
 }
 
-// ConfigRequest represents GitHub config setup request
-// Supports either OAuth App (client_id/secret) or GitHub App (app_id + private_key + installation_id)
+// ConfigRequest represents GitHub App config setup request
 type ConfigRequest struct {
-	ClientID        string  `json:"client_id"`
-	ClientSecret    string  `json:"client_secret"`
-	RedirectURI     string  `json:"redirect_uri"`
 	AppID           *int64  `json:"app_id"`
 	AppSlug         *string `json:"app_slug"`
 	AppName         *string `json:"app_name"`
@@ -143,8 +123,11 @@ type ConfigRequest struct {
 
 // ConfigResponse represents GitHub config response (without secrets)
 type ConfigResponse struct {
-	ClientID     string `json:"client_id"`
-	RedirectURI  string `json:"redirect_uri"`
-	IsActive     bool   `json:"is_active"`
-	ConfiguredAt string `json:"configured_at"`
+	Configured     bool   `json:"configured"`
+	IsActive       bool   `json:"is_active"`
+	ConfiguredAt   string `json:"configured_at"`
+	AppID          *int64 `json:"app_id"`
+	AppSlug        string `json:"app_slug"`
+	AppName        string `json:"app_name"`
+	InstallationID *int64 `json:"installation_id"`
 }

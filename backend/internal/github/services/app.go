@@ -192,16 +192,23 @@ func UpdateGitHubAppURLs(jwtToken string, updates models.AppURLUpdate) error {
 }
 
 // GetGitHubInstallationToken returns an installation access token using stored app config
+// Private key is fetched from DB and decrypted only when needed (not cached in memory)
 func GetGitHubInstallationToken() (*models.InstallationTokenResponse, error) {
-	appID, _, _, privateKey, installationID := GetGitHubAppConfig()
-	if appID == nil || privateKey == nil {
+	appID, _, _, _, installationID := GetGitHubAppConfig()
+	if appID == nil || !HasPrivateKey() {
 		return nil, errors.BadRequest("github app config missing")
 	}
 	if installationID == nil {
 		return nil, errors.BadRequest("github app installation missing")
 	}
 
-	jwtToken, err := generateGitHubAppJWT(*appID, *privateKey)
+	// Fetch private key from DB (not cached in memory for security)
+	privateKey, err := GetPrivateKeyFromDB()
+	if err != nil {
+		return nil, err
+	}
+
+	jwtToken, err := generateGitHubAppJWT(*appID, privateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -263,11 +270,13 @@ func ConvertManifestCode(code string) (*models.ManifestConversionResponse, error
 	}
 
 	if resp.StatusCode >= 300 {
+		// Log full error details internally for debugging
 		log.WithFields(map[string]interface{}{
 			"status_code": resp.StatusCode,
 			"response":    string(body),
 		}).Error("Manifest conversion failed")
-		return nil, errors.InternalErrorf("GitHub manifest conversion failed (status %d): %s", resp.StatusCode, string(body))
+		// Return generic error to user - don't expose GitHub API internals
+		return nil, errors.InternalError("Failed to create GitHub App. Please try again.")
 	}
 
 	var manifestResp models.ManifestConversionResponse

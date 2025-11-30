@@ -10,7 +10,6 @@ import (
 	dockerhandlers "backend/internal/docker/handlers"
 	githubappshandlers "backend/internal/github/handlers/apps"
 	githubconfighandlers "backend/internal/github/handlers/config"
-	githuboauthhandlers "backend/internal/github/handlers/oauth"
 	githubreposhandlers "backend/internal/github/handlers/repositories"
 	githubstatushandlers "backend/internal/github/handlers/status"
 	githubwebhookhandlers "backend/internal/github/handlers/webhook"
@@ -183,7 +182,6 @@ func SetupRoutes(app *fiber.App) {
 	// PUBLIC GitHub endpoints (no auth required - have their own security mechanisms)
 	// These are registered directly on api group to avoid middleware inheritance issues
 	api.Post("/github/webhook", githubwebhookhandlers.GitHubWebhookHandler)             // HMAC signature validation
-	api.Get("/github/auth/callback", githuboauthhandlers.GitHubAuthCallback)            // State token validation
 	api.Get("/github/app/manifest/callback", githubappshandlers.GitHubManifestCallback) // State token validation
 	api.Get("/github/app/manifest/redirect", githubappshandlers.GitHubManifestRedirect) // State token validation
 	api.Get("/github/app/install/callback", githubappshandlers.GitHubInstallCallback)   // State token validation
@@ -202,8 +200,7 @@ func SetupRoutes(app *fiber.App) {
 		// Existing GitHub App connection (App ID + Private Key)
 		github.Post("/app/connect-with-key", githubappshandlers.ConnectWithPrivateKey)
 
-		// GitHub OAuth endpoints
-		github.Get("/auth/init", githuboauthhandlers.GitHubAuthInit)
+		// GitHub status
 		github.Get("/status", githubstatushandlers.GetGitHubStatus)
 		github.Delete("/disconnect", githubstatushandlers.DisconnectGitHubAccount) // Disconnect GitHub account
 		github.Get("/repositories", githubreposhandlers.ListGitHubRepositories)

@@ -4,51 +4,42 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"sync"
 
 	"backend/internal/database/api"
 	"backend/internal/utils"
+	"backend/pkg/errors"
 	"backend/pkg/logger"
 )
 
-// GitHub OAuth configuration - stored in memory after first setup
+// GitHub App configuration - stored in memory after first setup
+// NOTE: Private key is NOT stored in memory for security reasons.
+// It is fetched from DB and decrypted only when needed (JWT generation).
 var (
-	gitHubClientID       string
-	gitHubClientSecret   string
-	gitHubRedirectURI    string
-	gitHubWebhookSecret  string
-	gitHubConfigMutex    sync.RWMutex
-	gitHubConfigured     bool
-	gitHubAppID          *int64
-	gitHubAppSlug        *string
-	gitHubAppName        *string
-	gitHubPrivateKey     *string
-	gitHubInstallationID *int64
+	gitHubWebhookSecret    string
+	gitHubConfigMutex      sync.RWMutex
+	gitHubConfigured       bool
+	gitHubAppID            *int64
+	gitHubAppSlug          *string
+	gitHubAppName          *string
+	gitHubPrivateKeyExists bool // Flag only - actual key fetched from DB when needed
+	gitHubInstallationID   *int64
 )
 
-// SetupGitHubOAuth sets up GitHub OAuth configuration in memory
-func SetupGitHubOAuth(clientID, clientSecret, redirectURI, webhookSecret string) error {
+// SetupGitHubWebhookSecret sets up GitHub webhook secret in memory
+func SetupGitHubWebhookSecret(webhookSecret string) {
 	gitHubConfigMutex.Lock()
 	defer gitHubConfigMutex.Unlock()
 
-	log := logger.Default().WithComponent("github-config")
-	log.WithField("client_id", clientID).Info("SetupGitHubOAuth called")
-
-	// Set memory variables
-	gitHubClientID = clientID
-	gitHubClientSecret = clientSecret
-	gitHubRedirectURI = redirectURI
 	gitHubWebhookSecret = webhookSecret
-	gitHubConfigured = true
 
-	log.WithField("configured", gitHubConfigured).Info("GitHub OAuth configured")
-
-	return nil
+	log := logger.Default().WithComponent("github-config")
+	log.Info("GitHub webhook secret configured")
 }
 
 // SetupGitHubApp stores GitHub App configuration (manifest flow)
+// NOTE: Private key is stored in DB only, not in memory, for security.
 func SetupGitHubApp(appID int64, appSlug *string, privateKey *string, installationID *int64, appName *string) {
 	gitHubConfigMutex.Lock()
 	defer gitHubConfigMutex.Unlock()
@@ -56,78 +47,76 @@ func SetupGitHubApp(appID int64, appSlug *string, privateKey *string, installati
 	gitHubAppID = &appID
 	gitHubAppSlug = appSlug
 	gitHubAppName = appName
-	gitHubPrivateKey = privateKey
+	gitHubPrivateKeyExists = privateKey != nil && *privateKey != ""
 	gitHubInstallationID = installationID
 
 	log := logger.Default().WithComponent("github-config")
 	log.WithFields(map[string]interface{}{
-		"app_id":          appID,
-		"app_slug":        appSlug,
-		"installation_id": installationID,
+		"app_id":             appID,
+		"app_slug":           appSlug,
+		"installation_id":    installationID,
+		"private_key_exists": gitHubPrivateKeyExists,
 	}).Info("GitHub App configured")
 }
 
-// IsGitHubConfigured checks if GitHub OAuth is configured
+// IsGitHubConfigured checks if GitHub App is configured
 func IsGitHubConfigured() bool {
 	gitHubConfigMutex.RLock()
 	defer gitHubConfigMutex.RUnlock()
 
-	// Check memory first
-	if gitHubConfigured {
-		return true
-	}
-
-	// If GitHub App (manifest) is set up with private key, treat as configured
-	if gitHubPrivateKey != nil && gitHubAppID != nil {
-		return true
-	}
-
-	// Check environment variables as fallback
-	return os.Getenv("GITHUB_CLIENT_ID") != "" &&
-		os.Getenv("GITHUB_CLIENT_SECRET") != "" &&
-		os.Getenv("GITHUB_REDIRECT_URI") != ""
+	// GitHub App is configured if we have app ID and private key
+	return gitHubPrivateKeyExists && gitHubAppID != nil
 }
 
-// GetGitHubConfig gets current GitHub configuration
-func GetGitHubConfig() (clientID, clientSecret, redirectURI, webhookSecret string) {
+// GetWebhookSecret gets the webhook secret for signature validation
+func GetWebhookSecret() string {
 	gitHubConfigMutex.RLock()
 	defer gitHubConfigMutex.RUnlock()
 
-	log := logger.Default().WithComponent("github-config")
-	log.Debug("GetGitHubConfig called")
-
-	// Try memory first
-	if gitHubConfigured {
-		log.WithField("source", "memory").Debug("Using memory config")
-		return gitHubClientID, gitHubClientSecret, gitHubRedirectURI, gitHubWebhookSecret
+	if gitHubWebhookSecret != "" {
+		return gitHubWebhookSecret
 	}
 
-	// Fallback to environment variables
-	clientID = os.Getenv("GITHUB_CLIENT_ID")
-	clientSecret = os.Getenv("GITHUB_CLIENT_SECRET")
-	redirectURI = os.Getenv("GITHUB_REDIRECT_URI")
-	webhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
-
-	log.WithField("source", "env").Debug("Using env vars")
-
-	// Update memory if found in env
-	if clientID != "" && clientSecret != "" && redirectURI != "" {
-		gitHubClientID = clientID
-		gitHubClientSecret = clientSecret
-		gitHubRedirectURI = redirectURI
-		gitHubWebhookSecret = webhookSecret
-		gitHubConfigured = true
-		log.Info("Updated memory config from env vars")
-	}
-
-	return
+	// Fallback to environment variable
+	return os.Getenv("GITHUB_WEBHOOK_SECRET")
 }
 
 // GetGitHubAppConfig returns manifest app configuration (if set)
+// NOTE: This returns nil for privateKey. Use GetPrivateKeyFromDB() to get the actual key.
 func GetGitHubAppConfig() (appID *int64, appSlug *string, appName *string, privateKey *string, installationID *int64) {
 	gitHubConfigMutex.RLock()
 	defer gitHubConfigMutex.RUnlock()
-	return gitHubAppID, gitHubAppSlug, gitHubAppName, gitHubPrivateKey, gitHubInstallationID
+	// Private key is intentionally NOT returned here for security
+	// Use GetPrivateKeyFromDB() when you actually need the key
+	return gitHubAppID, gitHubAppSlug, gitHubAppName, nil, gitHubInstallationID
+}
+
+// HasPrivateKey checks if a private key exists without exposing it
+func HasPrivateKey() bool {
+	gitHubConfigMutex.RLock()
+	defer gitHubConfigMutex.RUnlock()
+	return gitHubPrivateKeyExists
+}
+
+// GetPrivateKeyFromDB fetches and decrypts the private key from DB
+// This should only be called when the key is actually needed (e.g., JWT generation)
+// The key is NOT cached in memory for security reasons
+func GetPrivateKeyFromDB() (string, error) {
+	config, err := api.GitHub.GetGitHubConfigFull(context.Background())
+	if err != nil {
+		return "", errors.Wrap(err, errors.ErrCodeInternal, "failed to load GitHub config from database")
+	}
+
+	if config.PrivateKey == nil || *config.PrivateKey == "" {
+		return "", errors.BadRequest("private key not configured")
+	}
+
+	privateKey, err := utils.DecryptString(*config.PrivateKey)
+	if err != nil {
+		return "", errors.Wrap(err, errors.ErrCodeInternal, "failed to decrypt private key")
+	}
+
+	return privateKey, nil
 }
 
 // GenerateSecureSecret generates a cryptographically secure secret
@@ -137,78 +126,55 @@ func GenerateSecureSecret() string {
 	return hex.EncodeToString(bytes)
 }
 
-// SaveGitHubConfigToDB saves GitHub configuration to database (encrypted)
-func SaveGitHubConfigToDB(clientID, clientSecret, redirectURI, webhookSecret string, appID *int64, appSlug, appName *string, privateKey *string, installationID *int64) error {
+// maskSensitiveValue masks a sensitive value for safe logging
+// Shows first 4 chars and last 2 chars only
+func maskSensitiveValue(value string) string {
+	if len(value) <= 8 {
+		return "***"
+	}
+	return value[:4] + "..." + value[len(value)-2:]
+}
+
+// SaveGitHubAppConfigToDB saves GitHub App configuration to database (encrypted)
+func SaveGitHubAppConfigToDB(webhookSecret string, appID int64, appSlug, appName string, privateKey string, installationID *int64) error {
+	log := logger.Default().WithComponent("github-config")
+
 	// Encrypt sensitive data
-	encryptedClientID, err := utils.EncryptString(clientID)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt client ID: %w", err)
-	}
-
-	encryptedClientSecret, err := utils.EncryptString(clientSecret)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt client secret: %w", err)
-	}
-
 	encryptedWebhookSecret, err := utils.EncryptString(webhookSecret)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt webhook secret: %w", err)
+		return errors.Wrap(err, errors.ErrCodeInternal, "failed to encrypt webhook secret")
 	}
 
-	var encryptedPrivateKey *string
-	if privateKey != nil && *privateKey != "" {
-		encPk, err := utils.EncryptString(*privateKey)
-		if err != nil {
-			return fmt.Errorf("failed to encrypt private key: %w", err)
-		}
-		encryptedPrivateKey = &encPk
-	}
-
-	// Save to database - first deactivate old configs, then insert new
-	err = api.GitHub.SaveGitHubConfig(context.Background(), encryptedClientID, encryptedClientSecret, encryptedWebhookSecret, redirectURI, appID, appSlug, appName, encryptedPrivateKey, installationID)
+	encryptedPrivateKey, err := utils.EncryptString(privateKey)
 	if err != nil {
-		return fmt.Errorf("failed to save GitHub config to database: %w", err)
+		return errors.Wrap(err, errors.ErrCodeInternal, "failed to encrypt private key")
 	}
 
-	log := logger.Default().WithComponent("github-config")
-	log.Info("GitHub config saved to database")
+	// Save to database
+	err = api.GitHub.SaveGitHubAppConfig(context.Background(), encryptedWebhookSecret, appID, appSlug, appName, encryptedPrivateKey, installationID)
+	if err != nil {
+		return errors.Wrap(err, errors.ErrCodeInternal, "failed to save GitHub config to database")
+	}
+
+	log.WithField("app_id", appID).Info("GitHub App config saved to database")
 	return nil
 }
 
-// LoadGitHubConfigFromDB loads GitHub configuration from database (decrypted)
-func LoadGitHubConfigFromDB() (clientID, clientSecret, redirectURI, webhookSecret string, appID *int64, appSlug, appName *string, privateKey *string, installationID *int64, err error) {
+// LoadGitHubConfigFromDB loads GitHub App configuration from database
+func LoadGitHubConfigFromDB() (webhookSecret string, appID *int64, appSlug, appName *string, installationID *int64, err error) {
 	config, err := api.GitHub.GetGitHubConfigFull(context.Background())
 	if err != nil {
-		return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to load GitHub config from database: %w", err)
+		return "", nil, nil, nil, nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to load GitHub config from database")
 	}
 
-	// Decrypt sensitive data
-	clientID, err = utils.DecryptString(config.ClientID)
-	if err != nil {
-		return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to decrypt client ID: %w", err)
-	}
-
-	clientSecret, err = utils.DecryptString(config.ClientSecret)
-	if err != nil {
-		return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to decrypt client secret: %w", err)
-	}
-
+	// Decrypt webhook secret
 	webhookSecret, err = utils.DecryptString(config.WebhookSecret)
 	if err != nil {
-		return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to decrypt webhook secret: %w", err)
+		return "", nil, nil, nil, nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to decrypt webhook secret")
 	}
 
 	log := logger.Default().WithComponent("github-config")
 	log.Info("GitHub config loaded from database")
 
-	var decryptedPrivateKey *string
-	if config.PrivateKey != nil && *config.PrivateKey != "" {
-		if pk, decErr := utils.DecryptString(*config.PrivateKey); decErr == nil {
-			decryptedPrivateKey = &pk
-		} else {
-			return "", "", "", "", nil, nil, nil, nil, nil, fmt.Errorf("failed to decrypt private key: %w", decErr)
-		}
-	}
-
-	return clientID, clientSecret, config.RedirectURI, webhookSecret, config.AppID, config.AppSlug, config.AppName, decryptedPrivateKey, config.InstallationID, nil
+	return webhookSecret, config.AppID, config.AppSlug, config.AppName, config.InstallationID, nil
 }

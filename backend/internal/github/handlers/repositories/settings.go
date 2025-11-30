@@ -3,22 +3,20 @@ package repositories
 import (
 	"backend/internal/database/api"
 	githubservices "backend/internal/github/services"
-	"backend/internal/utils"
+	"backend/pkg/logger"
+	"backend/pkg/response"
 	"fmt"
-	"log"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+var logSettings = logger.Default().WithComponent("github-repos")
 
 // ToggleAutoDeploy toggles auto deploy for a repository
 func ToggleAutoDeploy(c *fiber.Ctx) error {
 	appName := c.Params("app_name")
 	if appName == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"App name is required",
-			nil,
-		))
+		return response.BadRequest(c, "App name is required")
 	}
 
 	var toggleData struct {
@@ -26,24 +24,19 @@ func ToggleAutoDeploy(c *fiber.Ctx) error {
 	}
 
 	if err := c.BodyParser(&toggleData); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid request body",
-			nil,
-		))
+		return response.BadRequest(c, "Invalid request body")
 	}
 
-	log.Printf("[GITHUB] ToggleAutoDeploy called for app %s, auto_deploy=%v", appName, toggleData.AutoDeploy)
+	logSettings.WithFields(map[string]interface{}{
+		"app_name":    appName,
+		"auto_deploy": toggleData.AutoDeploy,
+	}).Debug("ToggleAutoDeploy called")
 
 	// Get repository connection
 	repoConnection, err := api.GitHub.GetGitHubRepositoryConnectionByAppName(c.Context(), appName)
 	if err != nil {
-		log.Printf("[GITHUB] Failed to get repository connection: %v", err)
-		return c.Status(fiber.StatusNotFound).JSON(utils.NewCitizenResponse(
-			false,
-			"Repository not connected",
-			nil,
-		))
+		logSettings.WithField("error", err.Error()).Warn("Failed to get repository connection")
+		return response.NotFound(c, "Repository not connected")
 	}
 
 	var webhookID *int64 = repoConnection.WebhookID
@@ -51,7 +44,7 @@ func ToggleAutoDeploy(c *fiber.Ctx) error {
 	// Get access token for webhook management
 	accessToken, tokenErr := githubservices.GetAccessTokenOptional(c.Context(), nil)
 	if tokenErr != nil || accessToken == "" {
-		log.Printf("[GITHUB] Failed to get installation token")
+		logSettings.Debug("Failed to get installation token")
 		// Continue without webhook management, just update database
 	} else if repoConnection.FullName != "" {
 		owner, repoName, parseErr := githubservices.ParseRepositoryFullName(repoConnection.FullName)
@@ -63,9 +56,9 @@ func ToggleAutoDeploy(c *fiber.Ctx) error {
 				if webhookID == nil {
 					webhookID, err = githubservices.CreateOrFindWebhook(accessToken, owner, repoName, webhookURL)
 					if err != nil {
-						log.Printf("[GITHUB] Failed to create webhook: %v", err)
+						logSettings.WithField("error", err.Error()).Warn("Failed to create webhook")
 					} else if webhookID != nil {
-						log.Printf("[GITHUB] Created/found webhook with ID: %d", *webhookID)
+						logSettings.WithField("webhook_id", *webhookID).Info("Created/found webhook")
 					}
 				}
 			} else {
@@ -73,9 +66,9 @@ func ToggleAutoDeploy(c *fiber.Ctx) error {
 				if webhookID != nil {
 					err := githubservices.DeleteWebhook(accessToken, owner, repoName, *webhookID)
 					if err != nil {
-						log.Printf("[GITHUB] Failed to delete webhook: %v", err)
+						logSettings.WithField("error", err.Error()).Warn("Failed to delete webhook")
 					} else {
-						log.Printf("[GITHUB] Deleted webhook with ID: %d", *webhookID)
+						logSettings.WithField("webhook_id", *webhookID).Info("Deleted webhook")
 						webhookID = nil
 					}
 				}
@@ -86,64 +79,47 @@ func ToggleAutoDeploy(c *fiber.Ctx) error {
 	// Update database
 	err = api.GitHub.UpdateAutoDeploy(c.Context(), appName, toggleData.AutoDeploy, webhookID)
 	if err != nil {
-		log.Printf("[GITHUB] Failed to update auto deploy in database: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			"Failed to update auto deploy setting",
-			nil,
-		))
+		logSettings.WithField("error", err.Error()).Error("Failed to update auto deploy in database")
+		return response.InternalServerError(c, "Failed to update auto deploy setting")
 	}
 
 	statusText := map[bool]string{true: "enabled", false: "disabled"}[toggleData.AutoDeploy]
-	log.Printf("[GITHUB] ✅ Auto deploy %s for app: %s", statusText, appName)
+	logSettings.WithFields(map[string]interface{}{
+		"app_name": appName,
+		"status":   statusText,
+	}).Info("Auto deploy updated")
 
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		fmt.Sprintf("Auto deploy %s successfully", statusText),
-		fiber.Map{
-			"app_name":    appName,
-			"auto_deploy": toggleData.AutoDeploy,
-			"webhook_id":  webhookID,
-		},
-	))
+	return response.SuccessWithMessage(c, fmt.Sprintf("Auto deploy %s successfully", statusText), fiber.Map{
+		"app_name":    appName,
+		"auto_deploy": toggleData.AutoDeploy,
+		"webhook_id":  webhookID,
+	})
 }
 
 // GetRepositoryConnections lists connected repositories for user
 func GetRepositoryConnections(c *fiber.Ctx) error {
-	log.Printf("[GITHUB] GetRepositoryConnections called")
+	logSettings.Debug("GetRepositoryConnections called")
 
 	// Get current user from context
 	userID := c.Locals("user_id")
 	if userID == nil {
-		log.Printf("[GITHUB] User not authenticated")
-		return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-			false,
-			"User not authenticated",
-			nil,
-		))
+		logSettings.Warn("User not authenticated")
+		return response.Unauthorized(c, "User not authenticated")
 	}
 
-	log.Printf("[GITHUB] Getting repository connections for user: %v", userID)
+	logSettings.WithField("user_id", userID).Debug("Getting repository connections")
 
 	// Get repository connections from database
 	connections, err := api.GitHub.GetGitHubRepositoryConnections(c.Context(), userID.(int))
 	if err != nil {
-		log.Printf("[GITHUB] Failed to fetch repository connections: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			"Failed to fetch repository connections",
-			nil,
-		))
+		logSettings.WithField("error", err.Error()).Error("Failed to fetch repository connections")
+		return response.InternalServerError(c, "Failed to fetch repository connections")
 	}
 
-	log.Printf("[GITHUB] Found %d repository connections", len(connections))
+	logSettings.WithField("count", len(connections)).Debug("Found repository connections")
 
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		"Repository connections fetched successfully",
-		fiber.Map{
-			"connections": connections,
-			"total":       len(connections),
-		},
-	))
+	return response.SuccessWithMessage(c, "Repository connections fetched successfully", fiber.Map{
+		"connections": connections,
+		"total":       len(connections),
+	})
 }

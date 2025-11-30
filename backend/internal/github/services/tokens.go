@@ -2,9 +2,9 @@ package services
 
 import (
 	"context"
-	"fmt"
 
 	"backend/internal/database/api"
+	"backend/pkg/errors"
 )
 
 // GetAccessToken retrieves a GitHub access token for the given user.
@@ -19,11 +19,11 @@ func GetAccessToken(ctx context.Context, userID int) (string, error) {
 	// Fall back to user's personal access token
 	token, err := api.GitHub.GetUserGitHubAccessToken(ctx, userID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get GitHub access token: %w", err)
+		return "", errors.Wrap(err, errors.ErrCodeUnauthorized, "failed to get GitHub access token")
 	}
 
 	if token == "" {
-		return "", fmt.Errorf("GitHub access token is empty")
+		return "", errors.Unauthorized("GitHub access token is empty")
 	}
 
 	return token, nil

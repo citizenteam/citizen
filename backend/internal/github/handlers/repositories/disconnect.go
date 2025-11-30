@@ -3,48 +3,41 @@ package repositories
 import (
 	"backend/internal/database/api"
 	githubservices "backend/internal/github/services"
-	"backend/internal/utils"
-	"log"
+	"backend/pkg/logger"
+	"backend/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
 )
 
+var logDisconnect = logger.Default().WithComponent("github-repos")
+
 // DisconnectRepository disconnects a GitHub repository from Citizen app
 func DisconnectRepository(c *fiber.Ctx) error {
-	log.Printf("[GITHUB] DisconnectRepository called")
+	logDisconnect.Debug("DisconnectRepository called")
 
 	appName := c.Params("app_name")
 	if appName == "" {
-		log.Printf("[GITHUB] App name is required")
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"App name is required",
-			nil,
-		))
+		logDisconnect.Warn("App name is required")
+		return response.BadRequest(c, "App name is required")
 	}
 
 	// Get current user from context
 	userID := c.Locals("user_id")
 	if userID == nil {
-		log.Printf("[GITHUB] User not authenticated")
-		return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-			false,
-			"User not authenticated",
-			nil,
-		))
+		logDisconnect.Warn("User not authenticated")
+		return response.Unauthorized(c, "User not authenticated")
 	}
 
-	log.Printf("[GITHUB] Disconnecting repository for app: %s, user: %v", appName, userID)
+	logDisconnect.WithFields(map[string]interface{}{
+		"app_name": appName,
+		"user_id":  userID,
+	}).Debug("Disconnecting repository")
 
 	// Get repository connection from database to get webhook info
 	repoConnection, err := api.GitHub.GetGitHubRepositoryConnection(c.Context(), userID.(int), appName)
 	if err != nil {
-		log.Printf("[GITHUB] Repository connection not found: %v", err)
-		return c.Status(fiber.StatusNotFound).JSON(utils.NewCitizenResponse(
-			false,
-			"Repository connection not found",
-			nil,
-		))
+		logDisconnect.WithField("error", err.Error()).Debug("Repository connection not found")
+		return response.NotFound(c, "Repository connection not found")
 	}
 
 	webhookID := repoConnection.WebhookID
@@ -59,10 +52,10 @@ func DisconnectRepository(c *fiber.Ctx) error {
 		if parseErr == nil {
 			err = githubservices.DeleteWebhook(accessToken, owner, repoName, *webhookID)
 			if err != nil {
-				log.Printf("[GITHUB] Failed to delete webhook: %v", err)
+				logDisconnect.WithField("error", err.Error()).Warn("Failed to delete webhook")
 				// Continue with disconnection even if webhook deletion fails
 			} else {
-				log.Printf("[GITHUB] Webhook deleted successfully")
+				logDisconnect.Info("Webhook deleted successfully")
 			}
 		}
 	}
@@ -71,21 +64,13 @@ func DisconnectRepository(c *fiber.Ctx) error {
 	err = api.GitHub.DisconnectGitHubRepository(c.Context(), userID.(int), appName)
 
 	if err != nil {
-		log.Printf("[GITHUB] Failed to disconnect repository: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			"Failed to disconnect repository",
-			nil,
-		))
+		logDisconnect.WithField("error", err.Error()).Error("Failed to disconnect repository")
+		return response.InternalServerError(c, "Failed to disconnect repository")
 	}
 
-	log.Printf("[GITHUB] ✅ Repository disconnected from app: %s", appName)
+	logDisconnect.WithField("app_name", appName).Info("Repository disconnected")
 
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		"Repository disconnected successfully",
-		fiber.Map{
-			"app_name": appName,
-		},
-	))
+	return response.SuccessWithMessage(c, "Repository disconnected successfully", fiber.Map{
+		"app_name": appName,
+	})
 }

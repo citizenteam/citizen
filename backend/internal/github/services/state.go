@@ -1,19 +1,13 @@
 package services
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
-	"backend/pkg/errors"
 	"backend/pkg/logger"
 )
 
-// StateService manages OAuth state, manifest state, and installation state
+// StateService manages manifest state and installation state for GitHub App flows
 type StateService struct {
 	manifestStates *stateStore
 	installStates  *stateStore
@@ -124,101 +118,6 @@ func GetStateService() *StateService {
 		}
 	})
 	return globalStateService
-}
-
-// GenerateOAuthState generates a secure state parameter for OAuth flow
-// Format: "user_{userID}_{timestamp}_{randomComponent}"
-func (s *StateService) GenerateOAuthState(userID int) (string, error) {
-	randomBytes := make([]byte, 16)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return "", errors.Wrap(err, errors.ErrCodeInternal, "failed to generate secure random bytes")
-	}
-	randomComponent := hex.EncodeToString(randomBytes)
-	state := fmt.Sprintf("user_%d_%d_%s", userID, time.Now().Unix(), randomComponent)
-	return state, nil
-}
-
-// ValidateOAuthState validates OAuth state parameter and extracts user ID
-// Returns userID if valid, error otherwise
-func (s *StateService) ValidateOAuthState(state string, maxAgeSeconds int64) (int, error) {
-	if state == "" {
-		return 0, errors.BadRequest("missing state parameter")
-	}
-
-	// Validate state format: "user_{userID}_{timestamp}_{randomComponent}"
-	if !strings.HasPrefix(state, "user_") {
-		s.log.WithField("state", state[:min(20, len(state))]).Warn("Invalid state format")
-		return 0, errors.BadRequest("invalid state parameter format")
-	}
-
-	// Extract and validate parts
-	parts := strings.Split(state, "_")
-	if len(parts) != 4 {
-		s.log.WithField("parts_count", len(parts)).Warn("Invalid state parts count")
-		return 0, errors.BadRequest("invalid state parameter format")
-	}
-
-	// Extract userID
-	stateUserIDStr := parts[1]
-	userID, err := strconv.Atoi(stateUserIDStr)
-	if err != nil {
-		s.log.WithField("user_id_str", stateUserIDStr).Warn("Invalid userID in state")
-		return 0, errors.BadRequest("invalid state parameter")
-	}
-
-	timestampStr := parts[2]
-	randomComponent := parts[3]
-
-	// Validate random component format (should be 32 hex chars)
-	if len(randomComponent) != 32 {
-		s.log.WithFields(map[string]interface{}{
-			"user_id":          userID,
-			"random_component": randomComponent[:min(10, len(randomComponent))],
-			"expected_length":  32,
-			"actual_length":    len(randomComponent),
-		}).Warn("Invalid random component length")
-		return 0, errors.BadRequest("invalid state parameter")
-	}
-
-	// Validate that random component is hex
-	for _, char := range randomComponent {
-		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
-			s.log.WithFields(map[string]interface{}{
-				"user_id":          userID,
-				"random_component": randomComponent[:min(10, len(randomComponent))],
-			}).Warn("Invalid random component format (not hex)")
-			return 0, errors.BadRequest("invalid state parameter")
-		}
-	}
-
-	// Validate timestamp
-	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
-	if err != nil {
-		s.log.WithFields(map[string]interface{}{
-			"user_id":   userID,
-			"timestamp": timestampStr,
-		}).Warn("Invalid timestamp in state")
-		return 0, errors.BadRequest("invalid state parameter")
-	}
-
-	// Check if state is not too old
-	maxAge := maxAgeSeconds
-	currentTime := time.Now().Unix()
-	if currentTime-timestamp > maxAge {
-		s.log.WithFields(map[string]interface{}{
-			"user_id": userID,
-			"age":     currentTime - timestamp,
-			"max_age": maxAge,
-		}).Warn("Expired state")
-		return 0, errors.BadRequest("state parameter expired")
-	}
-
-	s.log.WithFields(map[string]interface{}{
-		"user_id": userID,
-		"state":   state[:min(20, len(state))],
-	}).Debug("OAuth state validated successfully")
-
-	return userID, nil
 }
 
 // GenerateManifestState generates a secure state for manifest flow

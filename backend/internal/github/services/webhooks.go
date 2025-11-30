@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,7 +20,7 @@ import (
 
 // CreateWebhook creates a GitHub webhook for repository
 func CreateWebhook(accessToken, owner, repo, webhookURL string) (*models.Webhook, error) {
-	clientID, clientSecret, redirectURI, webhookSecret := GetGitHubConfig()
+	webhookSecret := GetWebhookSecret()
 
 	log := logger.Default().WithComponent("github-webhook")
 	log.Debug("CreateWebhook called")
@@ -28,17 +29,8 @@ func CreateWebhook(accessToken, owner, repo, webhookURL string) (*models.Webhook
 		// If webhook secret is empty, generate one and save it
 		log.Info("Webhook secret is empty, generating new one")
 		webhookSecret = GenerateSecureSecret()
-
-		// Update the configuration
-		if clientID != "" && clientSecret != "" && redirectURI != "" {
-			err := SetupGitHubOAuth(clientID, clientSecret, redirectURI, webhookSecret)
-			if err != nil {
-				return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to update GitHub config with webhook secret")
-			}
-			log.Info("Generated and saved new webhook secret")
-		} else {
-			return nil, errors.BadRequest("github oauth not fully configured")
-		}
+		SetupGitHubWebhookSecret(webhookSecret)
+		log.Info("Generated and saved new webhook secret")
 	}
 
 	webhook := map[string]interface{}{
@@ -185,19 +177,21 @@ func DeleteWebhook(accessToken, owner, repo string, webhookID int64) error {
 	return nil
 }
 
-// ValidateGitHubSignature validates GitHub webhook signature
+// ValidateGitHubSignature validates GitHub webhook signature using constant-time comparison
+// to prevent timing attacks
 func ValidateGitHubSignature(payload []byte, signature string) bool {
 	if !strings.HasPrefix(signature, "sha256=") {
 		return false
 	}
 
-	_, _, _, webhookSecret := GetGitHubConfig()
+	webhookSecret := GetWebhookSecret()
 	if webhookSecret == "" {
 		return false
 	}
 
 	expectedSignature := "sha256=" + generateHMACSignature(payload, webhookSecret)
-	return signature == expectedSignature
+	// Use constant-time comparison to prevent timing attacks
+	return subtle.ConstantTimeCompare([]byte(signature), []byte(expectedSignature)) == 1
 }
 
 // generateHMACSignature generates HMAC SHA256 signature

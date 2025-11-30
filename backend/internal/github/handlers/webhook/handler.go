@@ -6,13 +6,14 @@ import (
 	githubmodels "backend/internal/github/models"
 	githubservices "backend/internal/github/services"
 	"backend/internal/platform"
-	"context"
+	"backend/pkg/logger"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+var log = logger.Default().WithComponent("github-webhook")
 
 // GitHubWebhookHandler handles GitHub webhook events
 func GitHubWebhookHandler(c *fiber.Ctx) error {
@@ -35,7 +36,10 @@ func GitHubWebhookHandler(c *fiber.Ctx) error {
 	eventType := c.Get("X-GitHub-Event")
 	deliveryID := c.Get("X-GitHub-Delivery")
 
-	log.Printf("[WEBHOOK] Received GitHub webhook: %s (ID: %s)", eventType, deliveryID)
+	log.WithFields(map[string]interface{}{
+		"event_type":  eventType,
+		"delivery_id": deliveryID,
+	}).Info("Received GitHub webhook")
 
 	// Only process push events for now
 	if eventType != "push" {
@@ -48,7 +52,7 @@ func GitHubWebhookHandler(c *fiber.Ctx) error {
 	// Parse push event
 	var pushEvent githubmodels.PushEvent
 	if err := c.BodyParser(&pushEvent); err != nil {
-		log.Printf("[WEBHOOK] Failed to parse push event: %v", err)
+		log.WithField("error", err.Error()).Warn("Failed to parse push event")
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid payload",
 		})
@@ -57,14 +61,20 @@ func GitHubWebhookHandler(c *fiber.Ctx) error {
 	// Extract branch name from ref (refs/heads/main -> main)
 	branch := strings.TrimPrefix(pushEvent.Ref, "refs/heads/")
 
-	log.Printf("[WEBHOOK] Push to %s on branch %s (commit: %s)",
-		pushEvent.Repository.FullName, branch, pushEvent.HeadCommit.ID)
+	log.WithFields(map[string]interface{}{
+		"repository": pushEvent.Repository.FullName,
+		"branch":     branch,
+		"commit":     pushEvent.HeadCommit.ID,
+	}).Info("Push event received")
 
 	// Find repository connection in database
 	repoConnection, err := api.GitHub.GetGitHubRepositoryByID(c.Context(), pushEvent.Repository.ID)
 	if err != nil {
-		log.Printf("[WEBHOOK] No repository connection found for %s (ID: %d): %v",
-			pushEvent.Repository.FullName, pushEvent.Repository.ID, err)
+		log.WithFields(map[string]interface{}{
+			"repository":    pushEvent.Repository.FullName,
+			"repository_id": pushEvent.Repository.ID,
+			"error":         err.Error(),
+		}).Debug("No repository connection found")
 		return c.JSON(fiber.Map{
 			"status": "ignored",
 			"reason": "Repository not connected or auto deploy disabled",
@@ -81,33 +91,22 @@ func GitHubWebhookHandler(c *fiber.Ctx) error {
 		appName,
 		autoDeploy,
 		deployBranch,
-		// Callback: Get authenticated Git URL
+		// Callback: Get authenticated Git URL using GitHub App installation token
 		func() (string, *int, error) {
 			gitURL := fmt.Sprintf("https://github.com/%s.git", pushEvent.Repository.FullName)
-			var userID *int
-			authenticatedGitURL := gitURL
 
-			// Try GitHub App installation token first (preferred)
-			if tokenResp, tokenErr := githubservices.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
-				log.Printf("[WEBHOOK] 🔑 Using GitHub App installation token for authentication")
-				authenticatedGitURL = strings.Replace(gitURL, "https://github.com/",
-					fmt.Sprintf("https://x-access-token:%s@github.com/", tokenResp.Token), 1)
-			} else {
-				// Fall back to user's OAuth token
-				repoConn, connErr := api.GitHub.GetGitHubRepositoryConnectionByAppName(context.Background(), appName)
-				if connErr == nil && repoConn.UserID != 0 {
-					uid := repoConn.UserID
-					userID = &uid
-
-					accessToken, tokenErr := api.GitHub.GetUserGitHubAccessToken(context.Background(), uid)
-					if tokenErr == nil && accessToken != "" {
-						log.Printf("[WEBHOOK] 🔑 Using user OAuth token for authentication (user: %d)", uid)
-						authenticatedGitURL = strings.Replace(gitURL, "https://github.com/",
-							fmt.Sprintf("https://x-access-token:%s@github.com/", accessToken), 1)
-					}
-				}
+			// Get GitHub App installation token
+			tokenResp, tokenErr := githubservices.GetGitHubInstallationToken()
+			if tokenErr != nil || tokenResp == nil {
+				log.WithField("error", tokenErr).Error("Failed to get GitHub App installation token")
+				return "", nil, fmt.Errorf("GitHub App not configured or installation token failed")
 			}
-			return authenticatedGitURL, userID, nil
+
+			log.Debug("Using GitHub App installation token for authentication")
+			authenticatedGitURL := strings.Replace(gitURL, "https://github.com/",
+				fmt.Sprintf("https://x-access-token:%s@github.com/", tokenResp.Token), 1)
+
+			return authenticatedGitURL, nil, nil
 		},
 		// Callback: Trigger deployment
 		func(gitURL string, branch string, userID *int) (string, error) {
@@ -140,7 +139,7 @@ func GitHubWebhookHandler(c *fiber.Ctx) error {
 	)
 
 	if err != nil {
-		log.Printf("[WEBHOOK] Failed to process webhook: %v", err)
+		log.WithField("error", err.Error()).Debug("Failed to process webhook")
 		return c.JSON(fiber.Map{
 			"status": "ignored",
 			"reason": err.Error(),
