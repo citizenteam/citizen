@@ -42,8 +42,8 @@ func ToggleAutoDeploy(c *fiber.Ctx) error {
 	var webhookID *int64 = repoConnection.WebhookID
 
 	// Get access token for webhook management
-	accessToken, tokenErr := githubservices.GetAccessTokenOptional(c.Context(), nil)
-	if tokenErr != nil || accessToken == "" {
+	accessToken := githubservices.GetAccessTokenOptional()
+	if accessToken == "" {
 		logSettings.Debug("Failed to get installation token")
 		// Continue without webhook management, just update database
 	} else if repoConnection.FullName != "" {

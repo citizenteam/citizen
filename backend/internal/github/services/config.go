@@ -19,7 +19,6 @@ import (
 var (
 	gitHubWebhookSecret    string
 	gitHubConfigMutex      sync.RWMutex
-	gitHubConfigured       bool
 	gitHubAppID            *int64
 	gitHubAppSlug          *string
 	gitHubAppName          *string
@@ -124,15 +123,6 @@ func GenerateSecureSecret() string {
 	bytes := make([]byte, 32)
 	rand.Read(bytes)
 	return hex.EncodeToString(bytes)
-}
-
-// maskSensitiveValue masks a sensitive value for safe logging
-// Shows first 4 chars and last 2 chars only
-func maskSensitiveValue(value string) string {
-	if len(value) <= 8 {
-		return "***"
-	}
-	return value[:4] + "..." + value[len(value)-2:]
 }
 
 // SaveGitHubAppConfigToDB saves GitHub App configuration to database (encrypted)

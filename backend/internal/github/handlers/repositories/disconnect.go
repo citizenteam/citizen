@@ -44,7 +44,7 @@ func DisconnectRepository(c *fiber.Ctx) error {
 	fullName := repoConnection.FullName
 
 	// Get access token using the service helper
-	accessToken, tokenErr := githubservices.GetAccessToken(c.Context(), userID.(int))
+	accessToken, tokenErr := githubservices.GetAccessToken()
 
 	if tokenErr == nil && accessToken != "" && webhookID != nil {
 		// Delete webhook if exists

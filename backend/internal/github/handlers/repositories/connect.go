@@ -50,7 +50,7 @@ func ConnectRepository(c *fiber.Ctx) error {
 	}
 
 	// Get access token using the service helper
-	accessToken, err := githubservices.GetAccessToken(c.Context(), userID.(int))
+	accessToken, err := githubservices.GetAccessToken()
 	if err != nil {
 		logConnect.WithField("error", err.Error()).Error("Failed to get GitHub access token")
 		return response.Unauthorized(c, "GitHub not connected or access token not found")
@@ -163,7 +163,7 @@ func ConnectExistingAppToRepository(c *fiber.Ctx) error {
 	}
 
 	// Get access token using the service helper
-	accessToken, err := githubservices.GetAccessToken(c.Context(), userID.(int))
+	accessToken, err := githubservices.GetAccessToken()
 	if err != nil {
 		logConnect.WithField("error", err.Error()).Warn("Failed to get GitHub access token")
 		return response.Unauthorized(c, "GitHub not connected or access token not found")

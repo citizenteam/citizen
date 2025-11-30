@@ -85,7 +85,7 @@ func DisconnectGitHubAccount(c *fiber.Ctx) error {
 			log.WithField("error", err.Error()).Warn("Failed to get repository connections")
 		} else {
 			// Get access token for webhook cleanup
-			accessToken, _ := githubservices.GetAccessToken(c.Context(), userID.(int))
+			accessToken, _ := githubservices.GetAccessToken()
 
 			// Disconnect each repository and clean up webhooks
 			for _, conn := range connections {
