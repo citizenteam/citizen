@@ -47,7 +47,7 @@ RUN go build \
     -ldflags="-w -s -X 'main.Version=${BUILD_VERSION}' -X 'main.BuildTime=${BUILD_TIME}' -X 'main.GitCommit=${GIT_COMMIT}' -extldflags '-static'" \
     -a -installsuffix cgo \
     -trimpath \
-    -o main .
+    -o main ./cmd/server
 
 # Compress binary (optional, can be disabled for faster builds)
 ARG COMPRESS_BINARY=true
