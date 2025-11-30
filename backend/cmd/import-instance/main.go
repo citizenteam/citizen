@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"backend/database"
-	"backend/utils"
+	"backend/internal/database"
+	"backend/internal/utils"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 )
