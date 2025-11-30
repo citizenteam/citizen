@@ -3,6 +3,7 @@ package handlers
 import (
 	"backend/internal/database"
 	"backend/internal/database/api"
+	githubservices "backend/internal/github/services"
 	"backend/internal/models"
 	"backend/internal/platform"
 	"backend/internal/platform/k3s"
@@ -208,7 +209,7 @@ func DeployApp(c *fiber.Ctx) error {
 	// Check if this is a GitHub URL and try to add authentication
 	if strings.Contains(deployData.GitURL, "github.com") {
 		// Try GitHub App installation token first (preferred)
-		if tokenResp, tokenErr := utils.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
+		if tokenResp, tokenErr := githubservices.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
 			fmt.Printf("[DEPLOY] 🔑 Using GitHub App installation token for authentication\n")
 			authenticatedGitURL = strings.Replace(deployData.GitURL, "https://github.com/",
 				fmt.Sprintf("https://x-access-token:%s@github.com/", tokenResp.Token), 1)

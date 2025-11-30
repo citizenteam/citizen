@@ -5,8 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"os"
+
+	"backend/pkg/logger"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -18,7 +19,8 @@ func VerifyWebhookSignature(c *fiber.Ctx, body []byte, timestamp, signature stri
 		webhookSecret = os.Getenv("CITIZENAUTH_WEBHOOK_SECRET")
 	}
 	if webhookSecret == "" {
-		log.Println("⚠️  [WEBHOOK] Webhook secret not set, skipping signature verification")
+		logger.Default().WithComponent("webhook-validator").
+			Warn("Webhook secret not set, skipping signature verification")
 		return true // Allow webhooks if secret not configured (development)
 	}
 

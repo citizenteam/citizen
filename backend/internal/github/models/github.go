@@ -2,15 +2,15 @@ package models
 
 import "time"
 
-// GitHubOAuthResponse represents GitHub OAuth access token response
-type GitHubOAuthResponse struct {
+// OAuthResponse represents GitHub OAuth access token response
+type OAuthResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
 	Scope       string `json:"scope"`
 }
 
-// GitHubUser represents GitHub user information
-type GitHubUser struct {
+// User represents GitHub user information
+type User struct {
 	ID        int    `json:"id"`
 	Login     string `json:"login"`
 	Name      string `json:"name"`
@@ -18,8 +18,8 @@ type GitHubUser struct {
 	AvatarURL string `json:"avatar_url"`
 }
 
-// GitHubRepository represents GitHub repository information
-type GitHubRepository struct {
+// Repository represents GitHub repository information
+type Repository struct {
 	ID            int64  `json:"id"`
 	Name          string `json:"name"`
 	FullName      string `json:"full_name"`
@@ -38,8 +38,8 @@ type GitHubRepository struct {
 	} `json:"permissions"`
 }
 
-// GitHubWebhook represents GitHub webhook information
-type GitHubWebhook struct {
+// Webhook represents GitHub webhook information
+type Webhook struct {
 	ID     int64  `json:"id"`
 	Name   string `json:"name"`
 	Active bool   `json:"active"`
@@ -51,14 +51,14 @@ type GitHubWebhook struct {
 	Events []string `json:"events"`
 }
 
-// GitHubInstallationTokenResponse represents installation token response
-type GitHubInstallationTokenResponse struct {
+// InstallationTokenResponse represents installation token response
+type InstallationTokenResponse struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// AppInstallation represents a GitHub App installation
-type AppInstallation struct {
+// Installation represents a GitHub App installation
+type Installation struct {
 	ID      int64 `json:"id"`
 	Account struct {
 		Login string `json:"login"`
@@ -70,8 +70,8 @@ type AppInstallation struct {
 	RepositorySelection string `json:"repository_selection"`
 }
 
-// GitHubAppInfo represents basic GitHub App information
-type GitHubAppInfo struct {
+// AppInfo represents basic GitHub App information
+type AppInfo struct {
 	ID    int64  `json:"id"`
 	Slug  string `json:"slug"`
 	Name  string `json:"name"`
@@ -80,8 +80,8 @@ type GitHubAppInfo struct {
 	} `json:"owner"`
 }
 
-// GitHubAppURLUpdate represents the URLs and webhook config to update on a GitHub App
-type GitHubAppURLUpdate struct {
+// AppURLUpdate represents the URLs and webhook config to update on a GitHub App
+type AppURLUpdate struct {
 	HomepageURL   string   `json:"homepage_url,omitempty"`
 	WebhookURL    string   `json:"webhook_url,omitempty"`
 	WebhookSecret string   `json:"webhook_secret,omitempty"` // New webhook secret to set
@@ -90,8 +90,61 @@ type GitHubAppURLUpdate struct {
 	SetupOnUpdate bool     `json:"setup_on_update,omitempty"`
 }
 
-// GitHubBranch represents a GitHub branch
-type GitHubBranch struct {
+// Branch represents a GitHub branch
+type Branch struct {
 	Name      string `json:"name"`
 	Protected bool   `json:"protected"`
+}
+
+// ManifestConversionResponse represents GitHub App manifest conversion response
+type ManifestConversionResponse struct {
+	ID            int64  `json:"id"`
+	Slug          string `json:"slug"`
+	Name          string `json:"name"`
+	ClientID      string `json:"client_id"`
+	ClientSecret  string `json:"client_secret"`
+	WebhookSecret string `json:"webhook_secret"`
+	Pem           string `json:"pem"`
+	HTMLURL       string `json:"html_url"`
+}
+
+// PushEvent represents a GitHub push webhook event
+type PushEvent struct {
+	Ref        string `json:"ref"`
+	Before     string `json:"before"`
+	After      string `json:"after"`
+	Repository struct {
+		ID       int64  `json:"id"`
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+	HeadCommit struct {
+		ID      string `json:"id"`
+		Message string `json:"message"`
+		Author  struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"author"`
+	} `json:"head_commit"`
+}
+
+// ConfigRequest represents GitHub config setup request
+// Supports either OAuth App (client_id/secret) or GitHub App (app_id + private_key + installation_id)
+type ConfigRequest struct {
+	ClientID        string  `json:"client_id"`
+	ClientSecret    string  `json:"client_secret"`
+	RedirectURI     string  `json:"redirect_uri"`
+	AppID           *int64  `json:"app_id"`
+	AppSlug         *string `json:"app_slug"`
+	AppName         *string `json:"app_name"`
+	PrivateKey      *string `json:"private_key"`
+	InstallationID  *int64  `json:"installation_id"`
+	WebhookSecretIn *string `json:"webhook_secret"`
+}
+
+// ConfigResponse represents GitHub config response (without secrets)
+type ConfigResponse struct {
+	ClientID     string `json:"client_id"`
+	RedirectURI  string `json:"redirect_uri"`
+	IsActive     bool   `json:"is_active"`
+	ConfiguredAt string `json:"configured_at"`
 }

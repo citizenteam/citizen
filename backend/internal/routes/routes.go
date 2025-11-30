@@ -8,7 +8,12 @@ import (
 	citizenauthhandlers "backend/internal/citizenauth/handlers"
 	deploymenthandlers "backend/internal/deployments/handlers"
 	dockerhandlers "backend/internal/docker/handlers"
-	githubhandlers "backend/internal/github/handlers"
+	githubappshandlers "backend/internal/github/handlers/apps"
+	githubconfighandlers "backend/internal/github/handlers/config"
+	githuboauthhandlers "backend/internal/github/handlers/oauth"
+	githubreposhandlers "backend/internal/github/handlers/repositories"
+	githubstatushandlers "backend/internal/github/handlers/status"
+	githubwebhookhandlers "backend/internal/github/handlers/webhook"
 	healthhandlers "backend/internal/health/handlers"
 	"backend/internal/middleware"
 	ssehandlers "backend/internal/sse/handlers"
@@ -177,11 +182,11 @@ func SetupRoutes(app *fiber.App) {
 
 	// PUBLIC GitHub endpoints (no auth required - have their own security mechanisms)
 	// These are registered directly on api group to avoid middleware inheritance issues
-	api.Post("/github/webhook", githubhandlers.GitHubWebhookHandler)                // HMAC signature validation
-	api.Get("/github/auth/callback", githubhandlers.GitHubAuthCallback)             // State token validation
-	api.Get("/github/app/manifest/callback", githubhandlers.GitHubManifestCallback) // State token validation
-	api.Get("/github/app/manifest/redirect", githubhandlers.GitHubManifestRedirect) // State token validation
-	api.Get("/github/app/install/callback", githubhandlers.GitHubInstallCallback)   // State token validation
+	api.Post("/github/webhook", githubwebhookhandlers.GitHubWebhookHandler)             // HMAC signature validation
+	api.Get("/github/auth/callback", githuboauthhandlers.GitHubAuthCallback)            // State token validation
+	api.Get("/github/app/manifest/callback", githubappshandlers.GitHubManifestCallback) // State token validation
+	api.Get("/github/app/manifest/redirect", githubappshandlers.GitHubManifestRedirect) // State token validation
+	api.Get("/github/app/install/callback", githubappshandlers.GitHubInstallCallback)   // State token validation
 
 	// PROTECTED GitHub endpoints (JWT or SSO session required)
 	github := api.Group("/github")
@@ -189,26 +194,26 @@ func SetupRoutes(app *fiber.App) {
 	github.Use(middleware.Protected()) // Fallback to SSO session
 	{
 		// GitHub config endpoints (admin only)
-		github.Post("/config", githubhandlers.SetupGitHubConfig)
-		github.Get("/config", githubhandlers.GetGitHubConfig)
-		github.Delete("/config", githubhandlers.DeleteGitHubConfig)
-		github.Post("/app/manifest/start", githubhandlers.StartGitHubManifest)
+		github.Post("/config", githubconfighandlers.SetupGitHubConfig)
+		github.Get("/config", githubconfighandlers.GetGitHubConfig)
+		github.Delete("/config", githubconfighandlers.DeleteGitHubConfig)
+		github.Post("/app/manifest/start", githubappshandlers.StartGitHubManifest)
 
 		// Existing GitHub App connection (App ID + Private Key)
-		github.Post("/app/connect-with-key", githubhandlers.ConnectWithPrivateKey)
+		github.Post("/app/connect-with-key", githubappshandlers.ConnectWithPrivateKey)
 
 		// GitHub OAuth endpoints
-		github.Get("/auth/init", githubhandlers.GitHubAuthInit)
-		github.Get("/status", githubhandlers.GetGitHubStatus)
-		github.Delete("/disconnect", githubhandlers.DisconnectGitHubAccount) // Disconnect GitHub account
-		github.Get("/repositories", githubhandlers.ListGitHubRepositories)
-		github.Get("/repos/:owner/:repo/branches", githubhandlers.GetRepositoryBranches)
-		github.Get("/connections", githubhandlers.GetRepositoryConnections)
-		github.Post("/connect", githubhandlers.ConnectRepository)
-		github.Post("/apps/:app_name/connect", githubhandlers.ConnectExistingAppToRepository) // Connect existing app to repo
-		github.Delete("/apps/:app_name/disconnect", githubhandlers.DisconnectRepository)
-		github.Put("/apps/:app_name/auto-deploy", githubhandlers.ToggleAutoDeploy)
-		github.Post("/app/install/start", githubhandlers.StartGitHubInstall)
+		github.Get("/auth/init", githuboauthhandlers.GitHubAuthInit)
+		github.Get("/status", githubstatushandlers.GetGitHubStatus)
+		github.Delete("/disconnect", githubstatushandlers.DisconnectGitHubAccount) // Disconnect GitHub account
+		github.Get("/repositories", githubreposhandlers.ListGitHubRepositories)
+		github.Get("/repos/:owner/:repo/branches", githubreposhandlers.GetRepositoryBranches)
+		github.Get("/connections", githubreposhandlers.GetRepositoryConnections)
+		github.Post("/connect", githubreposhandlers.ConnectRepository)
+		github.Post("/apps/:app_name/connect", githubreposhandlers.ConnectExistingAppToRepository) // Connect existing app to repo
+		github.Delete("/apps/:app_name/disconnect", githubreposhandlers.DisconnectRepository)
+		github.Put("/apps/:app_name/auto-deploy", githubreposhandlers.ToggleAutoDeploy)
+		github.Post("/app/install/start", githubappshandlers.StartGitHubInstall)
 	}
 
 	// SSE endpoints for real-time streaming (auth via middleware)

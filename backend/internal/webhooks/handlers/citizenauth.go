@@ -7,9 +7,10 @@ import (
 	"backend/internal/utils"
 	webhookmodels "backend/internal/webhooks/models"
 	webhookservices "backend/internal/webhooks/services"
-	"errors"
+	"backend/pkg/errors"
+	"backend/pkg/logger"
+	"backend/pkg/response"
 	"fmt"
-	"log"
 	"strconv"
 	"time"
 
@@ -27,43 +28,29 @@ func WebhookSessionUpdate(c *fiber.Ctx) error {
 	timestamp := c.Get("X-Webhook-Timestamp")
 
 	if signature == "" || timestamp == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Missing webhook headers",
-			nil,
-		))
+		return response.BadRequest(c, "Missing webhook headers")
 	}
 
 	// Verify timestamp (prevent replay attacks - max 5 minutes old)
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil || time.Now().Unix()-ts > 300 {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid or expired timestamp",
-			nil,
-		))
+		return response.BadRequest(c, "Invalid or expired timestamp")
 	}
 
 	// Verify HMAC signature
 	body := c.Body()
 	if !webhookservices.VerifyWebhookSignature(c, body, timestamp, signature) {
-		log.Printf("❌ [WEBHOOK-SESSION] Invalid signature from %s", c.IP())
-		return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid webhook signature",
-			nil,
-		))
+		logger.Default().WithComponent("webhook-session").
+			WithField("ip", c.IP()).
+			Error("Invalid signature")
+		return response.Unauthorized(c, "Invalid webhook signature")
 	}
 
 	// 2. Parse webhook payload
 	var payload webhookmodels.SessionWebhookPayload
 
 	if err := c.BodyParser(&payload); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid webhook payload",
-			nil,
-		))
+		return response.BadRequest(c, "Invalid webhook payload")
 	}
 
 	// 3. Process webhook event
@@ -71,43 +58,31 @@ func WebhookSessionUpdate(c *fiber.Ctx) error {
 	case "session.created":
 		// Login event - ensure CitizenAuth user is mapped to a local user
 		if payload.OrganizationID == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				"organization_id required",
-				nil,
-			))
+			return response.BadRequest(c, "organization_id required")
 		}
+
+		log := logger.Default().WithComponent("webhook-session").
+			WithField("user_id", payload.UserID).
+			WithField("organization_id", payload.OrganizationID)
 
 		assigned, assignErr := permissionService.IsUserAssignedToInstance(c.Context(), payload.UserID, payload.OrganizationID)
 		if assignErr != nil {
-			log.Printf("❌ [WEBHOOK-SESSION] Failed to verify assignment for %s: %v", payload.UserID, assignErr)
-			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-				false,
-				"Failed to verify user assignment",
-				nil,
-			))
+			log.WithField("error", assignErr).Error("Failed to verify assignment")
+			return response.InternalServerError(c, "Failed to verify user assignment")
 		}
 		if !assigned {
-			log.Printf("🚫 [WEBHOOK-SESSION] Ignoring login for %s - user not assigned to this instance", payload.UserID)
-			return c.JSON(utils.NewCitizenResponse(
-				true,
-				"User not assigned to this instance",
-				fiber.Map{
-					"user_id": payload.UserID,
-				},
-			))
+			log.Warn("Ignoring login - user not assigned to this instance")
+			return response.SuccessWithMessage(c, "User not assigned to this instance", fiber.Map{
+				"user_id": payload.UserID,
+			})
 		}
 
 		var localUserID int
 		mapQuery := `SELECT get_or_create_local_user($1, $2, $3, $4)`
 		err := database.DB.QueryRow(c.Context(), mapQuery, payload.UserID, payload.Email, payload.Name, payload.OrganizationID).Scan(&localUserID)
 		if err != nil {
-			log.Printf("❌ [WEBHOOK-SESSION] Failed to map CitizenAuth user %s: %v", payload.UserID, err)
-			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-				false,
-				"Failed to map user from CitizenAuth",
-				nil,
-			))
+			log.WithField("error", err).Error("Failed to map CitizenAuth user")
+			return response.InternalServerError(c, "Failed to map user from CitizenAuth")
 		}
 
 		deviceID := "CitizenAuth-SSO"
@@ -117,48 +92,43 @@ func WebhookSessionUpdate(c *fiber.Ctx) error {
 		ssoSessionID := authservices.CreateOrUpdateSSOSession(localUserID, c.Hostname(), deviceID, &payload.OrganizationID)
 		c.Locals("organization_id", payload.OrganizationID)
 
-		log.Printf("✅ [WEBHOOK-SESSION] Session created: citizenAuthUser=%s localUser=%d session=%s",
-			payload.UserID, localUserID, ssoSessionID)
+		log.WithFields(map[string]interface{}{
+			"citizen_auth_user": payload.UserID,
+			"local_user":        localUserID,
+			"session":           ssoSessionID,
+		}).Info("Session created")
 
 	case "session.destroyed":
 		// Logout event - clear local SSO sessions
+		log := logger.Default().WithComponent("webhook-session").
+			WithField("user_id", payload.UserID).
+			WithField("email", payload.Email)
+
 		// Map CitizenAuth UUID to local user ID
 		var localUserID int
 		query := `SELECT get_local_user_id($1, $2)`
 		err := database.DB.QueryRow(c.Context(), query, payload.UserID, payload.OrganizationID).Scan(&localUserID)
 
 		if err != nil || localUserID == 0 {
-			log.Printf("⚠️  [WEBHOOK-SESSION] User mapping not found for %s, skipping", payload.UserID)
-			return c.JSON(utils.NewCitizenResponse(
-				true,
-				"User mapping not found (user never logged in here)",
-				nil,
-			))
+			log.Warn("User mapping not found, skipping")
+			return response.SuccessWithMessage(c, "User mapping not found (user never logged in here)", nil)
 		}
 
-		log.Printf("🔗 [WEBHOOK-SESSION] Mapped user %s to local ID %d", payload.Email, localUserID)
+		log.WithField("local_user_id", localUserID).Info("Mapped user")
 
 		// Clear all SSO sessions for this user
 		authservices.ClearUserSSOSessions(localUserID)
 
-		log.Printf("✅ [WEBHOOK-SESSION] Session destroyed: user=%s (local ID: %d)", payload.Email, localUserID)
+		log.WithField("local_user_id", localUserID).Info("Session destroyed")
 
 	default:
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			fmt.Sprintf("Unknown event type: %s", payload.Event),
-			nil,
-		))
+		return response.BadRequest(c, fmt.Sprintf("Unknown event type: %s", payload.Event))
 	}
 
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		"Session webhook processed",
-		fiber.Map{
-			"event":   payload.Event,
-			"user_id": payload.UserID,
-		},
-	))
+	return response.SuccessWithMessage(c, "Session webhook processed", fiber.Map{
+		"event":   payload.Event,
+		"user_id": payload.UserID,
+	})
 }
 
 // WebhookPermissionUpdate handles permission updates from CitizenAuth
@@ -169,71 +139,55 @@ func WebhookPermissionUpdate(c *fiber.Ctx) error {
 	timestamp := c.Get("X-Webhook-Timestamp")
 
 	if signature == "" || timestamp == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Missing webhook headers",
-			nil,
-		))
+		return response.BadRequest(c, "Missing webhook headers")
 	}
 
 	// Verify timestamp (prevent replay attacks - max 5 minutes old)
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil || time.Now().Unix()-ts > 300 {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid or expired timestamp",
-			nil,
-		))
+		return response.BadRequest(c, "Invalid or expired timestamp")
 	}
 
 	// Verify HMAC signature
 	body := c.Body()
 	if !webhookservices.VerifyWebhookSignature(c, body, timestamp, signature) {
-		log.Printf("❌ [WEBHOOK] Invalid signature from %s", c.IP())
-		return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid webhook signature",
-			nil,
-		))
+		logger.Default().WithComponent("webhook-permission").
+			WithField("ip", c.IP()).
+			Error("Invalid signature")
+		return response.Unauthorized(c, "Invalid webhook signature")
 	}
 
 	// 2. Parse webhook payload
 	var payload webhookmodels.PermissionWebhookPayload
 
 	if err := c.BodyParser(&payload); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid webhook payload",
-			nil,
-		))
+		return response.BadRequest(c, "Invalid webhook payload")
 	}
+
+	log := logger.Default().WithComponent("webhook-permission").
+		WithField("event", payload.Event).
+		WithField("user_id", payload.UserID).
+		WithField("app_id", payload.AppID)
 
 	// 3. Process webhook event
 	if err := webhookservices.ProcessPermissionEvent(c.Context(), payload); err != nil {
 		if payload.Event == "permission.granted" && payload.OrganizationID == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				"organization_id required",
-				nil,
-			))
+			return response.BadRequest(c, "organization_id required")
 		}
-		log.Printf("❌ [WEBHOOK] Failed to process permission event: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			"Failed to process webhook: "+err.Error(),
-			nil,
-		))
+		log.WithField("error", err).Error("Failed to process permission event")
+
+		var appErr *errors.Error
+		if errors.As(err, &appErr) {
+			return response.ErrorWithCode(c, fiber.StatusInternalServerError, appErr.Code, appErr.Message)
+		}
+		return response.InternalServerError(c, "Failed to process webhook: "+err.Error())
 	}
 
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		"Webhook processed successfully",
-		fiber.Map{
-			"event":   payload.Event,
-			"user_id": payload.UserID,
-			"app_id":  payload.AppID,
-		},
-	))
+	return response.SuccessWithMessage(c, "Webhook processed successfully", fiber.Map{
+		"event":   payload.Event,
+		"user_id": payload.UserID,
+		"app_id":  payload.AppID,
+	})
 }
 
 // WebhookInstanceLifecycle handles lifecycle events like instance deletion from CitizenAuth.
@@ -242,172 +196,110 @@ func WebhookInstanceLifecycle(c *fiber.Ctx) error {
 	timestamp := c.Get("X-Webhook-Timestamp")
 
 	if signature == "" || timestamp == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Missing webhook headers",
-			nil,
-		))
+		return response.BadRequest(c, "Missing webhook headers")
 	}
 
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil || time.Now().Unix()-ts > 300 {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid or expired timestamp",
-			nil,
-		))
+		return response.BadRequest(c, "Invalid or expired timestamp")
 	}
 
 	body := c.Body()
 	if !webhookservices.VerifyWebhookSignature(c, body, timestamp, signature) {
-		log.Printf("❌ [WEBHOOK-LIFECYCLE] Invalid signature from %s", c.IP())
-		return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid webhook signature",
-			nil,
-		))
+		logger.Default().WithComponent("webhook-lifecycle").
+			WithField("ip", c.IP()).
+			Error("Invalid signature")
+		return response.Unauthorized(c, "Invalid webhook signature")
 	}
 
 	var payload webhookmodels.InstanceLifecycleWebhookPayload
 
 	if err := c.BodyParser(&payload); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"Invalid webhook payload",
-			nil,
-		))
+		return response.BadRequest(c, "Invalid webhook payload")
 	}
+
+	log := logger.Default().WithComponent("webhook-lifecycle").
+		WithField("event", payload.Event)
 
 	// Process lifecycle events
 	switch payload.Event {
 	case "instance.deleted":
 		if payload.InstanceID == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				"instance_id required",
-				nil,
-			))
+			return response.BadRequest(c, "instance_id required")
 		}
 
 		instanceUUID, err := uuid.Parse(payload.InstanceID)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				"Invalid instance_id format",
-				nil,
-			))
+			return response.BadRequest(c, "Invalid instance_id format")
 		}
+
+		log = log.WithField("instance_id", instanceUUID)
 
 		orgID, err := database.DeleteCitizenauthInstance(c.Context(), instanceUUID)
 		if err != nil {
 			if errors.Is(err, database.ErrCitizenauthInstanceNotFound) {
-				log.Printf("ℹ️  [WEBHOOK-LIFECYCLE] Instance %s already cleaned", instanceUUID)
-				return c.JSON(utils.NewCitizenResponse(
-					true,
-					"Instance already cleaned",
-					fiber.Map{
-						"instance_id": instanceUUID,
-					},
-				))
+				log.Info("Instance already cleaned")
+				return response.SuccessWithMessage(c, "Instance already cleaned", fiber.Map{
+					"instance_id": instanceUUID,
+				})
 			}
 
-			log.Printf("❌ [WEBHOOK-LIFECYCLE] Failed to delete instance %s: %v", instanceUUID, err)
-			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-				false,
-				"Failed to cleanup instance",
-				nil,
-			))
+			log.WithField("error", err).Error("Failed to delete instance")
+			return response.InternalServerError(c, "Failed to cleanup instance")
 		}
 
-		log.Printf("🧹 [WEBHOOK-LIFECYCLE] Instance %s deleted (org %s). Reason: %s", instanceUUID, orgID, payload.Reason)
+		log.WithFields(map[string]interface{}{
+			"organization_id": orgID,
+			"reason":          payload.Reason,
+		}).Info("Instance deleted")
 
-		return c.JSON(utils.NewCitizenResponse(
-			true,
-			"Instance cleanup completed",
-			fiber.Map{
-				"instance_id":     instanceUUID,
-				"organization_id": orgID,
-			},
-		))
+		return response.SuccessWithMessage(c, "Instance cleanup completed", fiber.Map{
+			"instance_id":     instanceUUID,
+			"organization_id": orgID,
+		})
 
 	case "app.challenge.created":
 		if payload.Domain == "" || payload.ChallengeURL == "" || payload.ChallengeBody == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				"domain, challenge_url and challenge_body required",
-				nil,
-			))
+			return response.BadRequest(c, "domain, challenge_url and challenge_body required")
 		}
 		host, path, err := webhookservices.ParseChallengeURL(payload.ChallengeURL)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				err.Error(),
-				nil,
-			))
+			return response.BadRequest(c, err.Error())
 		}
 		if err := utils.AddHTTPChallengeEntry(host, path, payload.ChallengeBody); err != nil {
-			log.Printf("❌ [WEBHOOK-LIFECYCLE] Failed to persist challenge: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-				false,
-				"Failed to store HTTP challenge",
-				nil,
-			))
+			log.WithField("error", err).Error("Failed to persist challenge")
+			return response.InternalServerError(c, "Failed to store HTTP challenge")
 		}
 		if err := utils.ReloadTraefik(); err != nil {
-			log.Printf("⚠️  [WEBHOOK-LIFECYCLE] Traefik reload after challenge add failed: %v", err)
+			log.WithField("error", err).Warn("Traefik reload after challenge add failed")
 		}
-		return c.JSON(utils.NewCitizenResponse(
-			true,
-			"HTTP challenge registered",
-			fiber.Map{
-				"domain": payload.Domain,
-			},
-		))
+		return response.SuccessWithMessage(c, "HTTP challenge registered", fiber.Map{
+			"domain": payload.Domain,
+		})
 
 	case "app.challenge.completed":
 		if payload.Domain == "" || payload.ChallengeURL == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				"domain and challenge_url required",
-				nil,
-			))
+			return response.BadRequest(c, "domain and challenge_url required")
 		}
 		host, path, err := webhookservices.ParseChallengeURL(payload.ChallengeURL)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-				false,
-				err.Error(),
-				nil,
-			))
+			return response.BadRequest(c, err.Error())
 		}
 		if removed, err := utils.RemoveHTTPChallengeEntry(host, path); err != nil {
-			log.Printf("❌ [WEBHOOK-LIFECYCLE] Failed to remove challenge: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-				false,
-				"Failed to remove HTTP challenge",
-				nil,
-			))
+			log.WithField("error", err).Error("Failed to remove challenge")
+			return response.InternalServerError(c, "Failed to remove HTTP challenge")
 		} else if !removed {
-			log.Printf("ℹ️  [WEBHOOK-LIFECYCLE] Challenge already removed for %s", payload.ChallengeURL)
+			log.WithField("challenge_url", payload.ChallengeURL).Info("Challenge already removed")
 		}
 		if err := utils.ReloadTraefik(); err != nil {
-			log.Printf("⚠️  [WEBHOOK-LIFECYCLE] Traefik reload after challenge cleanup failed: %v", err)
+			log.WithField("error", err).Warn("Traefik reload after challenge cleanup failed")
 		}
-		return c.JSON(utils.NewCitizenResponse(
-			true,
-			"HTTP challenge cleanup completed",
-			fiber.Map{
-				"domain": payload.Domain,
-			},
-		))
+		return response.SuccessWithMessage(c, "HTTP challenge cleanup completed", fiber.Map{
+			"domain": payload.Domain,
+		})
 
 	default:
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			fmt.Sprintf("Unknown lifecycle event: %s", payload.Event),
-			nil,
-		))
+		return response.BadRequest(c, fmt.Sprintf("Unknown lifecycle event: %s", payload.Event))
 	}
 }
 
@@ -417,21 +309,18 @@ func GetPermissionsForCitizenAuth(c *fiber.Ctx) error {
 	userID := c.Query("user_id")
 	orgID := c.Query("organization_id")
 	if userID == "" || orgID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(utils.NewCitizenResponse(
-			false,
-			"user_id and organization_id query parameters required",
-			nil,
-		))
+		return response.BadRequest(c, "user_id and organization_id query parameters required")
 	}
 
 	ctx := c.Context()
 	permissions, err := permissionService.GetUserPermissions(ctx, userID, orgID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			"Failed to get permissions",
-			nil,
-		))
+		logger.Default().WithComponent("webhook-permissions").
+			WithField("user_id", userID).
+			WithField("organization_id", orgID).
+			WithField("error", err).
+			Error("Failed to get permissions")
+		return response.InternalServerError(c, "Failed to get permissions")
 	}
 
 	// Convert permissions to response format
@@ -444,14 +333,10 @@ func GetPermissionsForCitizenAuth(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.JSON(utils.NewCitizenResponse(
-		true,
-		"Permissions retrieved",
-		fiber.Map{
-			"user_id":         userID,
-			"organization_id": orgID,
-			"permissions":     apps,
-			"count":           len(apps),
-		},
-	))
+	return response.SuccessWithMessage(c, "Permissions retrieved", fiber.Map{
+		"user_id":         userID,
+		"organization_id": orgID,
+		"permissions":     apps,
+		"count":           len(apps),
+	})
 }

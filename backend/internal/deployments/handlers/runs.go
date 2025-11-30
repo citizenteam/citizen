@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"backend/internal/database/api"
+	githubservices "backend/internal/github/services"
 	"backend/internal/platform"
 	"backend/internal/utils"
 	"context"
@@ -263,7 +264,7 @@ func executeDeployment(runID, appName, gitURL, gitBranch, builder string, userID
 	authenticatedGitURL := gitURL
 	if strings.Contains(gitURL, "github.com") {
 		// Try GitHub App installation token first (preferred)
-		if tokenResp, tokenErr := utils.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
+		if tokenResp, tokenErr := githubservices.GetGitHubInstallationToken(); tokenErr == nil && tokenResp != nil {
 			log.Printf("[DEPLOY] Using GitHub App installation token for authentication")
 			authenticatedGitURL = strings.Replace(gitURL, "https://github.com/",
 				fmt.Sprintf("https://x-access-token:%s@github.com/", tokenResp.Token), 1)

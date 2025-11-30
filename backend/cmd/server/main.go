@@ -13,7 +13,7 @@ import (
 
 	authservices "backend/internal/auth/services"
 	"backend/internal/database"
-	githubhandlers "backend/internal/github/handlers"
+	githubservices "backend/internal/github/services"
 	"backend/internal/middleware"
 	"backend/internal/routes"
 	"backend/internal/services"
@@ -411,21 +411,21 @@ func loadGitHubConfigFromDB() {
 	utils.DatabaseDebugLog("Loading GitHub config from database...")
 
 	// Try to load config from database
-	clientID, clientSecret, redirectURI, webhookSecret, appID, appSlug, appName, privateKey, installationID, err := githubhandlers.LoadGitHubConfigFromDB()
+	clientID, clientSecret, redirectURI, webhookSecret, appID, appSlug, appName, privateKey, installationID, err := githubservices.LoadGitHubConfigFromDB()
 	if err != nil {
 		utils.DatabaseDebugLog("No GitHub config found in database: %v", err)
 		return
 	}
 
 	// Setup GitHub OAuth in memory
-	err = utils.SetupGitHubOAuth(clientID, clientSecret, redirectURI, webhookSecret)
+	err = githubservices.SetupGitHubOAuth(clientID, clientSecret, redirectURI, webhookSecret)
 	if err != nil {
 		utils.ErrorLog("Failed to setup GitHub OAuth from database: %v", err)
 		return
 	}
 
 	if appID != nil && privateKey != nil {
-		utils.SetupGitHubApp(*appID, appSlug, privateKey, installationID, appName)
+		githubservices.SetupGitHubApp(*appID, appSlug, privateKey, installationID, appName)
 	}
 
 	utils.StartupLog("GitHub configuration loaded from database")
