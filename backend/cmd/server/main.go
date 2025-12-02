@@ -104,8 +104,7 @@ func main() {
 		utils.StartupLog("📡 Starting permission change subscriber...")
 		go func() {
 			time.Sleep(2 * time.Second) // Wait for Redis to be fully ready
-			permService := services.NewPermissionService()
-			subscriber := services.NewPermissionSubscriber(permService)
+			subscriber := services.NewPermissionSubscriber()
 
 			ctx := context.Background()
 			if err := subscriber.Start(ctx); err != nil {

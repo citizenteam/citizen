@@ -12,8 +12,8 @@ import (
 const (
 	// TokenPrefix is the prefix for all Citizen API tokens
 	TokenPrefix = "ct_"
-	// TokenLength is the total length of the token (excluding prefix)
-	TokenLength = 40
+	// TokenLength is the total length of the token (excluding prefix) - 64 hex chars = 256 bits
+	TokenLength = 64
 	// PrefixDisplayLength is how many characters of the token to show for identification
 	PrefixDisplayLength = 8
 )
@@ -61,30 +61,22 @@ func IsTokenExpired(expiresAt *time.Time) bool {
 	return time.Now().After(*expiresAt)
 }
 
-// ExtractAPIToken extracts API token from Authorization header or query parameter
-func ExtractAPIToken(authHeader, queryToken string) string {
-	// Check Authorization header first
-	if authHeader != "" {
-		// Support both "Bearer token" and raw token formats
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token := strings.TrimPrefix(authHeader, "Bearer ")
-			if ValidateAPITokenFormat(token) {
-				return token
-			}
-		} else if ValidateAPITokenFormat(authHeader) {
-			return authHeader
-		}
+// ExtractAPIToken extracts API token from Authorization header only
+// NOTE: Query parameter support removed for security - tokens in URLs can leak via logs, referer headers, browser history
+func ExtractAPIToken(authHeader string) string {
+	if authHeader == "" {
+		return ""
 	}
 
-	// Check query parameter
-	if queryToken != "" && ValidateAPITokenFormat(queryToken) {
-		return queryToken
+	// Support both "Bearer token" and raw token formats
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if ValidateAPITokenFormat(token) {
+			return token
+		}
+	} else if ValidateAPITokenFormat(authHeader) {
+		return authHeader
 	}
 
 	return ""
-}
-
-// GetOperationFromEndpoint is deprecated - API tokens now have full access when enabled
-func GetOperationFromEndpoint(method, endpoint string) string {
-	return "*" // All operations allowed
 }

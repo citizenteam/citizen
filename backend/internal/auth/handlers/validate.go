@@ -112,22 +112,25 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 	}
 
 	// Try API Token authentication (if app has API access enabled)
+	// NOTE: Query parameter token support removed for security
 	if appName != "" {
-		queryToken := c.Query("token")
-
-		if token := tokens.ExtractAPIToken(authHeader, queryToken); token != "" && appName != "" {
+		if token := tokens.ExtractAPIToken(authHeader); token != "" && appName != "" {
 			// Check if app has API access enabled (simple on/off check)
 			hasAccess, err := api.AppAPIAccess.IsAppAPIAccessEnabled(c.Context(), appName)
 
 			if err == nil && hasAccess {
-				// Validate API token
-				user, err := api.APITokens.ValidateAPIToken(c.Context(), token)
+				// Validate API token with full context for audit logging
+				clientIP := c.IP()
+				userAgent := c.Get("User-Agent")
+				citizenauthUserID, _ := c.Locals("citizenauth_user_id").(string)
+				orgID, _ := c.Locals("organization_id").(string)
+				user, err := api.APITokens.ValidateAPIToken(c.Context(), token, clientIP, userAgent, appName, citizenauthUserID, orgID)
 				if err == nil && user != nil {
 					utils.AuthDebugLog("API token validation successful for app: %s, User: %d", appName, user.ID)
 
 					// Update token usage asynchronously
 					go func() {
-						api.APITokens.UpdateTokenUsage(c.Context(), token, c.IP())
+						api.APITokens.UpdateTokenUsage(c.Context(), token, clientIP)
 					}()
 
 					return c.SendStatus(fiber.StatusOK)

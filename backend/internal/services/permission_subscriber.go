@@ -1,36 +1,41 @@
 package services
 
 import (
-	"backend/internal/database"
 	"context"
 	"encoding/json"
-	"log"
+
+	"backend/internal/database"
+	rbacservice "backend/internal/rbac/service"
+	"backend/pkg/logger"
 
 	"github.com/redis/go-redis/v9"
 )
 
+var subLog = logger.Default().WithComponent("permission-subscriber")
+
 // PermissionSubscriber listens to permission change events from CitizenAuth
 type PermissionSubscriber struct {
-	permissionService *PermissionService
-	redisClient       *redis.Client
-	channel           string
+	rbac        *rbacservice.Service
+	redisClient *redis.Client
+	channel     string
 }
 
 // PermissionChangeEvent represents a permission change event
 type PermissionChangeEvent struct {
-	Type      string `json:"type"`      // permission_update, permission_revoke
-	UserID    string `json:"user_id"`
-	AppID     string `json:"app_id"`
-	Role      string `json:"role,omitempty"`
-	Timestamp int64  `json:"timestamp"`
+	Type           string `json:"type"`            // permission_update, permission_revoke
+	UserID         string `json:"user_id"`         // CitizenAuth user UUID
+	OrganizationID string `json:"organization_id"` // Organization UUID
+	AppID          string `json:"app_id"`
+	Role           string `json:"role,omitempty"`
+	Timestamp      int64  `json:"timestamp"`
 }
 
 // NewPermissionSubscriber creates a new permission subscriber
-func NewPermissionSubscriber(permService *PermissionService) *PermissionSubscriber {
+func NewPermissionSubscriber() *PermissionSubscriber {
 	return &PermissionSubscriber{
-		permissionService: permService,
-		redisClient:       database.RedisClient,
-		channel:           "auth:permission_change",
+		rbac:        rbacservice.Default(),
+		redisClient: database.RedisClient,
+		channel:     "citizen:permission_change", // Local channel for cache invalidation
 	}
 }
 
@@ -38,7 +43,7 @@ func NewPermissionSubscriber(permService *PermissionService) *PermissionSubscrib
 // This should be called as a background goroutine in main.go
 func (ps *PermissionSubscriber) Start(ctx context.Context) error {
 	if ps.redisClient == nil {
-		log.Println("⚠️  [PERMISSION-SUB] Redis not available, subscriber disabled")
+		subLog.Warn("Redis not available, subscriber disabled")
 		return nil
 	}
 
@@ -46,16 +51,16 @@ func (ps *PermissionSubscriber) Start(ctx context.Context) error {
 	pubsub := ps.redisClient.Subscribe(ctx, ps.channel)
 	defer pubsub.Close()
 
-	log.Printf("📡 [PERMISSION-SUB] Subscribed to channel: %s", ps.channel)
+	subLog.WithField("channel", ps.channel).Info("Subscribed to channel")
 
 	// Receive subscription confirmation
 	_, err := pubsub.Receive(ctx)
 	if err != nil {
-		log.Printf("❌ [PERMISSION-SUB] Failed to subscribe: %v", err)
+		subLog.WithField("error", err.Error()).Error("Failed to subscribe")
 		return err
 	}
 
-	log.Println("✅ [PERMISSION-SUB] Subscription confirmed, listening for events...")
+	subLog.Info("Subscription confirmed, listening for events...")
 
 	// Listen for messages
 	ch := pubsub.Channel()
@@ -67,7 +72,7 @@ func (ps *PermissionSubscriber) Start(ctx context.Context) error {
 			}
 			go ps.handlePermissionChange(msg.Payload)
 		case <-ctx.Done():
-			log.Println("🛑 [PERMISSION-SUB] Shutting down subscriber")
+			subLog.Info("Shutting down subscriber")
 			return ctx.Err()
 		}
 	}
@@ -77,28 +82,55 @@ func (ps *PermissionSubscriber) Start(ctx context.Context) error {
 func (ps *PermissionSubscriber) handlePermissionChange(payload string) {
 	var event PermissionChangeEvent
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		log.Printf("❌ [PERMISSION-SUB] Failed to parse event: %v", err)
+		subLog.WithField("error", err.Error()).Error("Failed to parse event")
 		return
 	}
 
-	log.Printf("📨 [PERMISSION-SUB] Received event: type=%s, user=%s, app=%s",
-		event.Type, event.UserID, event.AppID)
+	log := subLog.WithFields(map[string]interface{}{
+		"type":    event.Type,
+		"user_id": event.UserID,
+		"app_id":  event.AppID,
+		"org_id":  event.OrganizationID,
+	})
 
-	// Invalidate cache for this user
-	// Currently we don't have cache, but when implemented:
-	// ps.invalidateUserCache(event.UserID)
+	log.Debug("Received permission change event")
 
-	log.Printf("✅ [PERMISSION-SUB] Event processed successfully")
+	// Invalidate RBAC cache for this user
+	if event.UserID != "" && event.OrganizationID != "" {
+		ps.rbac.InvalidateCache(event.UserID, event.OrganizationID)
+		log.Info("RBAC cache invalidated")
+	}
 }
 
-// invalidateUserCache invalidates permission cache for a specific user
-// Permission caching will be implemented when Redis-based caching layer is added
-// This will reduce database queries for frequent permission checks
-func (ps *PermissionSubscriber) invalidateUserCache(userID string) {
-	// Future implementation:
-	// - Delete key: citizen:perms:user:{userID} from Redis
-	// - Force fresh DB query on next permission check
-	
-	log.Printf("🔄 [PERMISSION-SUB] Cache invalidation for user %s (not yet implemented)", userID)
-}
+// SubscribeToExternalChannel subscribes to CitizenAuth's permission channel
+// This is for events published directly from CitizenAuth (not local events)
+func (ps *PermissionSubscriber) SubscribeToExternalChannel(ctx context.Context, channel string) error {
+	if ps.redisClient == nil {
+		subLog.Warn("Redis not available, external subscriber disabled")
+		return nil
+	}
 
+	pubsub := ps.redisClient.Subscribe(ctx, channel)
+	defer pubsub.Close()
+
+	subLog.WithField("channel", channel).Info("Subscribed to external channel")
+
+	_, err := pubsub.Receive(ctx)
+	if err != nil {
+		subLog.WithField("error", err.Error()).Error("Failed to subscribe to external channel")
+		return err
+	}
+
+	ch := pubsub.Channel()
+	for {
+		select {
+		case msg := <-ch:
+			if msg == nil {
+				continue
+			}
+			go ps.handlePermissionChange(msg.Payload)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}

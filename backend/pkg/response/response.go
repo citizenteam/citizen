@@ -134,3 +134,13 @@ func InternalServerError(c *fiber.Ctx, message string) error {
 	}
 	return Error(c, fiber.StatusInternalServerError, message)
 }
+
+// Created sends a 201 Created response with message and data
+func Created(c *fiber.Ctx, message string, data interface{}) error {
+	return c.Status(fiber.StatusCreated).JSON(Response{
+		Success:   true,
+		Message:   message,
+		Data:      data,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+}

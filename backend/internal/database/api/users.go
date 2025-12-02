@@ -254,4 +254,9 @@ func (u *UserAPI) UserExists(ctx context.Context, username, email string) (bool,
 	}
 
 	return count > 0, nil
-} 
+}
+
+// Note: Permission checks moved to internal/rbac/domain/
+// Use: rbacCtx.IsInstanceAdmin() for __all__ + admin check
+// Use: rbacCtx.IsAppAdmin(appID) for specific app admin check
+// Use: rbacCtx.CanDeployApp(appID) for deploy permission check

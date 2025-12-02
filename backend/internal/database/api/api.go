@@ -22,6 +22,68 @@ func InitDB(db *pgxpool.Pool) {
 	DB = db
 }
 
+// SetRLSContext sets user IDs and organization ID for RLS policies
+// Call this at the start of each request that needs RLS
+// localUserID: integer ID from users table
+// citizenauthUserID: CitizenAuth UUID string (for app_permissions check)
+// orgID: Organization UUID string
+func SetRLSContext(ctx context.Context, localUserID int, citizenauthUserID, orgID string) error {
+	if DB == nil {
+		return errors.New("database connection not initialized")
+	}
+
+	// Validate UUID formats to prevent SQL injection
+	if citizenauthUserID != "" && !isValidUUID(citizenauthUserID) {
+		return errors.New("invalid citizenauth user ID format")
+	}
+	if orgID != "" && !isValidUUID(orgID) {
+		return errors.New("invalid organization ID format")
+	}
+
+	// Use set_config with parameterized values (safe from SQL injection)
+	// set_config(setting_name, new_value, is_local) - is_local=true for transaction scope
+	_, err := DB.Exec(ctx, "SELECT set_config('app.current_local_user_id', $1, true)", fmt.Sprintf("%d", localUserID))
+	if err != nil {
+		return fmt.Errorf("failed to set local user ID: %w", err)
+	}
+
+	if citizenauthUserID != "" {
+		_, err = DB.Exec(ctx, "SELECT set_config('app.current_citizenauth_user_id', $1, true)", citizenauthUserID)
+		if err != nil {
+			return fmt.Errorf("failed to set citizenauth user ID: %w", err)
+		}
+	}
+
+	if orgID != "" {
+		_, err = DB.Exec(ctx, "SELECT set_config('app.current_org_id', $1, true)", orgID)
+		if err != nil {
+			return fmt.Errorf("failed to set organization ID: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// isValidUUID validates UUID format (simple regex-free check)
+func isValidUUID(s string) bool {
+	// UUID format: 8-4-4-4-12 hex characters with dashes
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // errorRow implements pgx.Row interface to return errors when DB is not available
 type errorRow struct {
 	err error
@@ -36,7 +98,7 @@ func safeRecover(operation string) error {
 	if r := recover(); r != nil {
 		stack := debug.Stack()
 		log.Printf("PANIC RECOVERED in %s: %v\nStack trace:\n%s", operation, r, stack)
-		
+
 		// Convert panic to error
 		switch v := r.(type) {
 		case error:
@@ -58,19 +120,19 @@ func QueryRow(ctx context.Context, query string, args ...interface{}) pgx.Row {
 			// Return a row that will return the error when scanned
 		}
 	}()
-	
+
 	if DB == nil {
 		log.Printf("QueryRow: database connection not initialized")
 		// Return a mock row that will return error when scanned
 		// This is a workaround since we can't return nil from this function signature
 		return &errorRow{err: errors.New("database connection not initialized")}
 	}
-	
+
 	// Validate arguments (log warning but don't fail)
 	if err := ValidateArgs(args...); err != nil {
 		log.Printf("QueryRow argument validation warning: %v", err)
 	}
-	
+
 	return DB.QueryRow(ctx, query, args...)
 }
 
@@ -82,16 +144,16 @@ func QueryRowSafe(ctx context.Context, query string, args ...interface{}) (row p
 			row = nil
 		}
 	}()
-	
+
 	if DB == nil {
 		return nil, errors.New("database connection not initialized")
 	}
-	
+
 	// Validate arguments
 	if err := ValidateArgs(args...); err != nil {
 		return nil, fmt.Errorf("argument validation failed: %w", err)
 	}
-	
+
 	row = DB.QueryRow(ctx, query, args...)
 	return row, nil
 }
@@ -107,16 +169,16 @@ func Query(ctx context.Context, query string, args ...interface{}) (rows pgx.Row
 			rows = nil
 		}
 	}()
-	
+
 	if DB == nil {
 		return nil, errors.New("database connection not initialized")
 	}
-	
+
 	// Validate arguments
 	if err := ValidateArgs(args...); err != nil {
 		return nil, fmt.Errorf("argument validation failed: %w", err)
 	}
-	
+
 	rows, err = DB.Query(ctx, query, args...)
 	return rows, err
 }
@@ -129,16 +191,16 @@ func Exec(ctx context.Context, query string, args ...interface{}) (result pgconn
 			result = pgconn.CommandTag{}
 		}
 	}()
-	
+
 	if DB == nil {
 		return pgconn.CommandTag{}, errors.New("database connection not initialized")
 	}
-	
+
 	// Validate arguments
 	if err := ValidateArgs(args...); err != nil {
 		return pgconn.CommandTag{}, fmt.Errorf("argument validation failed: %w", err)
 	}
-	
+
 	result, err = DB.Exec(ctx, query, args...)
 	return result, err
 }
@@ -150,27 +212,27 @@ func Transaction(ctx context.Context, fn func(pgx.Tx) error) (err error) {
 			err = panicErr
 		}
 	}()
-	
+
 	if DB == nil {
 		return errors.New("database connection not initialized")
 	}
-	
+
 	if fn == nil {
 		return errors.New("transaction function cannot be nil")
 	}
-	
+
 	tx, err := DB.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	
+
 	defer func() {
 		if p := recover(); p != nil {
 			// Rollback on panic
 			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
 				log.Printf("Failed to rollback transaction after panic: %v", rollbackErr)
 			}
-			
+
 			// Re-handle the panic through our recovery mechanism
 			panic(p)
 		} else if err != nil {
@@ -185,7 +247,7 @@ func Transaction(ctx context.Context, fn func(pgx.Tx) error) (err error) {
 			}
 		}
 	}()
-	
+
 	err = fn(tx)
 	return err
 }
@@ -197,11 +259,11 @@ func SafeOperation(operation string, fn func() error) error {
 			log.Printf("Database operation '%s' failed with panic: %v", operation, panicErr)
 		}
 	}()
-	
+
 	if fn == nil {
 		return fmt.Errorf("operation function cannot be nil for: %s", operation)
 	}
-	
+
 	return fn()
 }
 
@@ -218,13 +280,13 @@ func ValidateArgs(args ...interface{}) error {
 		if arg == nil {
 			continue
 		}
-		
+
 		// Check for potentially dangerous strings
 		if str, ok := arg.(string); ok {
 			if containsDangerousSQL(str) {
 				return fmt.Errorf("argument %d contains potentially dangerous SQL pattern: %s", i, str)
 			}
-			
+
 			// Check for excessively long strings that might cause issues
 			if len(str) > 10000 {
 				return fmt.Errorf("argument %d is too long (%d characters), maximum allowed: 10000", i, len(str))
@@ -245,14 +307,14 @@ func containsDangerousSQL(s string) bool {
 		"SCRIPT", "JAVASCRIPT", "VBSCRIPT", "ONLOAD", "ONERROR",
 		"EVAL(", "EXPRESSION(", "URL(", "IMPORT",
 	}
-	
+
 	upperS := strings.ToUpper(strings.TrimSpace(s))
 	for _, pattern := range dangerousPatterns {
 		if strings.Contains(upperS, pattern) {
 			return true
 		}
 	}
-	
+
 	// Check for multiple consecutive special characters that might indicate injection
 	specialChars := []string{"''", "\"\"", ";;", "--", "/*", "*/", "@@"}
 	for _, chars := range specialChars {
@@ -260,7 +322,7 @@ func containsDangerousSQL(s string) bool {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -270,13 +332,13 @@ func HealthCheck(ctx context.Context) error {
 		if DB == nil {
 			return errors.New("database connection not initialized")
 		}
-		
+
 		// Simple ping to check database connectivity
 		err := DB.Ping(ctx)
 		if err != nil {
 			return fmt.Errorf("database ping failed: %w", err)
 		}
-		
+
 		return nil
 	})
 }
@@ -297,7 +359,7 @@ type API struct{}
 // Users provides user-related database operations
 var Users = &UserAPI{}
 
-// Apps provides app-related database operations  
+// Apps provides app-related database operations
 var Apps = &AppAPI{}
 
 // Deployments provides deployment-related database operations
@@ -310,4 +372,4 @@ var GitHub = &GitHubAPI{}
 var Activities = &API{}
 
 // Settings provides settings-related database operations
-var Settings = &SettingsAPI{} 
+var Settings = &SettingsAPI{}

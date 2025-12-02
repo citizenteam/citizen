@@ -5,8 +5,9 @@ import (
 	authservices "backend/internal/auth/services"
 	"backend/internal/database"
 	"backend/internal/models"
-	"backend/internal/services"
-	"backend/internal/utils"
+	"backend/internal/rbac/domain"
+	rbacservice "backend/internal/rbac/service"
+	"backend/pkg/response"
 	"context"
 	"database/sql"
 	"errors"
@@ -15,7 +16,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-var permissionSvc = services.NewPermissionService()
+var rbacSvc = rbacservice.Default()
 
 // Protected, SSO session veya JWT ile yetkilendirme gerektirir
 func Protected() fiber.Handler {
@@ -29,20 +30,12 @@ func Protected() fiber.Handler {
 		if c.Locals("auth_type") == "jwt" {
 			citizenAuthUserID, _ := c.Locals("citizenauth_user_id").(string)
 			if citizenAuthUserID == "" {
-				return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-					false,
-					"CitizenAuth user context missing",
-					nil,
-				))
+				return response.Unauthorized(c, "CitizenAuth user context missing")
 			}
 
 			organizationID, _ := c.Locals("organization_id").(string)
 			if organizationID == "" {
-				return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-					false,
-					"Organization context missing",
-					nil,
-				))
+				return response.Unauthorized(c, "Organization context missing")
 			}
 
 			if err := enforceAccessControls(c, citizenAuthUserID, organizationID); err != nil {
@@ -51,11 +44,7 @@ func Protected() fiber.Handler {
 
 			localUserID, user, err := ensureLocalUserFromJWT(c, organizationID)
 			if err != nil {
-				return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-					false,
-					"Failed to map CitizenAuth user",
-					nil,
-				))
+				return response.Unauthorized(c, "Failed to map CitizenAuth user")
 			}
 
 			// Store mapped user details for downstream handlers
@@ -69,21 +58,13 @@ func Protected() fiber.Handler {
 
 		// If SSO session is not found, return unauthorized
 		if ssoSessionID == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-				false,
-				"Authentication required (SSO session or JWT)",
-				nil,
-			))
+			return response.Unauthorized(c, "Authentication required (SSO session or JWT)")
 		}
 
 		// Validate SSO session
 		session, err := authservices.GetSSOSession(ssoSessionID)
 		if err != nil || session == nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-				false,
-				"Invalid or expired SSO session",
-				nil,
-			))
+			return response.Unauthorized(c, "Invalid or expired SSO session")
 		}
 
 		if session.OrganizationID != nil && *session.OrganizationID != "" {
@@ -96,11 +77,7 @@ func Protected() fiber.Handler {
 			"SELECT id, username, email, created_at, updated_at FROM users WHERE id = $1",
 			session.UserID).Scan(&user.ID, &user.Username, &user.Email, &user.CreatedAt, &user.UpdatedAt)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-				false,
-				"User not found",
-				nil,
-			))
+			return response.Unauthorized(c, "User not found")
 		}
 
 		// Save user ID to locals
@@ -109,11 +86,7 @@ func Protected() fiber.Handler {
 
 		citizenAuthUserID, organizationID, err := getCitizenauthMappingForLocalUser(c.Context(), session.UserID)
 		if err != nil {
-			return c.Status(fiber.StatusForbidden).JSON(utils.NewCitizenResponse(
-				false,
-				"CitizenAuth user mapping not found for local account",
-				nil,
-			))
+			return response.Forbidden(c, "CitizenAuth user mapping not found for local account")
 		}
 		c.Locals("citizenauth_user_id", citizenAuthUserID)
 		if organizationID != "" {
@@ -125,11 +98,7 @@ func Protected() fiber.Handler {
 			}
 		}
 		if organizationID == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-				false,
-				"Organization context missing",
-				nil,
-			))
+			return response.Unauthorized(c, "Organization context missing")
 		}
 
 		if err := enforceAccessControls(c, citizenAuthUserID, organizationID); err != nil {
@@ -179,64 +148,47 @@ func ensureLocalUserFromJWT(c *fiber.Ctx, organizationID string) (int, models.Us
 }
 
 // enforceAccessControls ensures the CitizenAuth user is assigned to this instance and has required app permissions.
+// Uses centralized RBAC service for permission checks.
 func enforceAccessControls(c *fiber.Ctx, citizenAuthUserID, organizationID string) error {
-	assigned, err := permissionSvc.IsUserAssignedToInstance(c.Context(), citizenAuthUserID, organizationID)
+	// Check if user is assigned to this instance
+	assigned, err := rbacSvc.IsUserAssignedToInstance(c.Context(), citizenAuthUserID, organizationID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			"Failed to verify instance assignment",
-			nil,
-		))
+		return response.InternalServerError(c, "Failed to verify instance assignment")
 	}
 	if !assigned {
-		return c.Status(fiber.StatusForbidden).JSON(utils.NewCitizenResponse(
-			false,
-			"Access denied: user is not assigned to this Citizen instance",
-			nil,
-		))
+		return response.Forbidden(c, "Access denied: user is not assigned to this Citizen instance")
 	}
 
-	permissions, err := permissionSvc.GetUserPermissions(c.Context(), citizenAuthUserID, organizationID)
+	// Load user permissions using RBAC service (with caching)
+	permissions, err := rbacSvc.GetUserPermissions(c.Context(), citizenAuthUserID, organizationID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-			false,
-			"Failed to load user permissions",
-			nil,
-		))
+		return response.InternalServerError(c, "Failed to load user permissions")
 	}
-	c.Locals("app_permissions", permissions)
 
+	// Store RBAC permissions in context for downstream use
+	c.Locals("rbac_permissions", permissions)
+
+	// App-specific permission check (if app_name is in route params)
 	appID := c.Params("app_name")
 	if appID != "" {
 		requiredRole := determineRequiredRole(c.Method())
-		hasPermission, err := permissionSvc.CheckAppPermission(c.Context(), citizenAuthUserID, organizationID, appID, requiredRole)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(utils.NewCitizenResponse(
-				false,
-				"Failed to verify application permissions",
-				nil,
-			))
-		}
-		if !hasPermission {
-			return c.Status(fiber.StatusForbidden).JSON(utils.NewCitizenResponse(
-				false,
-				fmt.Sprintf("Insufficient permissions for app '%s' (requires %s access)", appID, requiredRole),
-				nil,
-			))
+		if !permissions.HasAppPermission(appID, requiredRole) {
+			return response.Forbidden(c, "Insufficient permissions for this application")
 		}
 	}
 
 	return nil
 }
 
-func determineRequiredRole(method string) string {
+// determineRequiredRole returns the minimum required RBAC role based on HTTP method
+func determineRequiredRole(method string) domain.Role {
 	switch method {
 	case fiber.MethodGet, fiber.MethodHead:
-		return "viewer"
+		return domain.RoleViewer
 	case fiber.MethodDelete:
-		return "admin"
+		return domain.RoleAdmin
 	default:
-		return "member"
+		return domain.RoleMember
 	}
 }
 
