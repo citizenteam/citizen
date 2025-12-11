@@ -5,14 +5,17 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
     ports:
       - "80:80"
       - "443:443"
-      - "8080:8080"  # Traefik Dashboard (temporary, will be closed for security)
+      - "8081:8080"  # Traefik Dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config/traefik.yml:/etc/traefik/traefik.yml:rw
       - ./config/dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:rw # Dynamic configuration file (read-write for file watching)
+      - ./plugins-local:/plugins-local:ro
       - ./data/letsencrypt:/letsencrypt
       - ./logs:/var/log/traefik
     networks:
@@ -31,7 +34,6 @@ services:
     volumes:
       - citizen-dokku-data-prod:/mnt/dokku
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./ssh_keys/id_rsa.pub:/tmp/id_rsa.pub:ro
     networks:
       - citizen-network-prod
     environment:
@@ -41,58 +43,38 @@ services:
       /bin/bash -c "
       /sbin/my_init &
       sleep 10 &&
-      if [ -f /tmp/id_rsa.pub ]; then
-        dokku ssh-keys:add citizen-api /tmp/id_rsa.pub || true
-      fi &&
       dokku network:set --global attach-post-create docker_citizen-network-prod || true &&
       wait
       "
     labels:
       - "traefik.enable=false"
 
-  # Standalone API Service (optional, for direct access)
   api:
     build:
-      context: ../
+      context: ..
       dockerfile: docker/dockerfiles/Dockerfile
-      target: runtime-alpine
     container_name: citizen-api-prod
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    ports:
+      - "3000:3000"  # Expose for direct access during development
     volumes:
-      - ./ssh_keys:/home/appuser/.ssh:rw
+      - ./logs/api:/app/logs
     networks:
       - citizen-network-prod
-    # Production security configuration (privileged for SSH key setup)
-    privileged: true  # Required for SSH key permission management
-    read_only: false  # Need write access for SSH key setup and application
     depends_on:
       - postgres
       - redis
       - dokku
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
-
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
-      args:
-        VITE_API_URL: ${VITE_API_URL}
-        VITE_ALLOWED_REDIRECT_DOMAINS: ${VITE_ALLOWED_REDIRECT_DOMAINS}
-        VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS}
-        VITE_DEFAULT_DOMAINS: ${VITE_DEFAULT_DOMAINS}
-    container_name: citizen-frontend-prod
-    restart: unless-stopped
-    env_file:
-      - .env
-    networks:
-      - citizen-network-prod
+      start_period: 30s
 
   postgres:
     image: postgres:14-alpine
@@ -107,7 +89,7 @@ services:
     networks:
       - citizen-network-prod
     ports:
-      - "5432:5432"
+      - "5433:5432"  # External port changed to avoid conflict
 
   redis:
     image: redis:7-alpine
@@ -119,7 +101,7 @@ services:
     networks:
       - citizen-network-prod
     ports:
-      - "6379:6379"
+      - "6380:6379"
 
   # Dokku-Traefik Watcher
   dokku-traefik-watcher:
@@ -131,8 +113,8 @@ services:
     environment:
       - ENVIRONMENT=prod
       - CHECK_INTERVAL=30
-      - DOKKU_CONTAINER=citizen-dokku
-      - TRAEFIK_CONTAINER=citizen-traefik
+      - DOKKU_CONTAINER=citizen-dokku-prod
+      - TRAEFIK_CONTAINER=citizen-traefik-prod
       - CONFIG_FILE=/app/config/dynamic_conf.yml
       - FORCE_REGEN_INTERVAL=300
       - HEALTH_CHECK_INTERVAL=60

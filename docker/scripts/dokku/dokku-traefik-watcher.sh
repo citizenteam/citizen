@@ -150,8 +150,14 @@ get_system_state() {
         db_state=$(echo -e "$deployments_state\n===PUBLIC_SETTINGS===\n$public_settings_state")
     fi
     
+    local challenge_state=""
+    local challenge_file="${PROJECT_ROOT}/config/http_challenges.json"
+    if [ -f "$challenge_file" ]; then
+        challenge_state=$(cat "$challenge_file")
+    fi
+    
     # Combine all states and create hash (excluding config file to prevent self-triggering)
-    echo -e "DOCKER:\n$docker_state\nDATABASE:\n$db_state" | md5sum | cut -d' ' -f1
+    echo -e "DOCKER:\n$docker_state\nDATABASE:\n$db_state\nCHALLENGES:\n$challenge_state" | md5sum | cut -d' ' -f1
 }
 
 # Function to check database connectivity

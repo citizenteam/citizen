@@ -1,0 +1,9 @@
+.env
+config.env
+tmp
+logs
+*.log
+*.tmp
+node_modules
+.git
+.gitignore

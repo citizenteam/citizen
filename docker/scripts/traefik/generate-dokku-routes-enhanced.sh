@@ -11,8 +11,40 @@ else
 fi
 
 CONFIG_FILE="${PROJECT_ROOT}/config/dynamic_conf.yml"
-CACHE_FILE="${PROJECT_ROOT}/config/.route_cache"
+HTTP_CHALLENGE_FILE="${PROJECT_ROOT}/config/http_challenges.json"
+
+# Ensure configuration directory exists and treat config path as file
+CONFIG_DIR="$(dirname "${CONFIG_FILE}")"
+mkdir -p "${CONFIG_DIR}"
+
+# If the target path is an (accidentally created) directory, convert it back to a file
+if [ -d "${CONFIG_FILE}" ]; then
+    if [ -n "$(ls -A "${CONFIG_FILE}")" ]; then
+        echo "ERROR: ${CONFIG_FILE} is a directory and not empty; cannot continue." >&2
+        exit 1
+    fi
+    if ! rmdir "${CONFIG_FILE}" 2>/tmp/dynamic_conf_rmdir.err; then
+        if grep -q "Resource busy" /tmp/dynamic_conf_rmdir.err 2>/dev/null; then
+            echo "ERROR: ${CONFIG_FILE} is a mounted directory. Replace the host path with a file and recreate the container." >&2
+            rm -f /tmp/dynamic_conf_rmdir.err
+            exit 1
+        fi
+        cat /tmp/dynamic_conf_rmdir.err >&2
+        rm -f /tmp/dynamic_conf_rmdir.err
+        exit 1
+    fi
+    rm -f /tmp/dynamic_conf_rmdir.err
+fi
+
+# Create the config file if it doesn't exist
+touch "${CONFIG_FILE}"
+
+CACHE_FILE="${CONFIG_DIR}/.route_cache"
 LOG_FILE="${PROJECT_ROOT}/logs/route-generator.log"
+
+declare -a HTTP_CHALLENGE_MIDDLEWARE_NAMES=()
+declare -a HTTP_CHALLENGE_BODIES=()
+declare -A HTTP_CHALLENGE_SEEN=()
 
 # Create logs directory if it doesn't exist
 mkdir -p "${PROJECT_ROOT}/logs"
@@ -39,19 +71,8 @@ else
     log "⚠️  Using fallback database credentials: $DB_USER@$DB_NAME"
 fi
 
-# Auto-detect environment
-detect_environment() {
-    if docker ps --format "{{.Names}}" | grep -q "citizen-.*-dev"; then
-        echo "dev"
-    elif docker ps --format "{{.Names}}" | grep -q "citizen-.*-prod"; then
-        echo "prod"
-    else
-        # Fallback to environment variable or default
-        echo "${ENVIRONMENT:-dev}"
-    fi
-}
-
-ENVIRONMENT=$(detect_environment)
+# Environment defaults (prod only)
+ENVIRONMENT=${ENVIRONMENT:-prod}
 CONTAINER_SUFFIX="-${ENVIRONMENT}"
 log "🚀 Route generator started - Environment: $ENVIRONMENT"
 
@@ -59,20 +80,11 @@ log "🚀 Route generator started - Environment: $ENVIRONMENT"
 API_CONTAINER="citizen-api${CONTAINER_SUFFIX}"
 POSTGRES_CONTAINER="citizen-postgres${CONTAINER_SUFFIX}"
 
-if [ "$ENVIRONMENT" = "dev" ]; then
-    FRONTEND_CONTAINER="citizen-frontend${CONTAINER_SUFFIX}"
-    FRONTEND_PORT="5173"
-    LOGIN_HOST=${LOGIN_HOST:-"localhost"}
-    ENABLE_HTTPS="false"
+LOGIN_HOST=${LOGIN_HOST:-"localhost"}
+if [ "$LOGIN_HOST" != "localhost" ]; then
+    ENABLE_HTTPS="true"
 else
-    FRONTEND_CONTAINER="citizen-frontend${CONTAINER_SUFFIX}"
-    FRONTEND_PORT="80"
-    LOGIN_HOST=${LOGIN_HOST:-"localhost"}
-    if [ "$LOGIN_HOST" != "localhost" ]; then
-        ENABLE_HTTPS="true"
-    else
-        ENABLE_HTTPS="false"
-    fi
+    ENABLE_HTTPS="false"
 fi
 
 DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${POSTGRES_CONTAINER}:5432/${DB_NAME}"
@@ -94,6 +106,29 @@ standardize_name() {
     echo "${clean_name}-${suffix}"
 }
 
+slugify_basic() {
+    local value="$1"
+    local slug
+    slug=$(echo "$value" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//')
+    if [ -z "$slug" ]; then
+        slug="cf"
+    fi
+    echo "$slug"
+}
+
+escape_backticks() {
+    echo "$1" | sed 's/`/\\`/g'
+}
+
+escape_yaml_string() {
+    local input="$1"
+    input=${input//\\/\\\\}
+    input=${input//\"/\\\"}
+    input=${input//$'\n'/\\n}
+    input=${input//$'\r'/\\r}
+    echo "$input"
+}
+
 # Function to get app deployments from database with public flag
 get_app_deployments() {
     log "🔍 Fetching app deployments from database..."
@@ -111,7 +146,21 @@ get_app_deployments() {
                  ORDER BY ad.app_name;"
     
     # Execute query and return results in format: app_name|domain|port|status|git_url|builder|buildpack|is_public
-    docker exec -e PGPASSWORD="$DB_PASSWORD" "$pg_container" psql -U "$DB_USER" -d "$DB_NAME" -t -A -F'|' -c "$query" 2>/dev/null || echo ""
+    local output
+    if ! output=$(docker exec -e PGPASSWORD="$DB_PASSWORD" "$pg_container" \
+        psql -U "$DB_USER" -d "$DB_NAME" -t -A -F'|' -c "$query" 2>&1); then
+        log "⚠️  Database not ready for route query: ${output%%$'\n'*}"
+        echo ""
+        return
+    fi
+
+    if echo "$output" | grep -qi "relation .* does not exist"; then
+        log "⚠️  Required tables missing (migrations still running?). Skipping regeneration."
+        echo ""
+        return
+    fi
+
+    echo "$output"
 }
 
 # Function to get current Dokku containers
@@ -123,9 +172,14 @@ get_dokku_containers() {
 generate_state_hash() {
     local deployments="$1"
     local containers="$2"
+    local challenges=""
+
+    if [ -f "$HTTP_CHALLENGE_FILE" ]; then
+        challenges="$(cat "$HTTP_CHALLENGE_FILE")"
+    fi
     
     # Combine deployments and containers info and create hash
-    echo -e "$deployments\n$containers" | md5sum | cut -d' ' -f1
+    echo -e "$deployments\n$containers\n$challenges" | md5sum | cut -d' ' -f1
 }
 
 # Function to get container name and port
@@ -174,9 +228,9 @@ EOF
     if [ "$ENABLE_HTTPS" = "true" ]; then
         cat << EOF
     # 🔐 Main routes (HTTP for challenge + redirect)
-    main-frontend-http:
+    main-http:
       rule: "Host(\`${LOGIN_HOST}\`)"
-      service: main-frontend-service
+      service: api-service
       entryPoints: ["web"]
       middlewares: ["redirect-to-https"]
       priority: 90
@@ -201,7 +255,17 @@ EOF
         certResolver: letsencrypt
       priority: 120
 
-    # 🛡️ Protected API routes (with auth) - Priority 110
+    # 🔗 Service API routes (webhooks, NO ForwardAuth) - Priority 115
+    service-api-https:
+      rule: "Host(\`${LOGIN_HOST}\`) && PathPrefix(\`/api/v1/service\`)"
+      service: api-service
+      entryPoints: ["websecure"]
+      middlewares: ["no-cache", "security-headers"]
+      tls:
+        certResolver: letsencrypt
+      priority: 115
+
+    # 🛡️ Protected API routes (WITH ForwardAuth - CitizenAuth validates) - Priority 110
     protected-api-https:
       rule: "Host(\`${LOGIN_HOST}\`) && PathPrefix(\`/api\`)"
       service: api-service
@@ -211,10 +275,10 @@ EOF
         certResolver: letsencrypt
       priority: 110
 
-    # 🏠 Main frontend route - Priority 100
-    main-frontend-https:
+    # 🏠 Main root route (WITH ForwardAuth - validates SSO session) - Priority 100
+    main-root-https:
       rule: "Host(\`${LOGIN_HOST}\`)"
-      service: main-frontend-service
+      service: api-service
       entryPoints: ["websecure"]
       middlewares: ["auth-api", "no-cache", "security-headers"]
       tls:
@@ -248,55 +312,69 @@ EOF
       middlewares: ["auth-api", "no-cache", "security-headers"]
       priority: 110
 
-    # 🏠 Main frontend route - Priority 100
-    main-frontend-http:
-      rule: "Host(\`${LOGIN_HOST}\`)"
-      service: main-frontend-service
-      entryPoints: ["web"]
-      middlewares: ["auth-api", "no-cache", "security-headers"]
-      priority: 100
 EOF
     fi
+
+    generate_http_challenge_routers
 }
 
-# Function to generate custom domain redirects for non-public apps
-generate_custom_domain_redirects() {
-    local deployments="$1"
-    
-    log "🔄 Generating custom domain redirects..." >&2
-    
-    echo "$deployments" | while IFS='|' read -r app_name domain port status git_url builder buildpack is_public; do
-        if [ -n "$domain" ] && [ "$domain" != "" ] && [ "$is_public" = "f" ]; then
-            log "  🔀 Creating redirect: $domain -> ${app_name}.${LOGIN_HOST}" >&2
-            
-            # Generate unique names for redirect middleware
-            local redirect_name="redirect-${app_name}"
-            
-            if [ "$ENABLE_HTTPS" = "true" ]; then
-                cat << EOF
+generate_http_challenge_routers() {
+    if [ ! -f "$HTTP_CHALLENGE_FILE" ] || [ ! -s "$HTTP_CHALLENGE_FILE" ]; then
+        return
+    fi
 
-    # 🔀 Custom domain redirect: $domain -> subdomain (non-public app)
-    custom-domain-${app_name}:
-      rule: "Host(\`${domain}\`)"
-      service: redirect-service
-      middlewares: ["${redirect_name}", "no-cache", "security-headers"]
-      tls:
-        certResolver: letsencrypt
-      priority: 50
-EOF
-            else
-                cat << EOF
+    local jq_output jq_status
+    set +e
+    jq_output=$(jq -c '.[]' "$HTTP_CHALLENGE_FILE" 2>/dev/null)
+    jq_status=$?
+    set -e
+    if [ $jq_status -ne 0 ]; then
+        log "⚠️  Failed to parse HTTP challenge file: $HTTP_CHALLENGE_FILE"
+        return
+    fi
+    if [ -z "$jq_output" ]; then
+        return
+    fi
 
-    # 🔀 Custom domain redirect: $domain -> subdomain (non-public app)
-    custom-domain-${app_name}:
-      rule: "Host(\`${domain}\`)"
-      service: redirect-service
-      middlewares: ["${redirect_name}", "no-cache", "security-headers"]
-      priority: 50
-EOF
-            fi
+    log "🧩 Adding $(echo "$jq_output" | wc -l | tr -d ' ') Cloudflare HTTP challenge route(s)" >&2
+
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        local host path body key
+        host=$(echo "$entry" | jq -r '.host // empty')
+        path=$(echo "$entry" | jq -r '.path // empty')
+        body=$(echo "$entry" | jq -r '.body // empty')
+        if [ -z "$host" ] || [ -z "$path" ] || [ -z "$body" ]; then
+            continue
         fi
-    done
+
+        key="${host}|${path}"
+        if [ -n "${HTTP_CHALLENGE_SEEN[$key]}" ]; then
+            continue
+        fi
+        HTTP_CHALLENGE_SEEN[$key]=1
+
+        local slug_host slug_hash router_name middleware_name safe_path
+        slug_host=$(slugify_basic "$host")
+        slug_hash=$(echo -n "${host}${path}" | md5sum | cut -c1-10)
+        router_name="cf-http-challenge-${slug_host}-${slug_hash}"
+        middleware_name="${router_name}-body"
+        safe_path=$(escape_backticks "$path")
+
+        HTTP_CHALLENGE_MIDDLEWARE_NAMES+=("$middleware_name")
+        HTTP_CHALLENGE_BODIES+=("$body")
+
+        cat << EOF
+
+    # 🧩 Cloudflare HTTP challenge for ${host}${path}
+    ${router_name}:
+      rule: "Host(\`${host}\`) && Path(\`${safe_path}\`)"
+      entryPoints: ["web"]
+      service: noop@internal
+      middlewares: ["${middleware_name}"]
+      priority: 2000
+EOF
+    done <<< "$jq_output"
 }
 
 # Function to generate app routes
@@ -317,11 +395,9 @@ generate_app_routes() {
                 
                 # Generate standardized names
                 local service_name=$(standardize_name "$app_name" "service")
-                local route_name=$(standardize_name "$app_name" "router")
                 
                 # Get custom domain and public status from deployments data (fix nested pipeline issue)
                 local custom_domain=""
-                local is_public=""
                 
                 # Save deployments to temp file to avoid nested pipeline issues
                 local temp_deployments="/tmp/deployments_$$"
@@ -330,7 +406,6 @@ generate_app_routes() {
                 while IFS='|' read -r dep_app_name dep_domain dep_port dep_status dep_git_url dep_builder dep_buildpack dep_is_public; do
                     if [ "$dep_app_name" = "$app_name" ]; then
                         custom_domain="$dep_domain"
-                        is_public="$dep_is_public"
                         break
                     fi
                 done < "$temp_deployments"
@@ -339,37 +414,44 @@ generate_app_routes() {
                 rm -f "$temp_deployments"
                 
                 # Debug: Log parsed values
-                log "    🐛 DEBUG: app_name='$app_name', custom_domain='$custom_domain', is_public='$is_public'" >&2
+                log "    🐛 DEBUG: app_name='$app_name', custom_domain='$custom_domain'" >&2
                 
-                # For the host rule, include custom domain only if it's public
-                local host_rule
-                if [ -n "$custom_domain" ] && [ "$custom_domain" != "" ] && [ "$is_public" = "t" ]; then
-                    host_rule="Host(\`${custom_domain}\`, \`${app_name}.${LOGIN_HOST}\`)"
-                    log "    🌐 Public app - Using custom domain: $custom_domain AND subdomain: ${app_name}.${LOGIN_HOST}" >&2
-                else
-                    host_rule="Host(\`${app_name}.${LOGIN_HOST}\`)"
-                    if [ -n "$custom_domain" ] && [ "$custom_domain" != "" ] && [ "$is_public" = "f" ]; then
-                        log "    🔒 Non-public app - Using subdomain only: ${app_name}.${LOGIN_HOST} (custom domain will redirect)" >&2
-                    else
-                        log "    🌐 Using subdomain: ${app_name}.${LOGIN_HOST}" >&2
-                    fi
-                fi
-                
-                # Generate routers (HTTP for challenge + redirect, HTTPS for app)
+                local subdomain="${app_name}.${LOGIN_HOST}"
+                local subdomain_sso_router=$(standardize_name "$app_name" "sso-router")
+                local subdomain_router=$(standardize_name "$app_name" "router")
+
                 if [ "$ENABLE_HTTPS" = "true" ]; then
                     cat << EOF
 
+    # 📱 App: $app_name SSO (HTTP - redirect to HTTPS)
+    ${subdomain_sso_router}-http:
+      rule: "Host(\`$subdomain\`) && PathPrefix(\`/sso/\`)"
+      service: api-service
+      entryPoints: ["web"]
+      middlewares: ["redirect-to-https"]
+      priority: 60
+
+    # 📱 App: $app_name SSO (HTTPS - handled by central API)
+    ${subdomain_sso_router}-https:
+      rule: "Host(\`$subdomain\`) && PathPrefix(\`/sso/\`)"
+      service: api-service
+      entryPoints: ["websecure"]
+      middlewares: ["no-cache", "security-headers"]
+      tls:
+        certResolver: letsencrypt
+      priority: 120
+
     # 📱 App: $app_name (HTTP - with auth and redirect)
-    ${route_name}-http:
-      rule: "$host_rule"
+    ${subdomain_router}-http:
+      rule: "Host(\`$subdomain\`)"
       service: $service_name
       entryPoints: ["web"]
       middlewares: ["redirect-to-https"]
       priority: 40
 
-    # 📱 App: $app_name (HTTPS - SSL otomatik)
-    ${route_name}-https:
-      rule: "$host_rule"
+    # 📱 App: $app_name (HTTPS - protected)
+    ${subdomain_router}-https:
+      rule: "Host(\`$subdomain\`)"
       service: $service_name
       entryPoints: ["websecure"]
       middlewares: ["auth-api", "no-cache", "security-headers"]
@@ -380,14 +462,87 @@ EOF
                 else
                     cat << EOF
 
+    # 📱 App: $app_name SSO (HTTP)
+    ${subdomain_sso_router}:
+      rule: "Host(\`$subdomain\`) && PathPrefix(\`/sso/\`)"
+      service: api-service
+      entryPoints: ["web"]
+      middlewares: ["no-cache", "security-headers"]
+      priority: 60
+
     # 📱 App: $app_name (HTTP - Development)
-    ${route_name}:
-      rule: "$host_rule"
+    ${subdomain_router}:
+      rule: "Host(\`$subdomain\`)"
       service: $service_name
       entryPoints: ["web"]
       middlewares: ["auth-api", "no-cache", "security-headers"]
       priority: 50
 EOF
+                fi
+
+                if [ -n "$custom_domain" ] && [ "$custom_domain" != "" ]; then
+                    local custom_sso_router=$(standardize_name "$app_name" "custom-sso-router")
+                    local custom_router=$(standardize_name "$app_name" "custom-router")
+
+                    if [ "$ENABLE_HTTPS" = "true" ]; then
+                        cat << EOF
+
+    # 📱 App: $app_name custom domain SSO (HTTP)
+    ${custom_sso_router}-http:
+      rule: "Host(\`$custom_domain\`) && PathPrefix(\`/sso/\`)"
+      service: api-service
+      entryPoints: ["web"]
+      middlewares: ["redirect-to-https"]
+      priority: 60
+
+    # 📱 App: $app_name custom domain SSO (HTTPS)
+    ${custom_sso_router}-https:
+      rule: "Host(\`$custom_domain\`) && PathPrefix(\`/sso/\`)"
+      service: api-service
+      entryPoints: ["websecure"]
+      middlewares: ["no-cache", "security-headers"]
+      tls:
+        certResolver: letsencrypt
+      priority: 120
+
+    # 📱 App: $app_name custom domain (HTTP)
+    ${custom_router}-http:
+      rule: "Host(\`$custom_domain\`)"
+      service: $service_name
+      entryPoints: ["web"]
+      middlewares: ["redirect-to-https"]
+      priority: 40
+
+    # 📱 App: $app_name custom domain (HTTPS)
+    ${custom_router}-https:
+      rule: "Host(\`$custom_domain\`)"
+      service: $service_name
+      entryPoints: ["websecure"]
+      middlewares: ["auth-api", "no-cache", "security-headers"]
+      tls:
+        certResolver: letsencrypt
+      priority: 50
+EOF
+                    else
+                        cat << EOF
+
+    # 📱 App: $app_name custom domain SSO (HTTP)
+    ${custom_sso_router}:
+      rule: "Host(\`$custom_domain\`) && PathPrefix(\`/sso/\`)"
+      service: api-service
+      entryPoints: ["web"]
+      middlewares: ["no-cache", "security-headers"]
+      priority: 60
+
+    # 📱 App: $app_name custom domain (HTTP)
+    ${custom_router}:
+      rule: "Host(\`$custom_domain\`)"
+      service: $service_name
+      entryPoints: ["web"]
+      middlewares: ["auth-api", "no-cache", "security-headers"]
+      priority: 50
+EOF
+                    fi
                 fi
             fi
         fi
@@ -407,13 +562,7 @@ generate_services() {
         servers:
           - url: "http://${API_CONTAINER}:3000"
 
-    main-frontend-service:
-      loadBalancer:
-        servers:
-          - url: "http://${FRONTEND_CONTAINER}:${FRONTEND_PORT}"
-        
-
-    # 🔀 Redirect Service (for custom domain redirects)
+    # 🔀 Redirect Service (legacy compatibility)
     redirect-service:
       loadBalancer:
         servers:
@@ -442,6 +591,33 @@ EOF
     done
 }
 
+generate_http_challenge_middlewares() {
+    local count=${#HTTP_CHALLENGE_MIDDLEWARE_NAMES[@]}
+    if [ "$count" -eq 0 ]; then
+        return
+    fi
+
+    for idx in "${!HTTP_CHALLENGE_MIDDLEWARE_NAMES[@]}"; do
+        local name="${HTTP_CHALLENGE_MIDDLEWARE_NAMES[$idx]}"
+        local body="${HTTP_CHALLENGE_BODIES[$idx]}"
+        local escaped_body
+        escaped_body=$(escape_yaml_string "$body")
+
+        cat << EOF
+
+    ${name}:
+      plugin:
+        customresponse:
+          statusCode: 200
+          contentType: text/plain
+          body: "${escaped_body}"
+          allowedMethods:
+            - GET
+            - HEAD
+EOF
+    done
+}
+
 # Function to generate middlewares
 generate_middlewares() {
     local deployments="$1"
@@ -455,13 +631,21 @@ generate_middlewares() {
         scheme: https
         permanent: true
 
-    # 🔐 Authentication middleware
+    # 🔐 Authentication middleware - Use Citizen's own SSO system
     auth-api:
       forwardAuth:
         address: "http://${API_CONTAINER}:3000/api/v1/auth/validate"
+        authRequestHeaders:
+          - "Cookie"
+          - "Authorization"
+          - "X-Forwarded-Authorization"
         authResponseHeaders:
-          - "X-User"
-          - "X-User-ID"
+          - "X-Auth-User-ID"
+          - "X-Auth-Email"
+          - "X-Auth-Name"
+          - "X-Auth-Organization-ID"
+
+    # Headers are already forwarded by ForwardAuth - no extra middleware needed
 
     # 🚫 Cache control
     no-cache:
@@ -484,32 +668,27 @@ generate_middlewares() {
         browserXssFilter: true
 EOF
 
-    # Generate custom domain redirect middlewares for non-public apps
-    echo "$deployments" | while IFS='|' read -r app_name domain port status git_url builder buildpack is_public; do
-        if [ -n "$domain" ] && [ "$domain" != "" ] && [ "$is_public" = "f" ]; then
-            local redirect_name="redirect-${app_name}"
-            local protocol="https"
-            if [ "$ENABLE_HTTPS" != "true" ]; then
-                protocol="http"
-            fi
-            
-            cat << EOF
+    generate_http_challenge_middlewares
 
-    # 🔀 Custom domain redirect middleware for $app_name
-    ${redirect_name}:
-      redirectRegex:
-        regex: "^${protocol}://${domain}(.*)"
-        replacement: "${protocol}://${app_name}.${LOGIN_HOST}\$1"
-EOF
-        fi
-    done
 }
 
-# Function to generate TLS certificates configuration (disabled for now)
-generate_tls_certificates() {
-    # TLS certificates currently disabled
-# Traefik will automatically find .crt and .key files in /etc/ssl/certs directory
-    echo ""
+# Function to generate TLS configuration
+generate_tls_config() {
+    cat << EOF
+
+# 🔐 TLS Configuration
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      cipherSuites:
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+        - TLS_AES_128_GCM_SHA256
+        - TLS_AES_256_GCM_SHA384
+        - TLS_CHACHA20_POLY1305_SHA256
+EOF
 }
 
 # Main execution
@@ -544,10 +723,9 @@ main() {
     {
         generate_base_config
         generate_app_routes "$deployments" "$containers"
-        generate_custom_domain_redirects "$deployments"
         generate_services "$containers"
         generate_middlewares "$deployments"
-        generate_tls_certificates
+        generate_tls_config
     } > "$CONFIG_FILE"
     
     # Save current hash

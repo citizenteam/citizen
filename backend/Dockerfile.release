@@ -1,0 +1,30 @@
+FROM golang:1.23-alpine AS base
+
+WORKDIR /app
+
+RUN apk add --no-cache bash curl git openssh
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN go install github.com/air-verse/air@v1.61.1
+
+FROM golang:1.23-alpine
+
+WORKDIR /app
+
+RUN apk add --no-cache bash curl git openssh
+
+COPY --from=base /go/bin/air /usr/local/bin/air
+COPY --from=base /go/pkg/mod /go/pkg/mod
+COPY --from=base /app /app
+
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64
+
+EXPOSE 3000
+
+CMD ["air", "-c", ".air.toml"]

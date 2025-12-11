@@ -43,6 +43,8 @@ CREATE INDEX IF NOT EXISTS idx_app_custom_domains_active ON app_custom_domains(i
 CREATE TABLE IF NOT EXISTS app_public_settings (
     id SERIAL PRIMARY KEY,
     app_name VARCHAR(100) NOT NULL UNIQUE,
+    custom_domain VARCHAR(255),
+    ssl_enabled BOOLEAN DEFAULT false,
     is_public BOOLEAN DEFAULT false,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -51,6 +53,7 @@ CREATE TABLE IF NOT EXISTS app_public_settings (
 -- Indexes for app_public_settings
 CREATE INDEX IF NOT EXISTS idx_app_public_settings_app_name ON app_public_settings(app_name);
 CREATE INDEX IF NOT EXISTS idx_app_public_settings_public ON app_public_settings(is_public);
+CREATE INDEX IF NOT EXISTS idx_app_public_settings_domain ON app_public_settings(custom_domain);
 
 -- Create app_deployments table
 CREATE TABLE IF NOT EXISTS app_deployments (

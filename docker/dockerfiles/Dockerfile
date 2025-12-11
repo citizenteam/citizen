@@ -47,7 +47,7 @@ RUN go build \
     -ldflags="-w -s -X 'main.Version=${BUILD_VERSION}' -X 'main.BuildTime=${BUILD_TIME}' -X 'main.GitCommit=${GIT_COMMIT}' -extldflags '-static'" \
     -a -installsuffix cgo \
     -trimpath \
-    -o main .
+    -o main ./cmd/server
 
 # Compress binary (optional, can be disabled for faster builds)
 ARG COMPRESS_BINARY=true
@@ -87,7 +87,6 @@ FROM alpine:3.19 AS runtime-alpine
 # Install runtime dependencies
 RUN apk --no-cache add \
     ca-certificates \
-    openssh-client \
     tzdata \
     curl \
     && rm -rf /var/cache/apk/*
@@ -97,10 +96,9 @@ RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 
 # Create necessary directories
-RUN mkdir -p /app /home/appuser/.ssh /ssh_keys && \
-    chmod 700 /home/appuser/.ssh && \
-    chmod 700 /ssh_keys && \
-    chown -R appuser:appgroup /app /home/appuser /ssh_keys
+RUN mkdir -p /app /home/appuser && \
+    chmod 700 /home/appuser && \
+    chown -R appuser:appgroup /app /home/appuser
 
 WORKDIR /app
 
@@ -117,40 +115,16 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:3000/health || exit 1
 
-# Create production SSH keys setup at build time  
-RUN if [ -d "/ssh_keys" ]; then \
-        echo "Build-time SSH keys found"; \
-    fi
-
 # Install runtime tools and su-exec for user switching
 RUN apk add --no-cache curl su-exec
 
-# Create entrypoint script that fixes SSH permissions then switches to appuser
-RUN echo '#!/bin/sh' > /entrypoint.sh && \
-    echo 'set -e' >> /entrypoint.sh && \
-    echo 'echo "Container starting..."' >> /entrypoint.sh && \
-    echo '# Fix SSH key permissions if mounted' >> /entrypoint.sh && \
-    echo 'if [ -d "/home/appuser/.ssh" ]; then' >> /entrypoint.sh && \
-    echo '  echo "Setting up SSH key permissions..."' >> /entrypoint.sh && \
-    echo '  chown -R appuser:appgroup /home/appuser/.ssh' >> /entrypoint.sh && \
-    echo '  chmod 700 /home/appuser/.ssh' >> /entrypoint.sh && \
-    echo '  if [ -f "/home/appuser/.ssh/id_rsa" ]; then' >> /entrypoint.sh && \
-    echo '    chmod 600 /home/appuser/.ssh/id_rsa' >> /entrypoint.sh && \
-    echo '  fi' >> /entrypoint.sh && \
-    echo '  if [ -f "/home/appuser/.ssh/id_rsa.pub" ]; then' >> /entrypoint.sh && \
-    echo '    chmod 644 /home/appuser/.ssh/id_rsa.pub' >> /entrypoint.sh && \
-    echo '  fi' >> /entrypoint.sh && \
-    echo '  echo "SSH keys configured"' >> /entrypoint.sh && \
-    echo 'else' >> /entrypoint.sh && \
-    echo '  echo "No SSH keys directory found"' >> /entrypoint.sh && \
-    echo 'fi' >> /entrypoint.sh && \
-    echo 'echo "Switching to appuser and starting application..."' >> /entrypoint.sh && \
-    echo 'exec su-exec appuser "$@"' >> /entrypoint.sh && \
-    chmod +x /entrypoint.sh
+# Copy entrypoint script that drops privileges to appuser
+COPY docker/dockerfiles/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Set the entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["./main"]
 
-# Use Alpine for SSH client support in production
+# Use Alpine runtime for production
 FROM runtime-alpine AS final

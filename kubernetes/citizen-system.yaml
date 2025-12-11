@@ -1,0 +1,743 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: citizen-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik
+  namespace: citizen-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: citizen-backend
+  namespace: citizen-system
+---
+# Placeholder secret values. Replace with real credentials or create the secret manually.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dotenv
+  namespace: citizen-system
+type: Opaque
+stringData:
+  CF_DNS_API_TOKEN: "<REPLACE_ME>"
+  LETSENCRYPT_EMAIL: "ops@example.com"
+  DB_NAME: "citizen"
+  DB_USER: "citizen"
+  DB_PASSWORD: "<REPLACE_ME>"
+  DB_HOST: "citizen-postgres"
+  DB_PORT: "5432"
+  REDIS_PASSWORD: "<REPLACE_ME>"
+  REDIS_HOST: "citizen-redis"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  ENCRYPTION_KEY: "<REPLACE_ME>"
+  CITIZENAUTH_URL: "https://citizenauth.example.com"
+  CITIZENAUTH_JWKS_URL: "https://citizenauth.example.com/api/v1/auth/jwks.json"
+  CITIZENAUTH_API_KEY: "<REPLACE_ME>"
+  CITIZENAUTH_WEBHOOK_SECRET: "<REPLACE_ME>"
+  DB_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
+  DATABASE_URL: "postgres://citizen:changeme@citizen-postgres:5432/citizen?sslmode=disable"
+  REDIS_URL: "redis://default:<REPLACE_ME>@citizen-redis:6379/0"
+  PLATFORM_ADAPTER: "k3s"
+  K3S_IN_CLUSTER: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: traefik-static
+  namespace: citizen-system
+data:
+  traefik.yml: |
+    # traefik.yml - Main Configuration v3.4 with HTTP Challenge
+    api:
+      dashboard: true
+
+
+    entryPoints:
+      web:
+        address: ":80"
+        # Required for HTTP challenge - keeping .well-known/acme-challenge/ path open
+      websecure:
+        address: ":443"
+        # 🎯 v3.4 HTTP/3 support (advertise field removed in v3.4)
+        http3: {}
+
+    providers:
+      file:
+        filename: /etc/traefik/dynamic/dynamic_conf.yml
+        watch: true
+        # 🎯 v3.4 file provider (pollInterval field removed)
+
+    experimental:
+      localPlugins:
+        customresponse:
+          moduleName: github.com/citizenteam/traefik-custom-response
+
+    # 🎯 v3.4 Core configuration
+    core:
+      # Temporary for v2 syntax support
+      defaultRuleSyntax: v2
+
+    # Let's Encrypt configuration for HTTP Challenge
+    certificatesResolvers:
+      letsencrypt:
+        acme:
+          storage: /letsencrypt/acme.json
+          httpChallenge:
+            entryPoint: web
+          # Email will be provided via command line parameter
+          # For staging/testing:
+          # caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+
+    # Logging configuration - OUTPUT TO STDOUT for Docker logs visibility
+    log:
+      level: DEBUG  # Use DEBUG for troubleshooting
+      # filePath removed - logs will go to stdout (visible in docker logs)
+
+    accessLog:
+      # filePath removed - logs will go to stdout (visible in docker logs)
+      filters:
+        statusCodes:
+          - "200-299"
+          - "400-499"
+          - "500-599"
+
+    # 🎯 v3.4 Ping endpoint (restricted for security)
+    ping:
+      entryPoint: websecure
+
+    # Global configuration
+    global:
+      checkNewVersion: false
+      sendAnonymousUsage: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: traefik-dynamic-bootstrap
+  namespace: citizen-system
+data:
+  dynamic_conf.yml: |
+    http:
+      routers: {}
+      services: {}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: traefik-dynamic-pvc
+  namespace: citizen-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: traefik-logs-pvc
+  namespace: citizen-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: letsencrypt-pvc
+  namespace: citizen-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: citizen-api-logs-pvc
+  namespace: citizen-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: watcher-logs-pvc
+  namespace: citizen-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: builder-cache-pvc
+  namespace: citizen-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: citizen-traefik
+  namespace: citizen-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: citizen-traefik
+  template:
+    metadata:
+      labels:
+        app: citizen-traefik
+    spec:
+      serviceAccountName: traefik
+      initContainers:
+        - name: bootstrap-dynamic-conf
+          image: busybox:1.36
+          command: ["sh", "-c", "cp /bootstrap/dynamic_conf.yml /dynamic/dynamic_conf.yml && chmod 644 /dynamic/dynamic_conf.yml"]
+          volumeMounts:
+            - name: dynamic-bootstrap
+              mountPath: /bootstrap
+            - name: dynamic-conf
+              mountPath: /dynamic
+      containers:
+        - name: traefik
+          image: traefik:v3.4
+          args:
+            - --configFile=/etc/traefik/traefik.yml
+            - --certificatesresolvers.letsencrypt.acme.email=$(LETSENCRYPT_EMAIL)
+          env:
+            - name: CF_DNS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: CF_DNS_API_TOKEN
+            - name: LETSENCRYPT_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: LETSENCRYPT_EMAIL
+          ports:
+            - containerPort: 80
+            - containerPort: 443
+            - containerPort: 8080
+          volumeMounts:
+            - name: static-conf
+              mountPath: /etc/traefik/traefik.yml
+              subPath: traefik.yml
+            - name: dynamic-conf
+              mountPath: /etc/traefik/dynamic
+            - name: letsencrypt
+              mountPath: /letsencrypt
+            - name: logs
+              mountPath: /var/log/traefik
+      volumes:
+        - name: static-conf
+          configMap:
+            name: traefik-static
+        - name: dynamic-bootstrap
+          configMap:
+            name: traefik-dynamic-bootstrap
+        - name: dynamic-conf
+          persistentVolumeClaim:
+            claimName: traefik-dynamic-pvc
+        - name: letsencrypt
+          persistentVolumeClaim:
+            claimName: letsencrypt-pvc
+        - name: logs
+          persistentVolumeClaim:
+            claimName: traefik-logs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citizen-traefik
+  namespace: citizen-system
+spec:
+  type: LoadBalancer
+  selector:
+    app: citizen-traefik
+  ports:
+    - name: web
+      port: 80
+      targetPort: 80
+    - name: websecure
+      port: 443
+      targetPort: 443
+    - name: dashboard
+      port: 8081
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: citizen-platform-api
+  namespace: citizen-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: citizen-platform-api
+  template:
+    metadata:
+      labels:
+        app: citizen-platform-api
+    spec:
+      serviceAccountName: citizen-backend
+      containers:
+        - name: api
+          image: ghcr.io/citizen/platform-api:latest
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DATABASE_URL
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_URL
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_PORT
+            - name: DB_SSL_MODE
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_SSL_MODE
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_URL
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: ENCRYPTION_KEY
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_PASSWORD
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_NAME
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_PASSWORD
+            - name: CITIZENAUTH_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: CITIZENAUTH_URL
+            - name: CITIZENAUTH_JWKS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: CITIZENAUTH_JWKS_URL
+            - name: CITIZENAUTH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: CITIZENAUTH_API_KEY
+            - name: CITIZENAUTH_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: CITIZENAUTH_WEBHOOK_SECRET
+            - name: K3S_BUILDER_IMAGE
+              value: "docker:25.0.5-git"
+            - name: K3S_DOCKER_BUILDER_IMAGE
+              value: "docker:25.0.5-git"
+            - name: K3S_PUSH_IMAGES
+              value: "false"
+            - name: REDIS_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_HOST
+            - name: REDIS_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_PORT
+            - name: REDIS_DB
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_DB
+          ports:
+            - containerPort: 3000
+          volumeMounts:
+            - name: api-logs
+              mountPath: /app/logs
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 30
+      volumes:
+        - name: api-logs
+          persistentVolumeClaim:
+            claimName: citizen-api-logs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citizen-platform-api
+  namespace: citizen-system
+spec:
+  selector:
+    app: citizen-platform-api
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: citizen-postgres
+  namespace: citizen-system
+spec:
+  serviceName: citizen-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: citizen-postgres
+  template:
+    metadata:
+      labels:
+        app: citizen-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:14-alpine
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_PASSWORD
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citizen-postgres
+  namespace: citizen-system
+spec:
+  selector:
+    app: citizen-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: citizen-redis
+  namespace: citizen-system
+spec:
+  serviceName: citizen-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: citizen-redis
+  template:
+    metadata:
+      labels:
+        app: citizen-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command:
+            - sh
+            - -c
+            - redis-server --requirepass $$REDIS_PASSWORD --appendonly yes
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: REDIS_PASSWORD
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citizen-redis
+  namespace: citizen-system
+spec:
+  selector:
+    app: citizen-redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik-watcher
+  namespace: citizen-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: traefik-watcher
+rules:
+- apiGroups: [""]
+  resources: ["services", "pods", "namespaces"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: traefik-watcher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: traefik-watcher
+subjects:
+- kind: ServiceAccount
+  name: traefik-watcher
+  namespace: citizen-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: citizen-backend
+rules:
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "deployments/status", "deployments/scale"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "jobs/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: citizen-backend
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: citizen-backend
+subjects:
+- kind: ServiceAccount
+  name: citizen-backend
+  namespace: citizen-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: citizen-traefik-watcher
+  namespace: citizen-system
+  labels:
+    app: traefik-watcher
+    version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traefik-watcher
+  template:
+    metadata:
+      labels:
+        app: traefik-watcher
+        version: v2
+    spec:
+      serviceAccountName: traefik-watcher
+      containers:
+        - name: watcher
+          image: ghcr.io/citizen/traefik-watcher:v2
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DATABASE_URL
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_URL
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_PORT
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_PASSWORD
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: DB_NAME
+            - name: PLATFORM_ADAPTER
+              value: "k3s"
+            - name: K3S_IN_CLUSTER
+              value: "true"
+            - name: CHECK_INTERVAL
+              value: "30"
+            - name: CONFIG_FILE
+              value: /etc/traefik/dynamic/dynamic_conf.yml
+            - name: DEFAULT_ROUTER_DOMAIN
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: APP_HOST
+            - name: DEFAULT_ROUTER_SERVICE_URL
+              value: "http://citizen-platform-api:3000"
+            - name: DEFAULT_ROUTER_TLS
+              value: "true"
+          volumeMounts:
+            - name: dynamic-conf
+              mountPath: /etc/traefik/dynamic
+            - name: reload-signal
+              mountPath: /tmp
+            - name: watcher-logs
+              mountPath: /var/log
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: dynamic-conf
+          persistentVolumeClaim:
+            claimName: traefik-dynamic-pvc
+        - name: reload-signal
+          emptyDir: {}
+        - name: watcher-logs
+          persistentVolumeClaim:
+            claimName: watcher-logs-pvc
+---
+# Builder namespace for build jobs
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: citizen-builder
+  labels:
+    app.kubernetes.io/managed-by: citizen
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-secret
+  namespace: citizen-builder
+type: kubernetes.io/dockerconfigjson
+stringData:
+  .dockerconfigjson: |
+    {
+      "auths": {
+        "ghcr.io": {
+          "username": "<REGISTRY_USER>",
+          "password": "<REGISTRY_TOKEN>"
+        }
+      }
+    }
+---
+# Note: Build jobs are created dynamically by the build orchestrator
+# No persistent controller needed - jobs are one-off resources
