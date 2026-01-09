@@ -215,6 +215,7 @@ func SetupRoutes(app *fiber.App) {
 	// SSE endpoints for real-time streaming
 	api.Get("/sse/runs/:run_id", ssehandlers.DeploymentLogsSSE)
 	api.Get("/sse/apps/:app_name/logs", ssehandlers.PodLogsSSE)
+	api.Get("/sse/apps/:app_name/metrics", ssehandlers.MetricsSSE)
 
 	// =====================
 	// CitizenAuth Integration

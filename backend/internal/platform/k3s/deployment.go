@@ -3,6 +3,7 @@ package k3s
 import (
 	"backend/internal/platform"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -748,6 +749,244 @@ func (k *K3sAdapter) StreamPodLogs(namespace, appName string, callback func(stri
 			return err
 		}
 	}
+}
+
+// =============================================================================
+// Pod Metrics
+// =============================================================================
+
+// PodMetrics represents resource usage metrics for a pod
+type PodMetrics struct {
+	PodName       string  `json:"pod_name"`
+	Namespace     string  `json:"namespace"`
+	CPUUsage      string  `json:"cpu_usage"`      // e.g., "150m" (millicores)
+	CPUPercent    float64 `json:"cpu_percent"`    // percentage of limit
+	MemoryUsage   string  `json:"memory_usage"`   // e.g., "256Mi"
+	MemoryBytes   int64   `json:"memory_bytes"`   // raw bytes
+	MemoryPercent float64 `json:"memory_percent"` // percentage of limit
+	CPULimit      string  `json:"cpu_limit"`      // container limit
+	MemoryLimit   string  `json:"memory_limit"`   // container limit
+	Status        string  `json:"status"`         // Running, Pending, etc.
+	Restarts      int32   `json:"restarts"`       // container restart count
+	Age           string  `json:"age"`            // pod age
+	Timestamp     string  `json:"timestamp"`      // when metrics were collected
+}
+
+// GetPodMetrics returns resource usage metrics for an app's pods
+func (k *K3sAdapter) GetPodMetrics(appName string) ([]PodMetrics, error) {
+	namespace := k.appNamespace(appName)
+
+	// Get pods
+	pods, err := k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", appName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	if len(pods.Items) == 0 {
+		// Try without label
+		pods, err = k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list pods: %w", err)
+		}
+	}
+
+	metrics := make([]PodMetrics, 0, len(pods.Items))
+
+	for _, pod := range pods.Items {
+		m := PodMetrics{
+			PodName:   pod.Name,
+			Namespace: pod.Namespace,
+			Status:    string(pod.Status.Phase),
+			Age:       formatDuration(time.Since(pod.CreationTimestamp.Time)),
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}
+
+		// Get container info
+		if len(pod.Spec.Containers) > 0 {
+			container := pod.Spec.Containers[0]
+
+			// Get limits
+			if limit, ok := container.Resources.Limits[corev1.ResourceCPU]; ok {
+				m.CPULimit = limit.String()
+			} else {
+				m.CPULimit = "500m" // default
+			}
+			if limit, ok := container.Resources.Limits[corev1.ResourceMemory]; ok {
+				m.MemoryLimit = limit.String()
+			} else {
+				m.MemoryLimit = "512Mi" // default
+			}
+		}
+
+		// Get restart count from container status
+		for _, cs := range pod.Status.ContainerStatuses {
+			m.Restarts += cs.RestartCount
+		}
+
+		// Try to get actual metrics from metrics-server API
+		cpuUsage, memUsage, err := k.getPodMetricsFromAPI(namespace, pod.Name)
+		if err == nil {
+			m.CPUUsage = cpuUsage
+			m.MemoryUsage = memUsage
+
+			// Calculate percentages
+			m.CPUPercent = calculateCPUPercent(cpuUsage, m.CPULimit)
+			m.MemoryPercent, m.MemoryBytes = calculateMemoryPercent(memUsage, m.MemoryLimit)
+		} else {
+			// Metrics server not available, use estimates
+			m.CPUUsage = "N/A"
+			m.MemoryUsage = "N/A"
+			m.CPUPercent = 0
+			m.MemoryPercent = 0
+		}
+
+		metrics = append(metrics, m)
+	}
+
+	return metrics, nil
+}
+
+// getPodMetricsFromAPI fetches metrics from metrics-server API
+func (k *K3sAdapter) getPodMetricsFromAPI(namespace, podName string) (cpuUsage, memUsage string, err error) {
+	// Use RESTClient to query metrics.k8s.io API
+	path := fmt.Sprintf("/apis/metrics.k8s.io/v1beta1/namespaces/%s/pods/%s", namespace, podName)
+
+	result := k.client.CoreV1().RESTClient().Get().AbsPath(path).Do(k.ctx)
+	if result.Error() != nil {
+		return "", "", result.Error()
+	}
+
+	raw, err := result.Raw()
+	if err != nil {
+		return "", "", err
+	}
+
+	// Parse the metrics response
+	// Response format: {"containers":[{"name":"app","usage":{"cpu":"10m","memory":"50Mi"}}]}
+	var metricsResp struct {
+		Containers []struct {
+			Name  string `json:"name"`
+			Usage struct {
+				CPU    string `json:"cpu"`
+				Memory string `json:"memory"`
+			} `json:"usage"`
+		} `json:"containers"`
+	}
+
+	if err := parseJSON(raw, &metricsResp); err != nil {
+		return "", "", err
+	}
+
+	if len(metricsResp.Containers) > 0 {
+		return metricsResp.Containers[0].Usage.CPU, metricsResp.Containers[0].Usage.Memory, nil
+	}
+
+	return "", "", fmt.Errorf("no container metrics found")
+}
+
+// parseJSON is a simple JSON parser
+func parseJSON(data []byte, v interface{}) error {
+	return json.Unmarshal(data, v)
+}
+
+// calculateCPUPercent calculates CPU usage percentage
+func calculateCPUPercent(usage, limit string) float64 {
+	usageMillis := parseCPUToMillis(usage)
+	limitMillis := parseCPUToMillis(limit)
+
+	if limitMillis == 0 {
+		return 0
+	}
+
+	return float64(usageMillis) / float64(limitMillis) * 100
+}
+
+// parseCPUToMillis converts CPU string to millicores
+func parseCPUToMillis(cpu string) int64 {
+	if cpu == "" || cpu == "N/A" {
+		return 0
+	}
+
+	cpu = strings.TrimSpace(cpu)
+
+	// Handle nanocores (e.g., "123456789n")
+	if strings.HasSuffix(cpu, "n") {
+		val, _ := strconv.ParseInt(strings.TrimSuffix(cpu, "n"), 10, 64)
+		return val / 1000000 // nano to milli
+	}
+
+	// Handle millicores (e.g., "100m")
+	if strings.HasSuffix(cpu, "m") {
+		val, _ := strconv.ParseInt(strings.TrimSuffix(cpu, "m"), 10, 64)
+		return val
+	}
+
+	// Handle cores (e.g., "0.5" or "1")
+	val, err := strconv.ParseFloat(cpu, 64)
+	if err == nil {
+		return int64(val * 1000)
+	}
+
+	return 0
+}
+
+// calculateMemoryPercent calculates memory usage percentage
+func calculateMemoryPercent(usage, limit string) (float64, int64) {
+	usageBytes := parseMemoryToBytes(usage)
+	limitBytes := parseMemoryToBytes(limit)
+
+	if limitBytes == 0 {
+		return 0, usageBytes
+	}
+
+	return float64(usageBytes) / float64(limitBytes) * 100, usageBytes
+}
+
+// parseMemoryToBytes converts memory string to bytes
+func parseMemoryToBytes(mem string) int64 {
+	if mem == "" || mem == "N/A" {
+		return 0
+	}
+
+	mem = strings.TrimSpace(mem)
+
+	multipliers := map[string]int64{
+		"Ki": 1024,
+		"Mi": 1024 * 1024,
+		"Gi": 1024 * 1024 * 1024,
+		"Ti": 1024 * 1024 * 1024 * 1024,
+		"K":  1000,
+		"M":  1000 * 1000,
+		"G":  1000 * 1000 * 1000,
+		"T":  1000 * 1000 * 1000 * 1000,
+	}
+
+	for suffix, mult := range multipliers {
+		if strings.HasSuffix(mem, suffix) {
+			val, _ := strconv.ParseInt(strings.TrimSuffix(mem, suffix), 10, 64)
+			return val * mult
+		}
+	}
+
+	// Plain bytes
+	val, _ := strconv.ParseInt(mem, 10, 64)
+	return val
+}
+
+// formatDuration formats duration to human-readable string
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
 // =============================================================================
