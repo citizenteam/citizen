@@ -517,8 +517,30 @@ func (s *bootstrapServer) processK3sInit(req initRequest) error {
 		}
 	}
 
+	// Fallback: Use manifest from cloned citizen repo if not provided
 	if manifestContent == "" {
-		return fmt.Errorf("k3s manifest not provided")
+		s.logf("📂 No manifest provided, looking for citizen-system.yaml in cloned repo...")
+		fallbackPaths := []string{
+			filepath.Join(s.cfg.dataDir, "kubernetes", "citizen-system.yaml"),
+			"/opt/citizen/bootstrap-*/citizen/kubernetes/citizen-system.yaml",
+		}
+		for _, pattern := range fallbackPaths {
+			matches, _ := filepath.Glob(pattern)
+			for _, match := range matches {
+				if data, err := os.ReadFile(match); err == nil {
+					s.logf("✅ Found manifest at %s", match)
+					manifestContent = string(data)
+					break
+				}
+			}
+			if manifestContent != "" {
+				break
+			}
+		}
+	}
+
+	if manifestContent == "" {
+		return fmt.Errorf("k3s manifest not provided and no fallback found")
 	}
 
 	namespace := strings.TrimSpace(req.Metadata["k3s_manifest_namespace"])
