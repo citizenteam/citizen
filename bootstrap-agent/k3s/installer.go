@@ -42,7 +42,8 @@ func Install(cfg InstallConfig) (*InstallResult, error) {
 
 	if cfg.ServerMode {
 		// Server mode installation
-		script = `curl -sfL https://get.k3s.io | sh -s - server`
+		// Disable default metrics-server - we'll deploy our own with --kubelet-insecure-tls
+		script = `curl -sfL https://get.k3s.io | sh -s - server --disable=metrics-server`
 
 		if cfg.DataDir != "" {
 			script += fmt.Sprintf(` --data-dir=%s`, cfg.DataDir)

@@ -850,10 +850,11 @@ func (k *K3sAdapter) GetPodMetrics(appName string) ([]PodMetrics, error) {
 
 // getPodMetricsFromAPI fetches metrics from metrics-server API
 func (k *K3sAdapter) getPodMetricsFromAPI(namespace, podName string) (cpuUsage, memUsage string, err error) {
-	// Use RESTClient to query metrics.k8s.io API
+	// Use Discovery RESTClient which can access any API path including metrics.k8s.io
 	path := fmt.Sprintf("/apis/metrics.k8s.io/v1beta1/namespaces/%s/pods/%s", namespace, podName)
 
-	result := k.client.CoreV1().RESTClient().Get().AbsPath(path).Do(k.ctx)
+	// Discovery client can access all API paths
+	result := k.client.Discovery().RESTClient().Get().AbsPath(path).Do(k.ctx)
 	if result.Error() != nil {
 		return "", "", result.Error()
 	}
@@ -864,8 +865,15 @@ func (k *K3sAdapter) getPodMetricsFromAPI(namespace, podName string) (cpuUsage, 
 	}
 
 	// Parse the metrics response
-	// Response format: {"containers":[{"name":"app","usage":{"cpu":"10m","memory":"50Mi"}}]}
+	// Response format from metrics-server:
+	// {"metadata":{...},"timestamp":"...","window":"...","containers":[{"name":"app","usage":{"cpu":"558560n","memory":"48140Ki"}}]}
 	var metricsResp struct {
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+		Timestamp  string `json:"timestamp"`
+		Window     string `json:"window"`
 		Containers []struct {
 			Name  string `json:"name"`
 			Usage struct {
