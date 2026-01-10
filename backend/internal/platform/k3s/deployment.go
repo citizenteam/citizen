@@ -899,6 +899,384 @@ func parseJSON(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
 }
 
+// =============================================================================
+// Node & Cluster Metrics
+// =============================================================================
+
+// NodeMetrics represents resource usage for a node
+type NodeMetrics struct {
+	NodeName       string  `json:"node_name"`
+	CPUCapacity    string  `json:"cpu_capacity"`    // Total CPU cores
+	CPUAllocatable string  `json:"cpu_allocatable"` // Available for pods
+	CPUUsage       string  `json:"cpu_usage"`       // Current usage
+	CPUPercent     float64 `json:"cpu_percent"`     // Usage percentage
+	MemCapacity    string  `json:"mem_capacity"`    // Total memory
+	MemAllocatable string  `json:"mem_allocatable"` // Available for pods
+	MemUsage       string  `json:"mem_usage"`       // Current usage
+	MemUsageBytes  int64   `json:"mem_usage_bytes"` // Usage in bytes
+	MemPercent     float64 `json:"mem_percent"`     // Usage percentage
+	PodCapacity    int64   `json:"pod_capacity"`    // Max pods
+	PodCount       int64   `json:"pod_count"`       // Current pod count
+	Status         string  `json:"status"`          // Ready, NotReady
+	KubeletVersion string  `json:"kubelet_version"`
+	OSImage        string  `json:"os_image"`
+	Architecture   string  `json:"architecture"`
+	Timestamp      string  `json:"timestamp"`
+}
+
+// AppResourceUsage represents resource usage for an app
+type AppResourceUsage struct {
+	AppName       string  `json:"app_name"`
+	Namespace     string  `json:"namespace"`
+	CPUUsage      string  `json:"cpu_usage"`
+	CPULimit      string  `json:"cpu_limit"`
+	CPURequest    string  `json:"cpu_request"`
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemUsage      string  `json:"mem_usage"`
+	MemUsageBytes int64   `json:"mem_usage_bytes"`
+	MemLimit      string  `json:"mem_limit"`
+	MemRequest    string  `json:"mem_request"`
+	MemPercent    float64 `json:"mem_percent"`
+	PodCount      int     `json:"pod_count"`
+	Status        string  `json:"status"` // Running, Pending, etc
+}
+
+// ClusterMetrics represents overall cluster resource usage
+type ClusterMetrics struct {
+	Nodes           []NodeMetrics      `json:"nodes"`
+	Apps            []AppResourceUsage `json:"apps"`
+	TotalCPUUsage   string             `json:"total_cpu_usage"`
+	TotalCPUPercent float64            `json:"total_cpu_percent"`
+	TotalMemUsage   string             `json:"total_mem_usage"`
+	TotalMemBytes   int64              `json:"total_mem_bytes"`
+	TotalMemPercent float64            `json:"total_mem_percent"`
+	TotalPods       int                `json:"total_pods"`
+	TotalApps       int                `json:"total_apps"`
+	Timestamp       string             `json:"timestamp"`
+}
+
+// GetNodeMetrics returns resource metrics for all cluster nodes
+func (k *K3sAdapter) GetNodeMetrics() ([]NodeMetrics, error) {
+	nodes, err := k.client.CoreV1().Nodes().List(k.ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	result := make([]NodeMetrics, 0, len(nodes.Items))
+
+	for _, node := range nodes.Items {
+		nm := NodeMetrics{
+			NodeName:  node.Name,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}
+
+		// Get capacity and allocatable
+		if cpu, ok := node.Status.Capacity[corev1.ResourceCPU]; ok {
+			nm.CPUCapacity = cpu.String()
+		}
+		if cpu, ok := node.Status.Allocatable[corev1.ResourceCPU]; ok {
+			nm.CPUAllocatable = cpu.String()
+		}
+		if mem, ok := node.Status.Capacity[corev1.ResourceMemory]; ok {
+			nm.MemCapacity = mem.String()
+		}
+		if mem, ok := node.Status.Allocatable[corev1.ResourceMemory]; ok {
+			nm.MemAllocatable = mem.String()
+		}
+		if pods, ok := node.Status.Capacity[corev1.ResourcePods]; ok {
+			nm.PodCapacity = pods.Value()
+		}
+
+		// Node info
+		nm.KubeletVersion = node.Status.NodeInfo.KubeletVersion
+		nm.OSImage = node.Status.NodeInfo.OSImage
+		nm.Architecture = node.Status.NodeInfo.Architecture
+
+		// Node status
+		nm.Status = "NotReady"
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
+				nm.Status = "Ready"
+				break
+			}
+		}
+
+		// Get actual metrics from metrics-server
+		cpuUsage, memUsage, err := k.getNodeMetricsFromAPI(node.Name)
+		if err == nil {
+			nm.CPUUsage = cpuUsage
+			nm.MemUsage = memUsage
+			nm.CPUPercent = calculateCPUPercent(cpuUsage, nm.CPUAllocatable)
+			nm.MemPercent, nm.MemUsageBytes = calculateMemoryPercent(memUsage, nm.MemAllocatable)
+		} else {
+			nm.CPUUsage = "N/A"
+			nm.MemUsage = "N/A"
+		}
+
+		// Count pods on this node
+		pods, err := k.client.CoreV1().Pods("").List(k.ctx, metav1.ListOptions{
+			FieldSelector: fmt.Sprintf("spec.nodeName=%s,status.phase!=Succeeded,status.phase!=Failed", node.Name),
+		})
+		if err == nil {
+			nm.PodCount = int64(len(pods.Items))
+		}
+
+		result = append(result, nm)
+	}
+
+	return result, nil
+}
+
+// getNodeMetricsFromAPI fetches node metrics from metrics-server
+func (k *K3sAdapter) getNodeMetricsFromAPI(nodeName string) (cpuUsage, memUsage string, err error) {
+	path := fmt.Sprintf("/apis/metrics.k8s.io/v1beta1/nodes/%s", nodeName)
+	result := k.client.Discovery().RESTClient().Get().AbsPath(path).Do(k.ctx)
+	if result.Error() != nil {
+		return "", "", result.Error()
+	}
+
+	raw, err := result.Raw()
+	if err != nil {
+		return "", "", err
+	}
+
+	var metricsResp struct {
+		Usage struct {
+			CPU    string `json:"cpu"`
+			Memory string `json:"memory"`
+		} `json:"usage"`
+	}
+
+	if err := parseJSON(raw, &metricsResp); err != nil {
+		return "", "", err
+	}
+
+	return metricsResp.Usage.CPU, metricsResp.Usage.Memory, nil
+}
+
+// GetAllAppsMetrics returns resource usage for all citizen apps
+func (k *K3sAdapter) GetAllAppsMetrics() ([]AppResourceUsage, error) {
+	// Get all citizen app namespaces
+	namespaces, err := k.client.CoreV1().Namespaces().List(k.ctx, metav1.ListOptions{
+		LabelSelector: "citizen.dev/type=app",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list namespaces: %w", err)
+	}
+
+	result := make([]AppResourceUsage, 0)
+
+	for _, ns := range namespaces.Items {
+		appName := strings.TrimPrefix(ns.Name, "citizen-app-")
+
+		// Get pods in this namespace
+		pods, err := k.client.CoreV1().Pods(ns.Name).List(k.ctx, metav1.ListOptions{})
+		if err != nil {
+			continue
+		}
+
+		app := AppResourceUsage{
+			AppName:   appName,
+			Namespace: ns.Name,
+			PodCount:  len(pods.Items),
+			Status:    "Unknown",
+		}
+
+		var totalCPUMillis, totalMemBytes int64
+		var cpuLimit, memLimit, cpuRequest, memRequest string
+
+		for _, pod := range pods.Items {
+			// Track running status
+			if pod.Status.Phase == corev1.PodRunning {
+				app.Status = "Running"
+			} else if app.Status != "Running" {
+				app.Status = string(pod.Status.Phase)
+			}
+
+			// Get container limits/requests
+			for _, container := range pod.Spec.Containers {
+				if limit, ok := container.Resources.Limits[corev1.ResourceCPU]; ok {
+					cpuLimit = limit.String()
+				}
+				if limit, ok := container.Resources.Limits[corev1.ResourceMemory]; ok {
+					memLimit = limit.String()
+				}
+				if req, ok := container.Resources.Requests[corev1.ResourceCPU]; ok {
+					cpuRequest = req.String()
+				}
+				if req, ok := container.Resources.Requests[corev1.ResourceMemory]; ok {
+					memRequest = req.String()
+				}
+			}
+
+			// Get actual metrics
+			cpuUsage, memUsage, err := k.getPodMetricsFromAPI(ns.Name, pod.Name)
+			if err == nil {
+				totalCPUMillis += parseCPUToMillis(cpuUsage)
+				totalMemBytes += parseMemoryToBytes(memUsage)
+			}
+		}
+
+		// Set limits/requests
+		app.CPULimit = cpuLimit
+		app.MemLimit = memLimit
+		app.CPURequest = cpuRequest
+		app.MemRequest = memRequest
+
+		// Format totals
+		if totalCPUMillis > 0 {
+			app.CPUUsage = fmt.Sprintf("%dm", totalCPUMillis)
+			app.CPUPercent = calculateCPUPercent(app.CPUUsage, cpuLimit)
+		} else {
+			app.CPUUsage = "0m"
+		}
+
+		app.MemUsageBytes = totalMemBytes
+		if totalMemBytes > 0 {
+			if totalMemBytes < 1024*1024 {
+				app.MemUsage = fmt.Sprintf("%dKi", totalMemBytes/1024)
+			} else if totalMemBytes < 1024*1024*1024 {
+				app.MemUsage = fmt.Sprintf("%dMi", totalMemBytes/(1024*1024))
+			} else {
+				app.MemUsage = fmt.Sprintf("%.1fGi", float64(totalMemBytes)/(1024*1024*1024))
+			}
+			app.MemPercent, _ = calculateMemoryPercent(app.MemUsage, memLimit)
+		} else {
+			app.MemUsage = "0Mi"
+		}
+
+		result = append(result, app)
+	}
+
+	// Sort by app name
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].AppName < result[j].AppName
+	})
+
+	return result, nil
+}
+
+// GetClusterMetrics returns comprehensive cluster metrics
+func (k *K3sAdapter) GetClusterMetrics() (*ClusterMetrics, error) {
+	nodes, err := k.GetNodeMetrics()
+	if err != nil {
+		return nil, err
+	}
+
+	apps, err := k.GetAllAppsMetrics()
+	if err != nil {
+		return nil, err
+	}
+
+	cm := &ClusterMetrics{
+		Nodes:     nodes,
+		Apps:      apps,
+		TotalApps: len(apps),
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Aggregate node metrics
+	var totalCPUMillis, totalMemBytes, totalAllocatableCPU, totalAllocatableMem int64
+	for _, node := range nodes {
+		totalCPUMillis += parseCPUToMillis(node.CPUUsage)
+		totalMemBytes += node.MemUsageBytes
+		totalAllocatableCPU += parseCPUToMillis(node.CPUAllocatable)
+		totalAllocatableMem += parseMemoryToBytes(node.MemAllocatable)
+		cm.TotalPods += int(node.PodCount)
+	}
+
+	// Format totals
+	if totalCPUMillis > 1000 {
+		cm.TotalCPUUsage = fmt.Sprintf("%.2f cores", float64(totalCPUMillis)/1000)
+	} else {
+		cm.TotalCPUUsage = fmt.Sprintf("%dm", totalCPUMillis)
+	}
+	if totalAllocatableCPU > 0 {
+		cm.TotalCPUPercent = float64(totalCPUMillis) / float64(totalAllocatableCPU) * 100
+	}
+
+	cm.TotalMemBytes = totalMemBytes
+	if totalMemBytes < 1024*1024*1024 {
+		cm.TotalMemUsage = fmt.Sprintf("%d MB", totalMemBytes/(1024*1024))
+	} else {
+		cm.TotalMemUsage = fmt.Sprintf("%.1f GB", float64(totalMemBytes)/(1024*1024*1024))
+	}
+	if totalAllocatableMem > 0 {
+		cm.TotalMemPercent = float64(totalMemBytes) / float64(totalAllocatableMem) * 100
+	}
+
+	return cm, nil
+}
+
+// UpdateAppResources updates CPU/Memory limits for an app
+func (k *K3sAdapter) UpdateAppResources(appName string, cpuLimit, cpuRequest, memLimit, memRequest string) error {
+	namespace := k.appNamespace(appName)
+
+	// Get the deployment
+	deployments, err := k.client.AppsV1().Deployments(namespace).List(k.ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list deployments: %w", err)
+	}
+
+	if len(deployments.Items) == 0 {
+		return fmt.Errorf("no deployment found for app %s", appName)
+	}
+
+	deployment := &deployments.Items[0]
+
+	// Update container resources
+	for i := range deployment.Spec.Template.Spec.Containers {
+		container := &deployment.Spec.Template.Spec.Containers[i]
+
+		if container.Resources.Limits == nil {
+			container.Resources.Limits = corev1.ResourceList{}
+		}
+		if container.Resources.Requests == nil {
+			container.Resources.Requests = corev1.ResourceList{}
+		}
+
+		// Update limits
+		if cpuLimit != "" {
+			qty, err := resource.ParseQuantity(cpuLimit)
+			if err != nil {
+				return fmt.Errorf("invalid CPU limit: %w", err)
+			}
+			container.Resources.Limits[corev1.ResourceCPU] = qty
+		}
+		if memLimit != "" {
+			qty, err := resource.ParseQuantity(memLimit)
+			if err != nil {
+				return fmt.Errorf("invalid memory limit: %w", err)
+			}
+			container.Resources.Limits[corev1.ResourceMemory] = qty
+		}
+
+		// Update requests
+		if cpuRequest != "" {
+			qty, err := resource.ParseQuantity(cpuRequest)
+			if err != nil {
+				return fmt.Errorf("invalid CPU request: %w", err)
+			}
+			container.Resources.Requests[corev1.ResourceCPU] = qty
+		}
+		if memRequest != "" {
+			qty, err := resource.ParseQuantity(memRequest)
+			if err != nil {
+				return fmt.Errorf("invalid memory request: %w", err)
+			}
+			container.Resources.Requests[corev1.ResourceMemory] = qty
+		}
+	}
+
+	// Apply the update
+	_, err = k.client.AppsV1().Deployments(namespace).Update(k.ctx, deployment, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update deployment: %w", err)
+	}
+
+	return nil
+}
+
 // calculateCPUPercent calculates CPU usage percentage
 func calculateCPUPercent(usage, limit string) float64 {
 	usageMillis := parseCPUToMillis(usage)

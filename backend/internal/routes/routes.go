@@ -216,6 +216,11 @@ func SetupRoutes(app *fiber.App) {
 	api.Get("/sse/runs/:run_id", ssehandlers.DeploymentLogsSSE)
 	api.Get("/sse/apps/:app_name/logs", ssehandlers.PodLogsSSE)
 	api.Get("/sse/apps/:app_name/metrics", ssehandlers.MetricsSSE)
+	api.Get("/sse/cluster/metrics", ssehandlers.ClusterMetricsSSE)
+
+	// App resource management (Admin only)
+	api.Get("/apps/:app_name/resources", rbacmw.RequireAppMember(), appshandlers.GetAppResources)
+	api.Put("/apps/:app_name/resources", rbacmw.RequireAdmin(), appshandlers.UpdateAppResources)
 
 	// =====================
 	// CitizenAuth Integration
