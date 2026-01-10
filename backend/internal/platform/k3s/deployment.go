@@ -941,10 +941,25 @@ type AppResourceUsage struct {
 	Status        string  `json:"status"` // Running, Pending, etc
 }
 
+// SystemPodMetrics represents resource usage for a system pod
+type SystemPodMetrics struct {
+	PodName       string  `json:"pod_name"`
+	Namespace     string  `json:"namespace"`
+	CPUUsage      string  `json:"cpu_usage"`
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemUsage      string  `json:"mem_usage"`
+	MemUsageBytes int64   `json:"mem_usage_bytes"`
+	MemPercent    float64 `json:"mem_percent"`
+	Status        string  `json:"status"`
+	Restarts      int32   `json:"restarts"`
+	Age           string  `json:"age"`
+}
+
 // ClusterMetrics represents overall cluster resource usage
 type ClusterMetrics struct {
 	Nodes           []NodeMetrics      `json:"nodes"`
 	Apps            []AppResourceUsage `json:"apps"`
+	SystemPods      []SystemPodMetrics `json:"system_pods"`
 	TotalCPUUsage   string             `json:"total_cpu_usage"`
 	TotalCPUPercent float64            `json:"total_cpu_percent"`
 	TotalMemUsage   string             `json:"total_mem_usage"`
@@ -1004,14 +1019,18 @@ func (k *K3sAdapter) GetNodeMetrics() ([]NodeMetrics, error) {
 		// Get actual metrics from metrics-server
 		cpuUsage, memUsage, err := k.getNodeMetricsFromAPI(node.Name)
 		if err == nil {
-			nm.CPUUsage = cpuUsage
-			nm.MemUsage = memUsage
+			nm.CPUUsage = formatCPUHuman(cpuUsage)
+			nm.MemUsage = formatMemoryHuman(memUsage)
 			nm.CPUPercent = calculateCPUPercent(cpuUsage, nm.CPUAllocatable)
 			nm.MemPercent, nm.MemUsageBytes = calculateMemoryPercent(memUsage, nm.MemAllocatable)
 		} else {
 			nm.CPUUsage = "N/A"
 			nm.MemUsage = "N/A"
 		}
+
+		// Format allocatable values for display
+		nm.CPUAllocatable = formatCPUHuman(nm.CPUAllocatable)
+		nm.MemAllocatable = formatMemoryHuman(nm.MemAllocatable)
 
 		// Count pods on this node
 		pods, err := k.client.CoreV1().Pods("").List(k.ctx, metav1.ListOptions{
@@ -1117,32 +1136,29 @@ func (k *K3sAdapter) GetAllAppsMetrics() ([]AppResourceUsage, error) {
 			}
 		}
 
-		// Set limits/requests
-		app.CPULimit = cpuLimit
-		app.MemLimit = memLimit
-		app.CPURequest = cpuRequest
-		app.MemRequest = memRequest
+		// Set limits/requests (formatted)
+		app.CPULimit = formatCPUHuman(cpuLimit)
+		app.MemLimit = formatMemoryHuman(memLimit)
+		app.CPURequest = formatCPUHuman(cpuRequest)
+		app.MemRequest = formatMemoryHuman(memRequest)
 
-		// Format totals
+		// Format CPU usage
 		if totalCPUMillis > 0 {
-			app.CPUUsage = fmt.Sprintf("%dm", totalCPUMillis)
-			app.CPUPercent = calculateCPUPercent(app.CPUUsage, cpuLimit)
+			rawCPU := fmt.Sprintf("%dm", totalCPUMillis)
+			app.CPUUsage = formatCPUHuman(rawCPU)
+			app.CPUPercent = calculateCPUPercent(rawCPU, cpuLimit)
 		} else {
 			app.CPUUsage = "0m"
 		}
 
+		// Format memory usage
 		app.MemUsageBytes = totalMemBytes
 		if totalMemBytes > 0 {
-			if totalMemBytes < 1024*1024 {
-				app.MemUsage = fmt.Sprintf("%dKi", totalMemBytes/1024)
-			} else if totalMemBytes < 1024*1024*1024 {
-				app.MemUsage = fmt.Sprintf("%dMi", totalMemBytes/(1024*1024))
-			} else {
-				app.MemUsage = fmt.Sprintf("%.1fGi", float64(totalMemBytes)/(1024*1024*1024))
-			}
-			app.MemPercent, _ = calculateMemoryPercent(app.MemUsage, memLimit)
+			rawMem := fmt.Sprintf("%dKi", totalMemBytes/1024)
+			app.MemUsage = formatMemoryHuman(rawMem)
+			app.MemPercent, _ = calculateMemoryPercent(rawMem, memLimit)
 		} else {
-			app.MemUsage = "0Mi"
+			app.MemUsage = "0 MB"
 		}
 
 		result = append(result, app)
@@ -1151,6 +1167,77 @@ func (k *K3sAdapter) GetAllAppsMetrics() ([]AppResourceUsage, error) {
 	// Sort by app name
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].AppName < result[j].AppName
+	})
+
+	return result, nil
+}
+
+// GetSystemPodsMetrics returns resource usage for system pods (citizen-system, kube-system)
+func (k *K3sAdapter) GetSystemPodsMetrics() ([]SystemPodMetrics, error) {
+	result := make([]SystemPodMetrics, 0)
+
+	// System namespaces to monitor
+	systemNamespaces := []string{"citizen-system", "kube-system"}
+
+	for _, ns := range systemNamespaces {
+		pods, err := k.client.CoreV1().Pods(ns).List(k.ctx, metav1.ListOptions{})
+		if err != nil {
+			continue
+		}
+
+		for _, pod := range pods.Items {
+			spm := SystemPodMetrics{
+				PodName:   pod.Name,
+				Namespace: pod.Namespace,
+				Status:    string(pod.Status.Phase),
+				Age:       formatDuration(time.Since(pod.CreationTimestamp.Time)),
+			}
+
+			// Get restart count
+			for _, cs := range pod.Status.ContainerStatuses {
+				spm.Restarts += cs.RestartCount
+			}
+
+			// Get container limits for percentage calculation
+			var cpuLimit, memLimit string
+			if len(pod.Spec.Containers) > 0 {
+				container := pod.Spec.Containers[0]
+				if limit, ok := container.Resources.Limits[corev1.ResourceCPU]; ok {
+					cpuLimit = limit.String()
+				}
+				if limit, ok := container.Resources.Limits[corev1.ResourceMemory]; ok {
+					memLimit = limit.String()
+				}
+			}
+
+			// Get actual metrics
+			cpuUsage, memUsage, err := k.getPodMetricsFromAPI(ns, pod.Name)
+			if err == nil {
+				spm.CPUUsage = formatCPUHuman(cpuUsage)
+				spm.MemUsage = formatMemoryHuman(memUsage)
+				if cpuLimit != "" {
+					spm.CPUPercent = calculateCPUPercent(cpuUsage, cpuLimit)
+				}
+				if memLimit != "" {
+					spm.MemPercent, spm.MemUsageBytes = calculateMemoryPercent(memUsage, memLimit)
+				} else {
+					spm.MemUsageBytes = parseMemoryToBytes(memUsage)
+				}
+			} else {
+				spm.CPUUsage = "N/A"
+				spm.MemUsage = "N/A"
+			}
+
+			result = append(result, spm)
+		}
+	}
+
+	// Sort by namespace then name
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Namespace != result[j].Namespace {
+			return result[i].Namespace < result[j].Namespace
+		}
+		return result[i].PodName < result[j].PodName
 	})
 
 	return result, nil
@@ -1168,11 +1255,17 @@ func (k *K3sAdapter) GetClusterMetrics() (*ClusterMetrics, error) {
 		return nil, err
 	}
 
+	systemPods, err := k.GetSystemPodsMetrics()
+	if err != nil {
+		systemPods = []SystemPodMetrics{} // Don't fail if system pods can't be fetched
+	}
+
 	cm := &ClusterMetrics{
-		Nodes:     nodes,
-		Apps:      apps,
-		TotalApps: len(apps),
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Nodes:      nodes,
+		Apps:       apps,
+		SystemPods: systemPods,
+		TotalApps:  len(apps),
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 	}
 
 	// Aggregate node metrics
@@ -1359,6 +1452,56 @@ func parseMemoryToBytes(mem string) int64 {
 	// Plain bytes
 	val, _ := strconv.ParseInt(mem, 10, 64)
 	return val
+}
+
+// formatCPUHuman converts CPU values to human-readable format
+// e.g., "206103081n" -> "206m", "2" -> "2 cores"
+func formatCPUHuman(cpu string) string {
+	if cpu == "" || cpu == "N/A" {
+		return "N/A"
+	}
+
+	millis := parseCPUToMillis(cpu)
+	if millis == 0 {
+		return "0m"
+	}
+
+	if millis < 1000 {
+		return fmt.Sprintf("%dm", millis)
+	}
+	// Show as cores
+	cores := float64(millis) / 1000
+	if cores == float64(int(cores)) {
+		return fmt.Sprintf("%d cores", int(cores))
+	}
+	return fmt.Sprintf("%.1f cores", cores)
+}
+
+// formatMemoryHuman converts memory values to human-readable format
+// e.g., "1920008Ki" -> "1.8 GB", "4009252Ki" -> "3.8 GB"
+func formatMemoryHuman(mem string) string {
+	if mem == "" || mem == "N/A" {
+		return "N/A"
+	}
+
+	bytes := parseMemoryToBytes(mem)
+	if bytes == 0 {
+		return "0 B"
+	}
+
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+
+	if bytes < MB {
+		return fmt.Sprintf("%d KB", bytes/KB)
+	}
+	if bytes < GB {
+		return fmt.Sprintf("%d MB", bytes/MB)
+	}
+	return fmt.Sprintf("%.1f GB", float64(bytes)/float64(GB))
 }
 
 // formatDuration formats duration to human-readable string
