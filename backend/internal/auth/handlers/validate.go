@@ -5,9 +5,11 @@ import (
 	"backend/internal/database/api"
 	"backend/internal/tokens"
 	"backend/internal/utils"
+	"context"
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -128,10 +130,13 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 				if err == nil && user != nil {
 					utils.AuthDebugLog("API token validation successful for app: %s, User: %d", appName, user.ID)
 
-					// Update token usage asynchronously
-					go func() {
-						api.APITokens.UpdateTokenUsage(c.Context(), token, clientIP)
-					}()
+					// Update token usage asynchronously with independent context
+					// Note: c.Context() cannot be used in goroutines as it becomes invalid after response
+					go func(tokenCopy, ipCopy string) {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						api.APITokens.UpdateTokenUsage(ctx, tokenCopy, ipCopy)
+					}(token, clientIP)
 
 					return c.SendStatus(fiber.StatusOK)
 				}

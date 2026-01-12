@@ -44,6 +44,7 @@ stringData:
   REDIS_URL: "redis://default:<REPLACE_ME>@citizen-redis:6379/0"
   PLATFORM_ADAPTER: "k3s"
   K3S_IN_CLUSTER: "true"
+  LOGIN_HOST: "<REPLACE_ME>"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -401,6 +402,11 @@ spec:
                 secretKeyRef:
                   name: dotenv
                   key: REDIS_DB
+            - name: LOGIN_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: dotenv
+                  key: LOGIN_HOST
           ports:
             - containerPort: 3000
           volumeMounts:

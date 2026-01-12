@@ -436,3 +436,4 @@ heapdump*
 !docker/plugins-local/src/
 !docker/plugins-local/src/github.com/
 !docker/plugins-local/src/github.com/**
+requirements_roadmap.csv
