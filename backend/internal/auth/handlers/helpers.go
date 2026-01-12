@@ -273,10 +273,16 @@ func extractAppNameFromHost(host string) string {
 		return ""
 	case models.DomainTypeSubdomain:
 		subdomain := strings.TrimSuffix(host, "."+loginHost)
-		if !strings.Contains(subdomain, ".") && subdomain != "www" {
-			return subdomain
+		if subdomain == "www" {
+			return ""
 		}
-		return ""
+		// Multi-level subdomain desteği: app2.whimsical-isle.amber-ridge.app.domain.com
+		// İlk parça app adıdır
+		if strings.Contains(subdomain, ".") {
+			parts := strings.Split(subdomain, ".")
+			return parts[0]
+		}
+		return subdomain
 	case models.DomainTypeCustom:
 		domains, err := getActiveCustomDomainsFromDB()
 		if err != nil {
