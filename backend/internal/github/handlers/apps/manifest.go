@@ -43,10 +43,9 @@ func GitHubManifestRedirect(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).SendString("Missing state parameter")
 	}
 
-	// Validate state exists and refresh its timestamp (extends validity while user is on GitHub)
-	// This prevents "state expired" errors when users take time filling out the GitHub form
+	// Validate state exists in our store (but don't consume it yet - callback will do that)
 	stateService := githubservices.GetStateService()
-	if !stateService.TouchManifestState(state) {
+	if !stateService.ExistsManifestState(state) {
 		log.WithField("state", state[:8]+"...").Warn("Invalid or expired state in manifest redirect")
 		return c.Status(fiber.StatusBadRequest).SendString("Invalid or expired state - please try again")
 	}

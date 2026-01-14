@@ -39,6 +39,7 @@ func SetupGitHubWebhookSecret(webhookSecret string) {
 
 // SetupGitHubApp stores GitHub App configuration (manifest flow)
 // NOTE: Private key is stored in DB only, not in memory, for security.
+// If privateKey is nil, the existing gitHubPrivateKeyExists value is preserved.
 func SetupGitHubApp(appID int64, appSlug *string, privateKey *string, installationID *int64, appName *string) {
 	gitHubConfigMutex.Lock()
 	defer gitHubConfigMutex.Unlock()
@@ -46,7 +47,11 @@ func SetupGitHubApp(appID int64, appSlug *string, privateKey *string, installati
 	gitHubAppID = &appID
 	gitHubAppSlug = appSlug
 	gitHubAppName = appName
-	gitHubPrivateKeyExists = privateKey != nil && *privateKey != ""
+	// Only update privateKeyExists if privateKey is explicitly provided
+	// This prevents install callback from clearing the flag when it passes nil
+	if privateKey != nil {
+		gitHubPrivateKeyExists = *privateKey != ""
+	}
 	gitHubInstallationID = installationID
 
 	log := logger.Default().WithComponent("github-config")
