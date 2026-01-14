@@ -7,6 +7,7 @@ import (
 	"backend/internal/models"
 	"backend/internal/platform"
 	"backend/internal/platform/k3s"
+	"backend/internal/services"
 	"backend/internal/utils"
 	"context"
 	"fmt"
@@ -18,6 +19,18 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
+
+// IsDeploymentQueueEnabled checks if deployment queue is enabled
+func IsDeploymentQueueEnabled() bool {
+	// Check Redis availability first
+	if !database.IsRedisAvailable() {
+		return false
+	}
+
+	// Get setting from database (default: true)
+	ctx := context.Background()
+	return api.SystemSettings.GetSettingBool(ctx, "deployment_queue_enabled", true)
+}
 
 // DeployApp deploys an app from a git repository
 func DeployApp(c *fiber.Ctx) error {
@@ -228,7 +241,65 @@ func DeployApp(c *fiber.Ctx) error {
 	if deploymentRun != nil {
 		runID := deploymentRun.RunID
 
-		// Start async deployment in goroutine
+		// Check if deployment queue is enabled
+		if IsDeploymentQueueEnabled() {
+			// Use queue-based deployment
+			queue := services.GetDeploymentQueue()
+			
+			job := &services.DeploymentJob{
+				AppName:     appName,
+				RunID:       runID,
+				GitURL:      authenticatedGitURL,
+				GitBranch:   deployData.GitBranch,
+				Builder:     builderType,
+				TriggerType: "manual",
+				TriggeredBy: userID,
+				Priority:    services.PriorityNormal,
+			}
+
+			if err := queue.Enqueue(context.Background(), job); err != nil {
+				utils.ErrorLog("[DEPLOY] Failed to enqueue deployment: %v", err)
+				// Fall through to goroutine-based deployment
+			} else {
+				// Get queue position
+				queuedJobs, _ := queue.GetQueuedJobs(context.Background())
+				position := 0
+				for i, j := range queuedJobs {
+					if j.ID == job.ID {
+						position = i + 1
+						break
+					}
+				}
+
+				// Update initializing step
+				initLog := fmt.Sprintf("Deployment queued for %s\nPosition in queue: %d\nGit URL: %s\nBranch: %s\nBuilder: %s\n", 
+					appName, position, deployData.GitURL, deployData.GitBranch, builderType)
+				api.DeploymentRuns.UpdateDeploymentStep(context.Background(), runID, "initializing", "completed", &initLog)
+				deploymenthandlers.BroadcastDeploymentLog(runID, "initializing", "completed", initLog)
+
+				// Set status to queued
+				api.DeploymentRuns.UpdateDeploymentRunStatus(context.Background(), runID, "queued")
+				deploymenthandlers.BroadcastStepUpdate(runID, "initializing", "completed")
+
+				return c.JSON(utils.NewCitizenResponse(
+					true,
+					"App deployment queued successfully",
+					fiber.Map{
+						"app_name":       appName,
+						"git_url":        deployData.GitURL,
+						"branch":         deployData.GitBranch,
+						"builder":        builderType,
+						"run_id":         runID,
+						"job_id":         job.ID,
+						"status":         "queued",
+						"queue_position": position,
+						"message":        fmt.Sprintf("Deployment queued (position: %d). Connect to WebSocket for live updates.", position),
+					},
+				))
+			}
+		}
+
+		// Fallback: Start async deployment in goroutine (legacy mode or queue failed)
 		go func() {
 			ctx := context.Background()
 
@@ -278,6 +349,15 @@ func DeployApp(c *fiber.Ctx) error {
 				errLog := fmt.Sprintf("Deployment failed: %s", errorMsg)
 				api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "failed", &errLog)
 				deploymenthandlers.BroadcastDeploymentLog(runID, "building", "failed", errLog)
+
+				// Cleanup failed build jobs even on error
+				if k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter); ok {
+					fmt.Printf("[DEPLOY] 🧹 Cleaning up failed build jobs for %s\n", appName)
+					if cleanupErr := k3sAdapter.CleanupCompletedBuildJobs(appName); cleanupErr != nil {
+						fmt.Printf("[DEPLOY] Cleanup warning: %v\n", cleanupErr)
+					}
+				}
+
 				api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "failed", output, &errorMsg)
 				deploymenthandlers.BroadcastRunUpdate(runID, "failed")
 				return
@@ -462,4 +542,149 @@ func DeployApp(c *fiber.Ctx) error {
 		"App deployment started successfully",
 		responseData,
 	))
+}
+
+// ProcessQueuedDeployment processes a deployment job from the queue
+// This is called by the deployment queue worker
+func ProcessQueuedDeployment(ctx context.Context, job *services.DeploymentJob) error {
+	appName := job.AppName
+	runID := job.RunID
+	gitURL := job.GitURL
+	gitBranch := job.GitBranch
+	builderType := job.Builder
+	userID := job.TriggeredBy
+
+	utils.StartupLog("📦 [QUEUE] Processing deployment job %s for app %s", job.ID, appName)
+
+	// Update deployment steps - job is now running
+	initLog := fmt.Sprintf("Starting deployment for %s\nGit URL: %s\nBranch: %s\nBuilder: %s\n", appName, gitURL, gitBranch, builderType)
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "initializing", "completed", &initLog)
+	deploymenthandlers.BroadcastDeploymentLog(runID, "initializing", "completed", initLog)
+
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cloning", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "cloning", "running")
+	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "cloning")
+
+	// Deploy from git repository
+	var output string
+	var deployErr error
+
+	k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter)
+	if !ok {
+		return fmt.Errorf("K3s adapter not available")
+	}
+
+	// Mark cloning as completed and building as running
+	cloneLog := "Repository cloning started...\n"
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cloning", "completed", &cloneLog)
+	deploymenthandlers.BroadcastDeploymentLog(runID, "cloning", "completed", cloneLog)
+
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "building", "running")
+	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "building")
+
+	utils.StartupLog("[QUEUE] Calling DeployFromGitWithLogs with appName='%s', runID='%s'", appName, runID)
+	output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, gitURL, gitBranch, userID, func(logs string) {
+		// Broadcast live logs to WebSocket subscribers
+		deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", logs)
+		// Also append to database with step info
+		api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs)
+	})
+
+	if deployErr != nil {
+		// Update deployment run as failed
+		errorMsg := deployErr.Error()
+		errLog := fmt.Sprintf("Deployment failed: %s", errorMsg)
+		api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "failed", &errLog)
+		deploymenthandlers.BroadcastDeploymentLog(runID, "building", "failed", errLog)
+
+		// Cleanup failed build jobs
+		utils.StartupLog("[QUEUE] 🧹 Cleaning up failed build jobs for %s", appName)
+		if cleanupErr := k3sAdapter.CleanupCompletedBuildJobs(appName); cleanupErr != nil {
+			utils.WarnLog("[QUEUE] Cleanup warning: %v", cleanupErr)
+		}
+
+		api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "failed", output, &errorMsg)
+		deploymenthandlers.BroadcastRunUpdate(runID, "failed")
+		return deployErr
+	}
+
+	// Update deployment run as completed
+	buildLog := "Build completed successfully\n"
+	pushLog := "Image pushed to registry\n"
+	deployLog := "Deployment rolled out successfully\n"
+
+	// Building completed
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "completed", &buildLog)
+	deploymenthandlers.BroadcastStepUpdate(runID, "building", "completed")
+	deploymenthandlers.BroadcastDeploymentLog(runID, "building", "completed", buildLog)
+
+	// Pushing
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "pushing", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "pushing", "running")
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "pushing", "completed", &pushLog)
+	deploymenthandlers.BroadcastStepUpdate(runID, "pushing", "completed")
+	deploymenthandlers.BroadcastDeploymentLog(runID, "pushing", "completed", pushLog)
+
+	// Deploying - wait for rollout to complete
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "deploying", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "deploying", "running")
+	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "deploying")
+
+	// Wait for deployment rollout to complete
+	rolloutLog := "Waiting for pods to be ready...\n"
+	deploymenthandlers.BroadcastDeploymentLog(runID, "deploying", "running", rolloutLog)
+
+	if rolloutErr := k3sAdapter.WaitForDeploymentRollout(appName, 5*time.Minute); rolloutErr != nil {
+		rolloutFailLog := fmt.Sprintf("Rollout warning: %v\n", rolloutErr)
+		deploymenthandlers.BroadcastDeploymentLog(runID, "deploying", "running", rolloutFailLog)
+	}
+
+	deployLog = "Deployment rolled out successfully\n"
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "deploying", "completed", &deployLog)
+	deploymenthandlers.BroadcastStepUpdate(runID, "deploying", "completed")
+	deploymenthandlers.BroadcastDeploymentLog(runID, "deploying", "completed", deployLog)
+
+	// Cleanup - remove old build jobs
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cleanup", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "cleanup", "running")
+
+	if cleanupErr := k3sAdapter.CleanupCompletedBuildJobs(appName); cleanupErr != nil {
+		utils.WarnLog("[QUEUE] Cleanup warning: %v", cleanupErr)
+	}
+
+	cleanupLog := "Old build jobs cleaned up\n"
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cleanup", "completed", &cleanupLog)
+	deploymenthandlers.BroadcastStepUpdate(runID, "cleanup", "completed")
+	deploymenthandlers.BroadcastDeploymentLog(runID, "cleanup", "completed", cleanupLog)
+
+	// Get app URL for the response
+	mainDomain := os.Getenv("MAIN_DOMAIN")
+	if mainDomain == "" {
+		mainDomain = os.Getenv("APP_HOST")
+	}
+	appURL := fmt.Sprintf("https://%s.%s", appName, mainDomain)
+
+	// Complete the run with app URL
+	api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "completed", output, nil)
+	deploymenthandlers.BroadcastRunUpdate(runID, "completed")
+
+	// Broadcast app URL
+	deploymenthandlers.BroadcastDeploymentLog(runID, "completed", "completed", fmt.Sprintf("\nApp URL: %s\n", appURL))
+
+	// Save deployment info to database
+	newDeployment := &models.AppDeployment{
+		AppName:    appName,
+		GitURL:     gitURL,
+		GitBranch:  gitBranch,
+		Status:     "deployed",
+		LastDeploy: time.Now(),
+	}
+	if builderType != "" {
+		newDeployment.Builder = builderType
+	}
+	database.SaveAppDeployment(newDeployment)
+
+	utils.StartupLog("📦 [QUEUE] Deployment completed for job %s (app: %s)", job.ID, appName)
+	return nil
 }

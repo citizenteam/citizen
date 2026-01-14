@@ -13,8 +13,11 @@ import (
 
 	authservices "backend/internal/auth/services"
 	"backend/internal/database"
+	"backend/internal/database/api"
 	githubservices "backend/internal/github/services"
 	"backend/internal/middleware"
+	"backend/internal/platform"
+	"backend/internal/platform/k3s"
 	"backend/internal/routes"
 	"backend/internal/services"
 	"backend/internal/utils"
@@ -115,6 +118,19 @@ func main() {
 		// Load GitHub config from database
 		utils.StartupLog("Loading GitHub configuration...")
 		loadGitHubConfigFromDB()
+
+		// Start deployment queue if enabled (default: true, configurable via DB)
+		if database.IsRedisAvailable() {
+			queueEnabled := api.SystemSettings.GetSettingBool(context.Background(), "deployment_queue_enabled", true)
+			if queueEnabled {
+				utils.StartupLog("📦 Starting deployment queue...")
+				startDeploymentQueue()
+			} else {
+				utils.StartupLog("📦 Deployment queue disabled (configure via System Settings)")
+			}
+		} else {
+			utils.StartupLog("📦 Deployment queue disabled (Redis not available)")
+		}
 	} else {
 		utils.WarnLog("SKIP_DB_PING=true - Database connection skipped")
 	}
@@ -188,6 +204,10 @@ func main() {
 	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
 		utils.ErrorLog("Server shutdown error: %v", err)
 	}
+
+	// Stop deployment queue
+	utils.StartupLog("Stopping deployment queue...")
+	services.GetDeploymentQueue().Stop()
 
 	utils.StartupLog("Closing database connections...")
 	database.CloseDB()
@@ -393,15 +413,81 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 
 // startBackgroundTasks starts background maintenance tasks
 func startBackgroundTasks() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
+	// SSO cleanup every 5 minutes
+	ssoTicker := time.NewTicker(5 * time.Minute)
+	
+	// Stale deployment crawler every 30 seconds
+	staleDeploymentTicker := time.NewTicker(30 * time.Second)
 
 	utils.StartupLog("Background cleanup tasks started")
+	utils.StartupLog("🔍 Stale deployment crawler started (30s interval)")
 
-	for range ticker.C {
-		// Clean expired SSO tokens
-		authservices.CleanExpiredSSOTokens()
-		utils.DebugLog("Expired SSO tokens cleanup completed")
+	go func() {
+		defer ssoTicker.Stop()
+		for range ssoTicker.C {
+			// Clean expired SSO tokens
+			authservices.CleanExpiredSSOTokens()
+			utils.DebugLog("Expired SSO tokens cleanup completed")
+		}
+	}()
+
+	// Stale deployment crawler
+	defer staleDeploymentTicker.Stop()
+	for range staleDeploymentTicker.C {
+		cleanupStaleDeployments()
+	}
+}
+
+// cleanupStaleDeployments finds and marks stale deployments as failed
+func cleanupStaleDeployments() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Find deployments that are stuck (running for more than 30 minutes or superseded)
+	staleRuns, err := database.GetStaleDeploymentRuns(ctx, 30*time.Minute)
+	if err != nil {
+		utils.DebugLog("Stale deployment check failed: %v", err)
+		return
+	}
+
+	if len(staleRuns) == 0 {
+		return
+	}
+
+	utils.WarnLog("🧹 Found %d stale deployment(s), marking as failed...", len(staleRuns))
+
+	for _, run := range staleRuns {
+		// Determine reason
+		var reason string
+		timeSinceStart := time.Since(run.StartedAt)
+		if timeSinceStart > 30*time.Minute {
+			reason = fmt.Sprintf("Deployment timed out after %v (server may have restarted)", timeSinceStart.Round(time.Second))
+		} else {
+			reason = "Deployment superseded by a newer deployment"
+		}
+
+		// Mark as failed
+		if err := database.FailStaleDeploymentRun(ctx, run.RunID, reason); err != nil {
+			utils.ErrorLog("Failed to mark stale deployment %s as failed: %v", run.RunID, err)
+			continue
+		}
+
+		utils.WarnLog("🗑️ Marked deployment %s (%s) as failed: %s", run.RunID, run.AppName, reason)
+
+		// Cleanup K3s resources if possible
+		cleanupStaleDeploymentK3sResources(run.AppName)
+	}
+}
+
+// cleanupStaleDeploymentK3sResources cleans up K3s build jobs for a stale deployment
+func cleanupStaleDeploymentK3sResources(appName string) {
+	// Try to get K3s adapter and cleanup build jobs
+	if k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter); ok {
+		if cleanupErr := k3sAdapter.CleanupCompletedBuildJobs(appName); cleanupErr != nil {
+			utils.DebugLog("K3s cleanup for %s: %v", appName, cleanupErr)
+		} else {
+			utils.DebugLog("K3s build jobs cleaned up for %s", appName)
+		}
 	}
 }
 
@@ -427,4 +513,109 @@ func loadGitHubConfigFromDB() {
 	}
 
 	utils.StartupLog("GitHub App configuration loaded from database")
+}
+
+// startDeploymentQueue initializes and starts the deployment queue
+func startDeploymentQueue() {
+	// Get worker count from database (default: 3)
+	workerCount := api.SystemSettings.GetSettingInt(context.Background(), "deployment_queue_workers", 3)
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > 10 {
+		workerCount = 10
+	}
+
+	// Set the job processor to use the handlers package function
+	// This avoids circular imports by using a function variable
+	services.DefaultJobProcessor = func(ctx context.Context, job *services.DeploymentJob) error {
+		// Import handlers dynamically to process jobs
+		// The actual deployment logic is in handlers.ProcessQueuedDeployment
+		return processQueuedDeploymentJob(ctx, job)
+	}
+
+	// Get and start the queue with configured worker count
+	queue := services.NewDeploymentQueue(workerCount)
+	if err := queue.Start(); err != nil {
+		utils.ErrorLog("Failed to start deployment queue: %v", err)
+		return
+	}
+
+	utils.StartupLog("✅ Deployment queue started with %d workers", workerCount)
+}
+
+// processQueuedDeploymentJob processes a deployment job from the queue
+// This wraps the actual deployment logic to handle the job lifecycle
+func processQueuedDeploymentJob(ctx context.Context, job *services.DeploymentJob) error {
+	utils.StartupLog("📦 [QUEUE] Processing job %s for app %s", job.ID, job.AppName)
+
+	// Get K3s adapter
+	k3sAdapter, ok := platform.GetAdapter().(*k3s.K3sAdapter)
+	if !ok {
+		return fmt.Errorf("K3s adapter not available")
+	}
+
+	runID := job.RunID
+	appName := job.AppName
+
+	// Update deployment steps - job is now running
+	initLog := fmt.Sprintf("Starting deployment for %s\nGit URL: %s\nBranch: %s\nBuilder: %s\n", 
+		appName, job.GitURL, job.GitBranch, job.Builder)
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "initializing", "completed", &initLog)
+
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cloning", "running", nil)
+	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "cloning")
+
+	// Mark cloning as completed and building as running
+	cloneLog := "Repository cloning started...\n"
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cloning", "completed", &cloneLog)
+
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "running", nil)
+	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "building")
+
+	// Run deployment
+	output, deployErr := k3sAdapter.DeployFromGitWithLogs(appName, job.GitURL, job.GitBranch, job.TriggeredBy, func(logs string) {
+		api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs)
+	})
+
+	if deployErr != nil {
+		errorMsg := deployErr.Error()
+		errLog := fmt.Sprintf("Deployment failed: %s", errorMsg)
+		api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "failed", &errLog)
+		
+		// Cleanup failed build jobs
+		k3sAdapter.CleanupCompletedBuildJobs(appName)
+		
+		api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "failed", output, &errorMsg)
+		return deployErr
+	}
+
+	// Update steps as completed
+	buildLog := "Build completed successfully\n"
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "completed", &buildLog)
+
+	pushLog := "Image pushed to registry\n"
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "pushing", "running", nil)
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "pushing", "completed", &pushLog)
+
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "deploying", "running", nil)
+	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "deploying")
+
+	// Wait for rollout
+	k3sAdapter.WaitForDeploymentRollout(appName, 5*time.Minute)
+
+	deployLog := "Deployment rolled out successfully\n"
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "deploying", "completed", &deployLog)
+
+	// Cleanup
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cleanup", "running", nil)
+	k3sAdapter.CleanupCompletedBuildJobs(appName)
+	cleanupLog := "Old build jobs cleaned up\n"
+	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cleanup", "completed", &cleanupLog)
+
+	// Complete
+	api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "completed", output, nil)
+
+	utils.StartupLog("📦 [QUEUE] Deployment completed for job %s (app: %s)", job.ID, appName)
+	return nil
 }

@@ -17,6 +17,7 @@ import (
 	"backend/internal/middleware"
 	rbacmw "backend/internal/rbac/middleware"
 	ssehandlers "backend/internal/sse/handlers"
+	systemhandlers "backend/internal/system/handlers"
 	webhookshandlers "backend/internal/webhooks/handlers"
 	"fmt"
 
@@ -147,6 +148,12 @@ func SetupRoutes(app *fiber.App) {
 
 	// Admin audit logs - Instance Admin only
 	citizen.Get("/admin/api-tokens/failed-attempts", rbacmw.RequireAdmin(), apitokenshandlers.GetFailedLoginAttempts)
+
+	// System settings - Instance Admin only
+	citizen.Get("/system/settings", rbacmw.RequireAdmin(), systemhandlers.GetSystemSettings)
+	citizen.Get("/system/build-settings", rbacmw.RequireAdmin(), systemhandlers.GetBuildSettings)
+	citizen.Put("/system/build-settings", rbacmw.RequireAdmin(), systemhandlers.UpdateBuildSettings)
+	citizen.Get("/system/queue-status", rbacmw.RequireAdmin(), systemhandlers.GetQueueStatus)
 
 	// =====================
 	// GENERAL MEMBER+ ENDPOINTS

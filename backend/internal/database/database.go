@@ -52,11 +52,11 @@ func ConnectDB() {
 		poolConfig.MaxConnIdleTime = time.Minute * 10
 		poolConfig.HealthCheckPeriod = time.Minute * 2
 	}
-	
+
 	// Connection timeout settings
 	poolConfig.ConnConfig.ConnectTimeout = time.Second * 10
 
-	utils.DatabaseDebugLog("Pool config - MaxConns: %d, MinConns: %d, MaxLifetime: %v", 
+	utils.DatabaseDebugLog("Pool config - MaxConns: %d, MinConns: %d, MaxLifetime: %v",
 		poolConfig.MaxConns, poolConfig.MinConns, poolConfig.MaxConnLifetime)
 
 	// Retry connection with exponential backoff
@@ -65,7 +65,7 @@ func ConnectDB() {
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		utils.DatabaseDebugLog("Database connection attempt %d/%d", attempt, maxRetries)
-		
+
 		DB, err = pgxpool.NewWithConfig(context.Background(), poolConfig)
 		if err != nil {
 			utils.WarnLog("Database connection attempt %d failed: %v", attempt, err)
@@ -73,7 +73,7 @@ func ConnectDB() {
 				utils.ErrorLog("All database connection attempts failed")
 				log.Fatalf("Database connection failed after %d attempts: %v", maxRetries, err)
 			}
-			
+
 			// Exponential backoff
 			delay := baseDelay * time.Duration(1<<(attempt-1))
 			utils.DatabaseDebugLog("Retrying in %v...", delay)
@@ -85,17 +85,17 @@ func ConnectDB() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		err = DB.Ping(ctx)
 		cancel()
-		
+
 		if err != nil {
 			utils.WarnLog("Database ping failed on attempt %d: %v", attempt, err)
 			DB.Close()
 			DB = nil
-			
+
 			if attempt == maxRetries {
 				utils.ErrorLog("Database ping failed after %d attempts", maxRetries)
 				log.Fatalf("Database ping failed after %d attempts: %v", maxRetries, err)
 			}
-			
+
 			delay := baseDelay * time.Duration(1<<(attempt-1))
 			utils.DatabaseDebugLog("Retrying in %v...", delay)
 			time.Sleep(delay)
@@ -107,7 +107,7 @@ func ConnectDB() {
 	}
 
 	utils.StartupLog("Database connection established successfully")
-	utils.DatabaseDebugLog("Connection pool stats - Max: %d, Available: %d", 
+	utils.DatabaseDebugLog("Connection pool stats - Max: %d, Available: %d",
 		DB.Stat().MaxConns(), DB.Stat().IdleConns())
 
 	// Initialize the database API with the connection pool
@@ -119,12 +119,12 @@ func ConnectDB() {
 func CloseDB() {
 	if DB != nil {
 		utils.DatabaseDebugLog("Closing database connection...")
-		
+
 		// Get final stats before closing
 		stats := DB.Stat()
-		utils.DatabaseDebugLog("Final pool stats - Total: %d, Idle: %d, Used: %d", 
+		utils.DatabaseDebugLog("Final pool stats - Total: %d, Idle: %d, Used: %d",
 			stats.TotalConns(), stats.IdleConns(), stats.AcquiredConns())
-		
+
 		DB.Close()
 		utils.StartupLog("Database connection closed")
 	}
@@ -137,7 +137,7 @@ func GetDBStats() map[string]interface{} {
 			"status": "disconnected",
 		}
 	}
-	
+
 	stats := DB.Stat()
 	return map[string]interface{}{
 		"status":          "connected",
@@ -156,17 +156,17 @@ func HealthCheck() error {
 	if DB == nil {
 		return fmt.Errorf("database connection not initialized")
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 	defer cancel()
-	
+
 	// Simple ping test
 	err := DB.Ping(ctx)
 	if err != nil {
 		utils.ErrorLog("Database health check failed: %v", err)
 		return fmt.Errorf("database ping failed: %w", err)
 	}
-	
+
 	// Test with a simple query
 	var result int
 	err = DB.QueryRow(ctx, "SELECT 1").Scan(&result)
@@ -174,7 +174,7 @@ func HealthCheck() error {
 		utils.ErrorLog("Database query test failed: %v", err)
 		return fmt.Errorf("database query test failed: %w", err)
 	}
-	
+
 	utils.DatabaseDebugLog("Database health check passed")
 	return nil
 }
@@ -184,15 +184,15 @@ func CreateAdminUserFromEnv() error {
 	username := os.Getenv("ADMIN_USERNAME")
 	password := os.Getenv("ADMIN_PASSWORD")
 	email := os.Getenv("ADMIN_EMAIL")
-	
+
 	// Skip if environment variables are not set
 	if username == "" || password == "" || email == "" {
 		utils.DatabaseDebugLog("Admin user environment variables not found, skipping admin creation")
 		return nil
 	}
-	
+
 	utils.DatabaseDebugLog("Creating admin user: %s", username)
-	
+
 	// Hash password
 	hashedPassword, err := HashPassword(password)
 	if err != nil {
@@ -215,7 +215,7 @@ func CreateAdminUserFromEnv() error {
 	if err != nil {
 		return fmt.Errorf("failed to create admin user: %w", err)
 	}
-	
+
 	utils.StartupLog("Admin user created/updated successfully (username: %s, email: %s)", username, email)
 	return nil
 }
@@ -224,4 +224,16 @@ func CreateAdminUserFromEnv() error {
 func HashPassword(password string) (string, error) {
 	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
 	return string(bytes), err
+}
+
+// GetStaleDeploymentRuns finds deployment runs stuck in running state
+// Wrapper for api.DeploymentRuns.GetStaleDeploymentRuns
+func GetStaleDeploymentRuns(ctx context.Context, maxAge time.Duration) ([]api.DeploymentRun, error) {
+	return api.DeploymentRuns.GetStaleDeploymentRuns(ctx, maxAge)
+}
+
+// FailStaleDeploymentRun marks a stale deployment run as failed
+// Wrapper for api.DeploymentRuns.FailStaleDeploymentRun
+func FailStaleDeploymentRun(ctx context.Context, runID string, reason string) error {
+	return api.DeploymentRuns.FailStaleDeploymentRun(ctx, runID, reason)
 }

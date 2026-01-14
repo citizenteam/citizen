@@ -363,5 +363,99 @@ func (api *DeploymentRunsAPI) GetLatestDeploymentRun(ctx context.Context, appNam
 	return api.GetDeploymentRun(ctx, runID)
 }
 
+// GetStaleDeploymentRuns finds deployment runs that are stuck in running state
+// Returns runs that are either:
+// 1. Running for longer than maxAge
+// 2. Running but a newer deployment exists for the same app
+func (api *DeploymentRunsAPI) GetStaleDeploymentRuns(ctx context.Context, maxAge time.Duration) ([]DeploymentRun, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("database connection not initialized")
+	}
+
+	// Find deployments that are running/building/pending and either:
+	// - Started more than maxAge ago
+	// - Have a newer deployment for the same app
+	query := `
+		WITH running_deployments AS (
+			SELECT dr.*, 
+				   ROW_NUMBER() OVER (PARTITION BY dr.app_name ORDER BY dr.started_at DESC) as rn
+			FROM deployment_runs dr
+			WHERE dr.status IN ('pending', 'running', 'cloning', 'building', 'pushing', 'deploying')
+		)
+		SELECT id, app_name, run_id, git_url, git_branch, git_commit, commit_message,
+			   builder, image_ref, status, started_at, completed_at, duration_seconds,
+			   build_logs, error_message, trigger_type, triggered_by, job_name, namespace,
+			   created_at, updated_at
+		FROM running_deployments
+		WHERE 
+			-- Stale: running for too long
+			started_at < $1
+			-- OR: not the latest running deployment for this app (superseded)
+			OR rn > 1
+	`
+
+	cutoffTime := time.Now().Add(-maxAge)
+	rows, err := DB.Query(ctx, query, cutoffTime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stale deployment runs: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []DeploymentRun
+	for rows.Next() {
+		var run DeploymentRun
+		err := rows.Scan(
+			&run.ID, &run.AppName, &run.RunID, &run.GitURL, &run.GitBranch, &run.GitCommit, &run.CommitMessage,
+			&run.Builder, &run.ImageRef, &run.Status, &run.StartedAt, &run.CompletedAt, &run.DurationSeconds,
+			&run.BuildLogs, &run.ErrorMessage, &run.TriggerType, &run.TriggeredBy, &run.JobName, &run.Namespace,
+			&run.CreatedAt, &run.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan stale deployment run: %w", err)
+		}
+		runs = append(runs, run)
+	}
+
+	return runs, nil
+}
+
+// FailStaleDeploymentRun marks a stale deployment run as failed
+func (api *DeploymentRunsAPI) FailStaleDeploymentRun(ctx context.Context, runID string, reason string) error {
+	if DB == nil {
+		return fmt.Errorf("database connection not initialized")
+	}
+
+	// Update deployment run status
+	runQuery := `
+		UPDATE deployment_runs 
+		SET status = 'failed', 
+			error_message = $1,
+			completed_at = CURRENT_TIMESTAMP,
+			duration_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at))::INTEGER,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE run_id = $2 AND status NOT IN ('completed', 'failed')
+	`
+	_, err := DB.Exec(ctx, runQuery, reason, runID)
+	if err != nil {
+		return fmt.Errorf("failed to fail deployment run: %w", err)
+	}
+
+	// Update any running/pending steps to failed
+	stepQuery := `
+		UPDATE deployment_steps 
+		SET status = 'failed',
+			completed_at = CURRENT_TIMESTAMP,
+			error_message = $1,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE run_id = $2 AND status IN ('pending', 'running')
+	`
+	_, err = DB.Exec(ctx, stepQuery, reason, runID)
+	if err != nil {
+		return fmt.Errorf("failed to fail deployment steps: %w", err)
+	}
+
+	return nil
+}
+
 // Global instance
 var DeploymentRuns = &DeploymentRunsAPI{}

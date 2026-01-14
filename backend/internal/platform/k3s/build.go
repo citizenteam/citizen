@@ -269,14 +269,17 @@ func (k *K3sAdapter) getJobPodLogs(namespace, jobName string) string {
 func (k *K3sAdapter) cleanupFailedBuildJob(namespace, jobName string) {
 	fmt.Printf("[BUILD] 🧹 Cleaning up failed build job %s in namespace %s\n", jobName, namespace)
 
+	// Use a fresh context for cleanup - the original context may be cancelled due to timeout
+	cleanupCtx := context.Background()
+
 	// Delete pods associated with the job first
-	podList, err := k.client.CoreV1().Pods(namespace).List(k.ctx, metav1.ListOptions{
+	podList, err := k.client.CoreV1().Pods(namespace).List(cleanupCtx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
 	})
 	if err == nil && podList != nil {
 		for _, pod := range podList.Items {
 			fmt.Printf("[BUILD] 🗑️ Deleting build pod %s\n", pod.Name)
-			deleteErr := k.client.CoreV1().Pods(namespace).Delete(k.ctx, pod.Name, metav1.DeleteOptions{})
+			deleteErr := k.client.CoreV1().Pods(namespace).Delete(cleanupCtx, pod.Name, metav1.DeleteOptions{})
 			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
 				fmt.Printf("[BUILD] ⚠️ Failed to delete pod %s: %v\n", pod.Name, deleteErr)
 			}
@@ -289,7 +292,7 @@ func (k *K3sAdapter) cleanupFailedBuildJob(namespace, jobName string) {
 		PropagationPolicy: &propagationPolicy,
 	}
 
-	err = k.client.BatchV1().Jobs(namespace).Delete(k.ctx, jobName, deleteOptions)
+	err = k.client.BatchV1().Jobs(namespace).Delete(cleanupCtx, jobName, deleteOptions)
 	if err != nil && !apierrors.IsNotFound(err) {
 		fmt.Printf("[BUILD] Failed to delete job %s: %v\n", jobName, err)
 	} else {
