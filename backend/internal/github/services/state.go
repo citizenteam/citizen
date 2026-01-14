@@ -105,6 +105,18 @@ func (s *stateStore) exists(state string) bool {
 	return ok
 }
 
+// touch checks if state exists and refreshes its timestamp
+// This extends the validity period when the state is actively being used
+func (s *stateStore) touch(state string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.items[state]; ok {
+		s.items[state] = time.Now()
+		return true
+	}
+	return false
+}
+
 // NewStateService creates a new state service
 var globalStateService *StateService
 var stateServiceOnce sync.Once
@@ -135,6 +147,12 @@ func (s *StateService) ValidateManifestState(state string, maxAge time.Duration)
 // ExistsManifestState checks if manifest state exists (without consuming it)
 func (s *StateService) ExistsManifestState(state string) bool {
 	return s.manifestStates.exists(state)
+}
+
+// TouchManifestState checks if manifest state exists and refreshes its timestamp
+// Use this when the state is actively being used to extend validity period
+func (s *StateService) TouchManifestState(state string) bool {
+	return s.manifestStates.touch(state)
 }
 
 // GenerateInstallState generates a secure state for install flow
