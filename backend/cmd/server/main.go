@@ -14,6 +14,7 @@ import (
 	authservices "backend/internal/auth/services"
 	"backend/internal/database"
 	"backend/internal/database/api"
+	deploymenthandlers "backend/internal/deployments/handlers"
 	githubservices "backend/internal/github/services"
 	"backend/internal/middleware"
 	"backend/internal/platform"
@@ -562,19 +563,26 @@ func processQueuedDeploymentJob(ctx context.Context, job *services.DeploymentJob
 	initLog := fmt.Sprintf("Starting deployment for %s\nGit URL: %s\nBranch: %s\nBuilder: %s\n", 
 		appName, job.GitURL, job.GitBranch, job.Builder)
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "initializing", "completed", &initLog)
+	deploymenthandlers.BroadcastDeploymentLog(runID, "initializing", "completed", initLog)
 
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cloning", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "cloning", "running")
 	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "cloning")
 
 	// Mark cloning as completed and building as running
 	cloneLog := "Repository cloning started...\n"
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cloning", "completed", &cloneLog)
+	deploymenthandlers.BroadcastDeploymentLog(runID, "cloning", "completed", cloneLog)
 
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "building", "running")
 	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "building")
 
-	// Run deployment
+	// Run deployment with live log broadcasting
 	output, deployErr := k3sAdapter.DeployFromGitWithLogs(appName, job.GitURL, job.GitBranch, job.TriggeredBy, func(logs string) {
+		// Broadcast live logs to SSE subscribers
+		deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", logs)
+		// Also append to database
 		api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs)
 	})
 
@@ -582,39 +590,52 @@ func processQueuedDeploymentJob(ctx context.Context, job *services.DeploymentJob
 		errorMsg := deployErr.Error()
 		errLog := fmt.Sprintf("Deployment failed: %s", errorMsg)
 		api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "failed", &errLog)
+		deploymenthandlers.BroadcastDeploymentLog(runID, "building", "failed", errLog)
 		
 		// Cleanup failed build jobs
 		k3sAdapter.CleanupCompletedBuildJobs(appName)
 		
 		api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "failed", output, &errorMsg)
+		deploymenthandlers.BroadcastRunUpdate(runID, "failed")
 		return deployErr
 	}
 
 	// Update steps as completed
 	buildLog := "Build completed successfully\n"
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "completed", &buildLog)
+	deploymenthandlers.BroadcastStepUpdate(runID, "building", "completed")
+	deploymenthandlers.BroadcastDeploymentLog(runID, "building", "completed", buildLog)
 
 	pushLog := "Image pushed to registry\n"
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "pushing", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "pushing", "running")
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "pushing", "completed", &pushLog)
+	deploymenthandlers.BroadcastDeploymentLog(runID, "pushing", "completed", pushLog)
 
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "deploying", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "deploying", "running")
 	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "deploying")
 
 	// Wait for rollout
+	rolloutLog := "Waiting for deployment rollout...\n"
+	deploymenthandlers.BroadcastDeploymentLog(runID, "deploying", "running", rolloutLog)
 	k3sAdapter.WaitForDeploymentRollout(appName, 5*time.Minute)
 
 	deployLog := "Deployment rolled out successfully\n"
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "deploying", "completed", &deployLog)
+	deploymenthandlers.BroadcastDeploymentLog(runID, "deploying", "completed", deployLog)
 
 	// Cleanup
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cleanup", "running", nil)
+	deploymenthandlers.BroadcastStepUpdate(runID, "cleanup", "running")
 	k3sAdapter.CleanupCompletedBuildJobs(appName)
 	cleanupLog := "Old build jobs cleaned up\n"
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "cleanup", "completed", &cleanupLog)
+	deploymenthandlers.BroadcastDeploymentLog(runID, "cleanup", "completed", cleanupLog)
 
 	// Complete
 	api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "completed", output, nil)
+	deploymenthandlers.BroadcastRunUpdate(runID, "completed")
 
 	utils.StartupLog("📦 [QUEUE] Deployment completed for job %s (app: %s)", job.ID, appName)
 	return nil
