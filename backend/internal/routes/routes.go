@@ -134,6 +134,12 @@ func SetupRoutes(app *fiber.App) {
 	citizen.Put("/apps/:app_name/deployment", rbacmw.RequireAppMember(), deploymenthandlers.UpdateAppDeployment)
 	citizen.Put("/apps/:app_name/deployment/status", rbacmw.RequireAppMember(), deploymenthandlers.UpdateAppDeploymentStatus)
 
+	// Local file upload and deployment - Member+
+	citizen.Post("/apps/:app_name/upload", rbacmw.RequireAppMember(), appshandlers.UploadTarball)
+	citizen.Post("/apps/:app_name/deploy-local", rbacmw.RequireAppMember(), appshandlers.DeployFromLocal)
+	citizen.Get("/user/uploads", appshandlers.ListUserUploads)
+	citizen.Delete("/user/uploads/:filename", appshandlers.DeleteUserUpload)
+
 	// =====================
 	// ADMIN ONLY ENDPOINTS
 	// =====================

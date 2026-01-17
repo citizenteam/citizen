@@ -26,8 +26,9 @@ func Protected() fiber.Handler {
 			return c.Next()
 		}
 
-		// First check if JWT auth already succeeded
-		if c.Locals("auth_type") == "jwt" {
+		// Check if JWT or device token auth already succeeded
+		authType := c.Locals("auth_type")
+		if authType == "jwt" || authType == "device_token" {
 			citizenAuthUserID, _ := c.Locals("citizenauth_user_id").(string)
 			if citizenAuthUserID == "" {
 				return response.Unauthorized(c, "CitizenAuth user context missing")

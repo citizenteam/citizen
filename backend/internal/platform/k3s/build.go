@@ -136,6 +136,141 @@ func (k *K3sAdapter) submitBuildJob(appName, gitURL, branch, imageRef, builderTy
 	return jobName, nil
 }
 
+// submitBuildJobFromLocal creates a build job from a pre-extracted local directory
+func (k *K3sAdapter) submitBuildJobFromLocal(appName, localPath, imageRef, builderType string) (string, error) {
+	namespace := k.builderNamespaceOrDefault()
+	if namespace == "" {
+		return "", fmt.Errorf("builder namespace is not configured")
+	}
+
+	jobName := fmt.Sprintf("build-%s-%d", sanitizeNameForK8s(appName), time.Now().Unix())
+	backoffLimit := pointer.Int32(1)
+	ttl := pointer.Int32(3600)
+	socketType := corev1.HostPathSocket
+	hostPathType := corev1.HostPathDirectory
+	containerdSocketPath := "/run/k3s/containerd/containerd.sock"
+	containerdSocketFallback := "/run/containerd/containerd.sock"
+
+	// Environment variables for local build (no git clone)
+	envVars := k.buildJobEnvForLocal(appName, imageRef, builderType)
+
+	image := k.builderImage
+	if normalizeBuilderType(builderType) == "dockerfile" && strings.TrimSpace(k.dockerBuilderImage) != "" {
+		image = k.dockerBuilderImage
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       appName,
+				"app.kubernetes.io/component":  "builder",
+				"app.kubernetes.io/managed-by": "citizen",
+			},
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit:            backoffLimit,
+			TTLSecondsAfterFinished: ttl,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"job-name": jobName,
+						"app":      appName,
+					},
+				},
+				Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					Containers: []corev1.Container{
+						{
+							Name:    "builder",
+							Image:   image,
+							Command: []string{"sh", "-c"},
+							Args: []string{
+								buildJobScriptForLocal(),
+							},
+							Env: envVars,
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "docker-sock",
+									MountPath: "/var/run/docker.sock",
+								},
+								{
+									Name:      "workspace",
+									MountPath: "/workspace",
+								},
+								{
+									Name:      "containerd-sock",
+									MountPath: containerdSocketPath,
+								},
+								{
+									Name:      "containerd-sock-fallback",
+									MountPath: containerdSocketFallback,
+								},
+								{
+									Name:      "local-source",
+									MountPath: "/local-source",
+									ReadOnly:  true,
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "docker-sock",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/var/run/docker.sock",
+									Type: &socketType,
+								},
+							},
+						},
+						{
+							Name: "workspace",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: "containerd-sock",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: containerdSocketPath,
+									Type: &socketType,
+								},
+							},
+						},
+						{
+							Name: "containerd-sock-fallback",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: containerdSocketFallback,
+									Type: &socketType,
+								},
+							},
+						},
+						{
+							Name: "local-source",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: localPath,
+									Type: &hostPathType,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if _, err := k.client.BatchV1().Jobs(namespace).Create(k.ctx, job, metav1.CreateOptions{}); err != nil {
+		return "", fmt.Errorf("build job creation failed: %w", err)
+	}
+
+	return jobName, nil
+}
+
 // LogCallback is a function that receives build logs
 type LogCallback func(logs string)
 
@@ -554,6 +689,198 @@ else
     
     rm -f "${tmp_tar}"
     
+    if [ $import_result -eq 0 ]; then
+      echo "Image successfully imported into containerd"
+    else
+      echo "Warning: Failed to import image into containerd (exit code: $import_result)"
+    fi
+  else
+    echo "Warning: containerd socket not found or ctr unavailable; image will only exist in Docker daemon"
+  fi
+fi
+
+echo "============================================"
+echo "Build completed for ${APP_NAME}"
+echo "============================================"
+`) + "\n"
+}
+
+// buildJobEnvForLocal creates environment variables for local builds (no git clone)
+func (k *K3sAdapter) buildJobEnvForLocal(appName, imageRef, builderType string) []corev1.EnvVar {
+	registryURL := ""
+	if k.pushImages {
+		registryURL = k.registryURLOrDefault()
+	}
+
+	envVars := []corev1.EnvVar{
+		{Name: "APP_NAME", Value: appName},
+		{Name: "IMAGE_NAME", Value: sanitizeImageComponent(appName)},
+		{Name: "IMAGE_REF", Value: imageRef},
+		{Name: "REGISTRY_URL", Value: registryURL},
+		{Name: "BUILDER_TYPE", Value: normalizeBuilderType(builderType)},
+		{Name: "DOCKERFILE_PATH", Value: "Dockerfile"},
+		{Name: "PUSH_IMAGE", Value: strconv.FormatBool(k.pushImages)},
+	}
+
+	if k.registryUser != "" {
+		envVars = append(envVars, corev1.EnvVar{Name: "REGISTRY_USERNAME", Value: k.registryUser})
+	}
+	if k.registryPassword != "" {
+		envVars = append(envVars, corev1.EnvVar{Name: "REGISTRY_PASSWORD", Value: k.registryPassword})
+	}
+
+	return envVars
+}
+
+// buildJobScriptForLocal creates a build script for local source (no git clone)
+func buildJobScriptForLocal() string {
+	return strings.TrimSpace(`
+set -eu
+
+echo "============================================"
+echo "Starting build for ${APP_NAME}"
+echo "============================================"
+echo "Source: Local files"
+
+rm -rf /workspace/src
+mkdir -p /workspace/src
+
+# Copy local source files to workspace
+echo "Copying source files from /local-source to /workspace/src..."
+cp -r /local-source/* /workspace/src/ 2>/dev/null || cp -r /local-source/. /workspace/src/
+cd /workspace/src
+
+# List contents for debugging
+echo "Source files:"
+ls -la
+
+push_image="${PUSH_IMAGE:-true}"
+
+if [ "${push_image}" = "true" ] && [ -n "${REGISTRY_USERNAME:-}" ]; then
+  echo "Logging into ${REGISTRY_URL}"
+  echo "${REGISTRY_PASSWORD:-}" | docker login -u "${REGISTRY_USERNAME}" --password-stdin "${REGISTRY_URL}"
+fi
+
+builder="${BUILDER_TYPE:-auto}"
+dockerfile_path="${DOCKERFILE_PATH:-Dockerfile}"
+
+echo "Configured builder: ${builder}"
+
+# Auto-detection logic
+if [ "${builder}" = "auto" ]; then
+  echo "Auto-detecting build method..."
+
+  if [ -f "${dockerfile_path}" ]; then
+    echo "   Found ${dockerfile_path} - will use Dockerfile build"
+    builder="dockerfile"
+  elif [ -f "Dockerfile" ]; then
+    echo "   Found Dockerfile - will use Dockerfile build"
+    builder="dockerfile"
+    dockerfile_path="Dockerfile"
+  else
+    echo "   No Dockerfile found - will use Nixpacks"
+    builder="nixpacks"
+  fi
+fi
+
+echo "============================================"
+echo "Using builder: ${builder}"
+echo "============================================"
+
+if [ "${builder}" = "dockerfile" ]; then
+  echo "Building via Dockerfile (${dockerfile_path})"
+
+  if [ ! -f "${dockerfile_path}" ]; then
+    echo "Error: ${dockerfile_path} not found!"
+    exit 1
+  fi
+
+  docker build -t "${IMAGE_NAME}" -f "${dockerfile_path}" .
+else
+  echo "Building via Nixpacks (auto-detect language & framework)"
+
+  # Show detected info
+  if [ -f "package.json" ]; then
+    echo "   Detected: Node.js project"
+  elif [ -f "requirements.txt" ] || [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then
+    echo "   Detected: Python project"
+  elif [ -f "go.mod" ]; then
+    echo "   Detected: Go project"
+  elif [ -f "Cargo.toml" ]; then
+    echo "   Detected: Rust project"
+  elif [ -f "pom.xml" ] || [ -f "build.gradle" ]; then
+    echo "   Detected: Java project"
+  elif [ -f "Gemfile" ]; then
+    echo "   Detected: Ruby project"
+  elif [ -f "mix.exs" ]; then
+    echo "   Detected: Elixir project"
+  else
+    echo "   Language will be auto-detected by Nixpacks"
+  fi
+
+  # Install nixpacks if not available
+  if ! command -v nixpacks >/dev/null 2>&1; then
+    echo "Installing Nixpacks..."
+    # Download and install nixpacks binary
+    NIXPACKS_VERSION="1.41.0"
+    ARCH=$(uname -m)
+    case "$ARCH" in
+      x86_64) NIXPACKS_ARCH="x86_64-unknown-linux-musl" ;;
+      aarch64) NIXPACKS_ARCH="aarch64-unknown-linux-musl" ;;
+      *) NIXPACKS_ARCH="x86_64-unknown-linux-musl" ;;
+    esac
+
+    NIXPACKS_URL="https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-${NIXPACKS_ARCH}.tar.gz"
+    echo "   Downloading from: ${NIXPACKS_URL}"
+    wget -q "${NIXPACKS_URL}" -O /tmp/nixpacks.tar.gz
+    tar -xzf /tmp/nixpacks.tar.gz -C /usr/local/bin
+    chmod +x /usr/local/bin/nixpacks
+    rm /tmp/nixpacks.tar.gz
+    echo "   Nixpacks ${NIXPACKS_VERSION} installed"
+  fi
+
+  nixpacks build . --name "${IMAGE_NAME}"
+fi
+
+echo "============================================"
+echo "Tagging image: ${IMAGE_REF}"
+echo "============================================"
+
+docker tag "${IMAGE_NAME}" "${IMAGE_REF}"
+
+if [ "${push_image}" = "true" ]; then
+  echo "Pushing image to registry..."
+  docker push "${IMAGE_REF}"
+else
+  echo "PUSH_IMAGE=false - skipping docker push, attempting to import into containerd"
+  # Try to ensure ctr exists
+  if ! command -v ctr >/dev/null 2>&1; then
+    if command -v apk >/dev/null 2>&1; then
+      apk add --no-cache containerd-ctr >/dev/null || true
+    fi
+  fi
+
+  ctr_sock="/run/k3s/containerd/containerd.sock"
+  if [ ! -S "${ctr_sock}" ] && [ -S "/run/containerd/containerd.sock" ]; then
+    ctr_sock="/run/containerd/containerd.sock"
+  fi
+
+  if command -v ctr >/dev/null 2>&1 && [ -S "${ctr_sock}" ]; then
+    echo "Importing image into containerd namespace k8s.io via ${ctr_sock}"
+    echo "This may take a while for large images..."
+
+    # Save to temp file first to show progress
+    tmp_tar="/tmp/image-${APP_NAME}-$$.tar"
+    echo "Saving Docker image to temporary file..."
+    docker save -o "${tmp_tar}" "${IMAGE_REF}"
+    echo "Docker image saved ($(du -h ${tmp_tar} | cut -f1))"
+
+    echo "Importing into containerd..."
+    ctr --address "${ctr_sock}" -n k8s.io images import "${tmp_tar}"
+    import_result=$?
+
+    rm -f "${tmp_tar}"
+
     if [ $import_result -eq 0 ]; then
       echo "Image successfully imported into containerd"
     else

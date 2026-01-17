@@ -3,6 +3,7 @@ package middleware
 import (
 	"backend/internal/services"
 	"backend/internal/utils"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -11,16 +12,35 @@ import (
 )
 
 var jwtValidator *services.JWTValidator
+var deviceTokenValidator *services.DeviceTokenValidator
 
 // InitJWTValidator initializes the JWT validator with JWKS URL
 func InitJWTValidator() error {
+	// Get LOGIN_HOST for constructing URLs
+	loginHost := os.Getenv("LOGIN_HOST")
+	if loginHost == "" {
+		return nil // Optional - returns nil if not configured
+	}
+
+	// Determine protocol
+	protocol := "https"
+	if strings.Contains(loginHost, "localhost") {
+		protocol = "http"
+	}
+
+	// Construct JWKS URL if not explicitly set
 	jwksURL := os.Getenv("CITIZENAUTH_JWKS_URL")
 	if jwksURL == "" {
-		return nil // Optional - returns nil if not configured
+		jwksURL = fmt.Sprintf("%s://%s/api/v1/auth/jwks.json", protocol, loginHost)
 	}
 
 	jwtValidator = services.NewJWTValidator(jwksURL)
 	log.Printf("✅ [JWT] JWT Validator initialized with JWKS URL: %s", jwksURL)
+
+	// Initialize device token validator (uses LOGIN_HOST internally)
+	deviceTokenValidator = services.NewDeviceTokenValidator("")
+	log.Printf("✅ [DeviceToken] Device Token Validator initialized with LOGIN_HOST: %s", loginHost)
+
 	return nil
 }
 
@@ -51,6 +71,46 @@ func JWTAuth() fiber.Handler {
 		if token == "" {
 			utils.AuthDebugLog("Bearer token is empty, skipping JWT auth")
 			return c.Next() // Allow other auth methods to try
+		}
+
+		// 🔑 CHECK IF DEVICE TOKEN (cds_ prefix)
+		if strings.HasPrefix(token, "cds_") {
+			utils.AuthDebugLog("Detected device token (cds_ prefix)")
+
+			// Validate device token via CitizenAuth API
+			if deviceTokenValidator == nil {
+				utils.AuthDebugLog("Device token validator not initialized")
+				return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
+					false,
+					"Device token authentication not configured",
+					nil,
+				))
+			}
+
+			deviceClaims, err := deviceTokenValidator.ValidateToken(token)
+			if err != nil {
+				utils.AuthDebugLog("Device token validation failed: %v", err)
+				return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
+					false,
+					"Invalid or expired device token",
+					nil,
+				))
+			}
+
+			utils.AuthDebugLog("Device token validated successfully for user: %s (%s)", deviceClaims.UserID, deviceClaims.Email)
+
+			// Store user info in context (same format as JWT for compatibility)
+			c.Locals("auth_type", "device_token")
+			c.Locals("user_id", deviceClaims.UserID)
+			c.Locals("citizenauth_user_id", deviceClaims.UserID)
+			c.Locals("email", deviceClaims.Email)
+			c.Locals("name", deviceClaims.Name)
+			c.Locals("organization_id", deviceClaims.OrganizationID)
+			c.Locals("role", deviceClaims.Role)
+			c.Locals("is_super_admin", deviceClaims.IsSuperAdmin)
+			c.Locals("device_token_scopes", deviceClaims.Scopes)
+
+			return c.Next()
 		}
 
 		// Validate JWT (LOCAL - signature verification only)
