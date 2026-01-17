@@ -101,6 +101,27 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 
 	// Get Authorization header (already extracted above)
 	if bearerToken != "" {
+		// Check if it's a device session token (cds_ prefix)
+		if strings.HasPrefix(bearerToken, "cds_") {
+			log.Printf("🔐 [VALIDATE] Device token detected, validating with CitizenAuth...")
+
+			// Validate device token with CitizenAuth
+			validationResult, err := authservices.ValidateDeviceToken(c.Context(), bearerToken)
+			if err == nil && validationResult != nil {
+				log.Printf("✅ [VALIDATE] Authenticated via device token: %s (%s) org=%s",
+					validationResult.UserID, validationResult.Email, validationResult.OrganizationID)
+				utils.AuthDebugLog("Device token validated: %s", validationResult.Email)
+
+				// Set user context for downstream services
+				c.Locals("citizenauth_user_id", validationResult.UserID)
+				c.Locals("organization_id", validationResult.OrganizationID)
+				c.Locals("user_role", validationResult.Role)
+
+				return c.SendStatus(fiber.StatusOK)
+			}
+			log.Printf("⚠️  [VALIDATE] Device token validation failed: %v", err)
+		}
+
 		// This is a JWT token from CitizenAuth - validate it directly
 		// Try JWT validation first
 		if jwtValidator := authservices.GetJWTValidator(); jwtValidator != nil {
