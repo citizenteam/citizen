@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	authservices "backend/internal/auth/services"
 	"backend/internal/services"
 	"backend/internal/utils"
 	"fmt"
@@ -77,17 +78,8 @@ func JWTAuth() fiber.Handler {
 		if strings.HasPrefix(token, "cds_") {
 			utils.AuthDebugLog("Detected device token (cds_ prefix)")
 
-			// Validate device token via CitizenAuth API
-			if deviceTokenValidator == nil {
-				utils.AuthDebugLog("Device token validator not initialized")
-				return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
-					false,
-					"Device token authentication not configured",
-					nil,
-				))
-			}
-
-			deviceClaims, err := deviceTokenValidator.ValidateToken(token)
+			// Validate device token via CitizenAuth API (using same validator as ForwardAuth)
+			deviceClaims, err := authservices.ValidateDeviceToken(c.Context(), token)
 			if err != nil {
 				utils.AuthDebugLog("Device token validation failed: %v", err)
 				return c.Status(fiber.StatusUnauthorized).JSON(utils.NewCitizenResponse(
