@@ -275,7 +275,7 @@ CREATE OR REPLACE FUNCTION revoke_app_permission(
     p_app_id VARCHAR
 ) RETURNS BOOLEAN AS $$
 DECLARE
-    v_deleted BOOLEAN;
+    v_deleted INTEGER;  -- ROW_COUNT returns INTEGER
 BEGIN
     DELETE FROM app_permissions
     WHERE user_id = p_user_id
