@@ -225,9 +225,10 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 // getUserContextFromSession retrieves CitizenAuth user ID and org ID from local user
 func getUserContextFromSession(ctx context.Context, localUserID int) (string, string, error) {
 	query := `
-		SELECT citizenauth_user_id, organization_id 
-		FROM users 
-		WHERE id = $1
+		SELECT m.citizenauth_user_id, m.organization_id 
+		FROM citizenauth_user_mapping m
+		WHERE m.local_user_id = $1
+		LIMIT 1
 	`
 	var citizenAuthUserID, orgID string
 	err := database.DB.QueryRow(ctx, query, localUserID).Scan(&citizenAuthUserID, &orgID)
