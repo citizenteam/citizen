@@ -114,9 +114,36 @@ func Install(cfg InstallConfig) (*InstallResult, error) {
 		} else {
 			result.Kubeconfig = kubeconfig
 		}
+
+		// Create Citizen data directories with proper permissions
+		if err := ensureCitizenDataDirs(); err != nil {
+			result.Message += fmt.Sprintf(" (warning: could not create citizen data dirs: %v)", err)
+		}
 	}
 
 	return result, nil
+}
+
+// ensureCitizenDataDirs creates required Citizen data directories with proper permissions
+func ensureCitizenDataDirs() error {
+	dirs := []string{
+		"/opt/citizen/data",
+		"/opt/citizen/data/user-uploads",
+	}
+
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create %s: %w", dir, err)
+		}
+	}
+
+	// Set user-uploads to 777 so both API pod and build pods can write
+	if err := os.Chmod("/opt/citizen/data/user-uploads", 0777); err != nil {
+		return fmt.Errorf("failed to chmod user-uploads: %w", err)
+	}
+
+	fmt.Println("✅ Created /opt/citizen/data/user-uploads with chmod 777")
+	return nil
 }
 
 // GetKubeconfig reads the k3s kubeconfig file
