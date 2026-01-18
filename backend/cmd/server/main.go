@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -579,13 +580,47 @@ func processQueuedDeploymentJob(ctx context.Context, job *services.DeploymentJob
 	deploymenthandlers.BroadcastStepUpdate(runID, "building", "running")
 	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "building")
 
-	// Run deployment with live log broadcasting
-	output, deployErr := k3sAdapter.DeployFromGitWithLogs(appName, job.GitURL, job.GitBranch, job.TriggeredBy, func(logs string) {
-		// Broadcast live logs to SSE subscribers
-		deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", logs)
-		// Also append to database
-		api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs)
-	})
+	// Check if this is a local deployment (tar.gz) or git deployment
+	var output string
+	var deployErr error
+
+	if strings.HasPrefix(job.GitURL, "local://") {
+		// Local deployment - extract tar.gz and build from local path
+		tarballPath := strings.TrimPrefix(job.GitURL, "local://")
+		utils.StartupLog("📦 [QUEUE] Local deployment detected, tarball: %s", tarballPath)
+
+		// Create temp directory for extraction
+		tempDir := fmt.Sprintf("/tmp/citizen-deploy-%s", runID)
+		if err := os.MkdirAll(tempDir, 0755); err != nil {
+			return fmt.Errorf("failed to create temp directory: %w", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		// Extract tar.gz
+		extractLog := fmt.Sprintf("Extracting %s...\n", tarballPath)
+		deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", extractLog)
+		api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", extractLog)
+
+		extractCmd := exec.Command("tar", "-xzf", tarballPath, "-C", tempDir)
+		extractOutput, extractErr := extractCmd.CombinedOutput()
+		if extractErr != nil {
+			return fmt.Errorf("failed to extract tarball: %w (output: %s)", extractErr, string(extractOutput))
+		}
+
+		// Build from local path
+		output, deployErr = k3sAdapter.DeployFromLocalPathWithLogs(appName, tempDir, job.Builder, runID, func(logs string) {
+			deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", logs)
+			api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs)
+		})
+	} else {
+		// Git deployment - clone and build from git URL
+		output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, job.GitURL, job.GitBranch, job.TriggeredBy, func(logs string) {
+			// Broadcast live logs to SSE subscribers
+			deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", logs)
+			// Also append to database
+			api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs)
+		})
+	}
 
 	if deployErr != nil {
 		errorMsg := deployErr.Error()
