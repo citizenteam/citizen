@@ -130,9 +130,16 @@ func (s *Service) InvalidateAllCache() {
 	s.cache.clear()
 }
 
-// CheckAppPermission checks if user has required role for an app
+// CheckAppPermission checks if user has required role for an app (with caching)
 func (s *Service) CheckAppPermission(ctx context.Context, citizenAuthUserID, organizationID, appID string, requiredRole domain.Role) (bool, error) {
-	return s.repo.CheckAppPermission(ctx, citizenAuthUserID, organizationID, appID, requiredRole)
+	// Use cached permissions instead of hitting DB every time
+	permissions, err := s.GetUserPermissions(ctx, citizenAuthUserID, organizationID)
+	if err != nil {
+		return false, err
+	}
+
+	// Check if user has permission for this specific app
+	return permissions.HasAppPermission(appID, requiredRole), nil
 }
 
 // IsUserAssignedToInstance checks if user has any permissions in the organization

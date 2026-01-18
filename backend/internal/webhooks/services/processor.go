@@ -113,10 +113,17 @@ func ProcessPermissionEvent(ctx context.Context, payload webhookmodels.Permissio
 			// Return error so CitizenAuth knows the revoke failed
 			return errors.Wrap(err, errors.ErrCodeInternal, "failed to revoke permission in Citizen backend")
 		}
+
+		// NOTE: We do NOT clear SSO sessions here because:
+		// 1. User may have access to other apps
+		// 2. ForwardAuth validates app-level RBAC on every request
+		// 3. RBAC cache is already invalidated by RevokePermission()
+		// The user will get 403 Forbidden when trying to access this specific app
+
 		log.WithFields(map[string]interface{}{
 			"user_id": payload.UserID,
 			"app_id":  payload.AppID,
-		}).Info("Permission revoked successfully")
+		}).Info("Permission revoked successfully - app access will be denied via ForwardAuth RBAC")
 
 	default:
 		return errors.BadRequestf("unknown event type: %s", payload.Event)
