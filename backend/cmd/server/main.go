@@ -14,10 +14,10 @@ import (
 	authservices "backend/internal/auth/services"
 	"backend/internal/database"
 	"backend/internal/database/api"
-	"backend/internal/models"
 	deploymenthandlers "backend/internal/deployments/handlers"
 	githubservices "backend/internal/github/services"
 	"backend/internal/middleware"
+	"backend/internal/models"
 	"backend/internal/platform"
 	"backend/internal/platform/k3s"
 	"backend/internal/routes"
@@ -417,7 +417,7 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 func startBackgroundTasks() {
 	// SSO cleanup every 5 minutes
 	ssoTicker := time.NewTicker(5 * time.Minute)
-	
+
 	// Stale deployment crawler every 30 seconds
 	staleDeploymentTicker := time.NewTicker(30 * time.Second)
 
@@ -561,7 +561,7 @@ func processQueuedDeploymentJob(ctx context.Context, job *services.DeploymentJob
 	appName := job.AppName
 
 	// Update deployment steps - job is now running
-	initLog := fmt.Sprintf("Starting deployment for %s\nGit URL: %s\nBranch: %s\nBuilder: %s\n", 
+	initLog := fmt.Sprintf("Starting deployment for %s\nGit URL: %s\nBranch: %s\nBuilder: %s\n",
 		appName, job.GitURL, job.GitBranch, job.Builder)
 	api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "initializing", "completed", &initLog)
 	deploymenthandlers.BroadcastDeploymentLog(runID, "initializing", "completed", initLog)
@@ -600,7 +600,7 @@ func processQueuedDeploymentJob(ctx context.Context, job *services.DeploymentJob
 		})
 	} else {
 		// Git deployment - clone and build from git URL
-		output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, job.GitURL, job.GitBranch, job.TriggeredBy, func(logs string) {
+		output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, job.GitURL, job.GitBranch, job.Builder, job.TriggeredBy, func(logs string) {
 			// Broadcast live logs to SSE subscribers
 			deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", logs)
 			// Also append to database
@@ -613,10 +613,10 @@ func processQueuedDeploymentJob(ctx context.Context, job *services.DeploymentJob
 		errLog := fmt.Sprintf("Deployment failed: %s", errorMsg)
 		api.DeploymentRuns.UpdateDeploymentStep(ctx, runID, "building", "failed", &errLog)
 		deploymenthandlers.BroadcastDeploymentLog(runID, "building", "failed", errLog)
-		
+
 		// Cleanup failed build jobs
 		k3sAdapter.CleanupCompletedBuildJobs(appName)
-		
+
 		api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "failed", output, &errorMsg)
 		deploymenthandlers.BroadcastRunUpdate(runID, "failed")
 		return deployErr

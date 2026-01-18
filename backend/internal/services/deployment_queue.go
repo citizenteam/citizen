@@ -684,6 +684,7 @@ func (w *DeploymentWorker) defaultJobProcessor(ctx context.Context, job *Deploym
 		job.AppName,
 		job.GitURL,
 		job.GitBranch,
+		job.Builder, // Pass builder type from job
 		job.TriggeredBy,
 		func(logs string) {
 			// Log output (WebSocket broadcast handled separately)

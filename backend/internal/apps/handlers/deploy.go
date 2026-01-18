@@ -245,7 +245,7 @@ func DeployApp(c *fiber.Ctx) error {
 		if IsDeploymentQueueEnabled() {
 			// Use queue-based deployment
 			queue := services.GetDeploymentQueue()
-			
+
 			job := &services.DeploymentJob{
 				AppName:     appName,
 				RunID:       runID,
@@ -272,7 +272,7 @@ func DeployApp(c *fiber.Ctx) error {
 				}
 
 				// Update initializing step
-				initLog := fmt.Sprintf("Deployment queued for %s\nPosition in queue: %d\nGit URL: %s\nBranch: %s\nBuilder: %s\n", 
+				initLog := fmt.Sprintf("Deployment queued for %s\nPosition in queue: %d\nGit URL: %s\nBranch: %s\nBuilder: %s\n",
 					appName, position, deployData.GitURL, deployData.GitBranch, builderType)
 				api.DeploymentRuns.UpdateDeploymentStep(context.Background(), runID, "initializing", "completed", &initLog)
 				deploymenthandlers.BroadcastDeploymentLog(runID, "initializing", "completed", initLog)
@@ -326,8 +326,8 @@ func DeployApp(c *fiber.Ctx) error {
 				deploymenthandlers.BroadcastStepUpdate(runID, "building", "running")
 				api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "building")
 
-				fmt.Printf("[DEPLOY] Calling DeployFromGitWithLogs with appName='%s', runID='%s'\n", appName, runID)
-				output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, authenticatedGitURL, deployData.GitBranch, userID, func(logs string) {
+				fmt.Printf("[DEPLOY] Calling DeployFromGitWithLogs with appName='%s', runID='%s', builder='%s'\n", appName, runID, builderType)
+				output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, authenticatedGitURL, deployData.GitBranch, builderType, userID, func(logs string) {
 					// Broadcast live logs to WebSocket subscribers
 					deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", logs)
 					// Also append to database with step info
@@ -583,8 +583,8 @@ func ProcessQueuedDeployment(ctx context.Context, job *services.DeploymentJob) e
 	deploymenthandlers.BroadcastStepUpdate(runID, "building", "running")
 	api.DeploymentRuns.UpdateDeploymentRunStatus(ctx, runID, "building")
 
-	utils.StartupLog("[QUEUE] Calling DeployFromGitWithLogs with appName='%s', runID='%s'", appName, runID)
-	output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, gitURL, gitBranch, userID, func(logs string) {
+	utils.StartupLog("[QUEUE] Calling DeployFromGitWithLogs with appName='%s', runID='%s', builder='%s'", appName, runID, builderType)
+	output, deployErr = k3sAdapter.DeployFromGitWithLogs(appName, gitURL, gitBranch, builderType, userID, func(logs string) {
 		// Broadcast live logs to WebSocket subscribers
 		deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", logs)
 		// Also append to database with step info

@@ -212,12 +212,13 @@ func (k *K3sAdapter) GetEnv(appName string) (map[string]string, error) {
 
 // DeployFromGit triggers build pipeline and updates deployment
 func (k *K3sAdapter) DeployFromGit(appName, gitURL, branch string, userID *int) (string, error) {
-	return k.DeployFromGitWithLogs(appName, gitURL, branch, userID, nil)
+	return k.DeployFromGitWithLogs(appName, gitURL, branch, "", userID, nil)
 }
 
 // DeployFromGitWithLogs triggers build pipeline with live log streaming
-func (k *K3sAdapter) DeployFromGitWithLogs(appName, gitURL, branch string, userID *int, logCallback LogCallback) (string, error) {
-	log.Printf("[K3S] DeployFromGitWithLogs ENTRY: appName='%s', gitURL='%s', branch='%s'", appName, gitURL, branch)
+// builderType: "auto", "dockerfile", or "nixpacks" - if empty, uses auto-detection
+func (k *K3sAdapter) DeployFromGitWithLogs(appName, gitURL, branch, builderType string, userID *int, logCallback LogCallback) (string, error) {
+	log.Printf("[K3S] DeployFromGitWithLogs ENTRY: appName='%s', gitURL='%s', branch='%s', builder='%s'", appName, gitURL, branch, builderType)
 	if appName == "" {
 		return "", fmt.Errorf("app name is required")
 	}
@@ -236,7 +237,12 @@ func (k *K3sAdapter) DeployFromGitWithLogs(appName, gitURL, branch string, userI
 		return "", err
 	}
 
-	builderType := k.resolveBuilderType(appName)
+	// Use provided builderType, fallback to auto-detection if empty
+	if builderType == "" {
+		builderType = "auto"
+	}
+	builderType = normalizeBuilderType(builderType)
+	log.Printf("[K3S] Using builder type: %s for app %s", builderType, appName)
 	imageRef := k.imageReference(appName, branch)
 	jobName, err := k.submitBuildJob(appName, gitURL, branch, imageRef, builderType)
 	if err != nil {
