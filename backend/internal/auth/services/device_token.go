@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -26,7 +27,11 @@ type DeviceTokenValidationResult struct {
 func ValidateDeviceToken(ctx context.Context, token string) (*DeviceTokenValidationResult, error) {
 	citizenauthURL := os.Getenv("CITIZENAUTH_URL")
 	if citizenauthURL == "" {
-		citizenauthURL = "https://ustun.tech/api/v1"
+		citizenauthURL = "https://ustun.tech"
+	}
+	// Ensure we have /api/v1 prefix
+	if !strings.HasSuffix(citizenauthURL, "/api/v1") {
+		citizenauthURL = citizenauthURL + "/api/v1"
 	}
 
 	// Call CitizenAuth /auth/device/validate endpoint
