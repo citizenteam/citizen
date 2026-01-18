@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	citizenauthservices "backend/internal/citizenauth/services"
 	"backend/internal/database"
 	"backend/internal/database/api"
-	citizenauthservices "backend/internal/citizenauth/services"
 	"backend/internal/models"
 	"backend/internal/platform"
+	"backend/internal/rbac/domain"
+	rbacmw "backend/internal/rbac/middleware"
 	"backend/internal/utils"
 	"context"
 	"errors"
@@ -16,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ListApps lists all Citizen apps
+// ListApps lists apps based on user permissions (RBAC filtered)
 func ListApps(c *fiber.Ctx) error {
 	apps, err := platform.GetAdapter().ListApps()
 	if err != nil {
@@ -27,10 +29,45 @@ func ListApps(c *fiber.Ctx) error {
 		))
 	}
 
+	// Get RBAC context for filtering
+	rbacCtx := rbacmw.GetRBACContext(c)
+	if rbacCtx == nil {
+		// No RBAC context - return empty list for safety
+		return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
+			true,
+			"Apps listed successfully",
+			[]string{},
+		))
+	}
+
+	// Super admin or instance admin sees all apps
+	if rbacCtx.IsSuperAdmin || rbacCtx.Permissions.IsInstanceAdmin() {
+		return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
+			true,
+			"Apps listed successfully",
+			apps,
+		))
+	}
+
+	// Filter apps based on user permissions
+	allowedApps := rbacCtx.Permissions.GetAppsWithRole(domain.RoleViewer) // Get all apps with any role (viewer+)
+	allowedSet := make(map[string]bool)
+	for _, appID := range allowedApps {
+		allowedSet[appID] = true
+	}
+
+	// Filter the app list
+	filteredApps := make([]string, 0)
+	for _, appName := range apps {
+		if allowedSet[appName] {
+			filteredApps = append(filteredApps, appName)
+		}
+	}
+
 	return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
 		true,
 		"Apps listed successfully",
-		apps,
+		filteredApps,
 	))
 }
 
@@ -349,7 +386,7 @@ func GetAppInfo(c *fiber.Ctx) error {
 	))
 }
 
-// GetAllAppsInfo gets detailed information for all apps collectively
+// GetAllAppsInfo gets detailed information for all apps collectively (RBAC filtered)
 func GetAllAppsInfo(c *fiber.Ctx) error {
 	allInfo, err := platform.GetAdapter().GetAllAppsInfo()
 	if err != nil {
@@ -360,9 +397,44 @@ func GetAllAppsInfo(c *fiber.Ctx) error {
 		))
 	}
 
+	// Get RBAC context for filtering
+	rbacCtx := rbacmw.GetRBACContext(c)
+	if rbacCtx == nil {
+		// No RBAC context - return empty for safety
+		return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
+			true,
+			"Detailed information for all apps retrieved successfully",
+			map[string]interface{}{},
+		))
+	}
+
+	// Super admin or instance admin sees all apps
+	if rbacCtx.IsSuperAdmin || rbacCtx.Permissions.IsInstanceAdmin() {
+		return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
+			true,
+			"Detailed information for all apps retrieved successfully",
+			allInfo,
+		))
+	}
+
+	// Filter apps based on user permissions
+	allowedApps := rbacCtx.Permissions.GetAppsWithRole(domain.RoleViewer) // Get all apps with any role (viewer+)
+	allowedSet := make(map[string]bool)
+	for _, appID := range allowedApps {
+		allowedSet[appID] = true
+	}
+
+	// Filter the response map
+	filteredInfo := make(map[string]map[string]interface{})
+	for appName, info := range allInfo {
+		if allowedSet[appName] {
+			filteredInfo[appName] = info
+		}
+	}
+
 	return c.Status(fiber.StatusOK).JSON(utils.NewCitizenResponse(
 		true,
 		"Detailed information for all apps retrieved successfully",
-		allInfo,
+		filteredInfo,
 	))
 }
