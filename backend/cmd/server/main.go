@@ -14,6 +14,7 @@ import (
 	authservices "backend/internal/auth/services"
 	"backend/internal/database"
 	"backend/internal/database/api"
+	"backend/internal/models"
 	deploymenthandlers "backend/internal/deployments/handlers"
 	githubservices "backend/internal/github/services"
 	"backend/internal/middleware"
@@ -636,6 +637,21 @@ func processQueuedDeploymentJob(ctx context.Context, job *services.DeploymentJob
 	// Complete
 	api.DeploymentRuns.CompleteDeploymentRun(ctx, runID, "completed", output, nil)
 	deploymenthandlers.BroadcastRunUpdate(runID, "completed")
+
+	// Update app_deployments table status to "deployed"
+	newDeployment := &models.AppDeployment{
+		AppName:    appName,
+		GitURL:     job.GitURL,
+		GitBranch:  job.GitBranch,
+		Builder:    job.Builder,
+		Status:     "deployed",
+		LastDeploy: time.Now(),
+	}
+	if err := database.SaveAppDeployment(newDeployment); err != nil {
+		utils.ErrorLog("📦 [QUEUE] Failed to update app_deployments status: %v", err)
+	} else {
+		utils.StartupLog("📦 [QUEUE] Updated app_deployments status to 'deployed' for %s", appName)
+	}
 
 	utils.StartupLog("📦 [QUEUE] Deployment completed for job %s (app: %s)", job.ID, appName)
 	return nil
