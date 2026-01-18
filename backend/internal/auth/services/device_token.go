@@ -39,7 +39,8 @@ func ValidateDeviceToken(ctx context.Context, token string) (*DeviceTokenValidat
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", citizenauthURL+"/auth/device/validate", bytes.NewReader(jsonData))
+	fullURL := citizenauthURL + "/auth/device/validate"
+	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewReader(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -50,24 +51,32 @@ func ValidateDeviceToken(ctx context.Context, token string) (*DeviceTokenValidat
 		Timeout: 5 * time.Second,
 	}
 
+	fmt.Printf("🌐 [DEVICE-TOKEN] Sending validation request to: %s\n", fullURL)
+	fmt.Printf("📦 [DEVICE-TOKEN] Request body: %s\n", string(jsonData))
+
 	resp, err := client.Do(req)
 	if err != nil {
+		fmt.Printf("❌ [DEVICE-TOKEN] Request failed: %v\n", err)
 		return nil, fmt.Errorf("failed to validate device token: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("📨 [DEVICE-TOKEN] Response status: %d\n", resp.StatusCode)
+	fmt.Printf("📨 [DEVICE-TOKEN] Response body: %s\n", string(body))
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("device token validation failed: %s (status: %d)", string(body), resp.StatusCode)
 	}
 
+	// Decode response body
 	var response struct {
-		Success bool                         `json:"success"`
-		Data    DeviceTokenValidationResult  `json:"data"`
-		Error   string                       `json:"error"`
+		Success bool                        `json:"success"`
+		Data    DeviceTokenValidationResult `json:"data"`
+		Error   string                      `json:"error"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
