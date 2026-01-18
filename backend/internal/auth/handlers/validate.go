@@ -2,7 +2,10 @@ package handlers
 
 import (
 	authservices "backend/internal/auth/services"
+	"backend/internal/database"
 	"backend/internal/database/api"
+	"backend/internal/rbac/domain"
+	rbacservice "backend/internal/rbac/service"
 	"backend/internal/tokens"
 	"backend/internal/utils"
 	"context"
@@ -13,6 +16,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
+
+var rbacSvc = rbacservice.Default()
 
 // ValidateForTraefik - ForwardAuth validation endpoint
 func ValidateForTraefik(c *fiber.Ctx) error {
@@ -178,10 +183,58 @@ func ValidateForTraefik(c *fiber.Ctx) error {
 		return redirectToLogin(c, originalURL)
 	}
 
-	// SSO session validated
-	log.Printf("✅ [VALIDATE] Authenticated via SSO session: user_id=%d", session.UserID)
+	// SSO session validated - now check app-level RBAC permission
+	if appName != "" {
+		// Get CitizenAuth user ID and org ID from session
+		citizenAuthUserID, orgID, err := getUserContextFromSession(c.Context(), session.UserID)
+		if err != nil {
+			log.Printf("❌ [VALIDATE] Failed to get user context for RBAC: %v", err)
+			return c.SendStatus(fiber.StatusForbidden)
+		}
+
+		if citizenAuthUserID != "" && orgID != "" {
+			// Check app permission using cached RBAC
+			hasPermission, permErr := rbacSvc.CheckAppPermission(
+				c.Context(),
+				citizenAuthUserID,
+				orgID,
+				appName,
+				domain.RoleViewer,
+			)
+
+			if permErr != nil {
+				log.Printf("❌ [VALIDATE] RBAC check failed for user %d on app %s: %v", session.UserID, appName, permErr)
+				return c.SendStatus(fiber.StatusForbidden)
+			}
+
+			if !hasPermission {
+				log.Printf("🚫 [VALIDATE] Access denied - user %d has no permission for app %s", session.UserID, appName)
+				return c.SendStatus(fiber.StatusForbidden)
+			}
+
+			log.Printf("✅ [VALIDATE] App permission verified for user %d on %s", session.UserID, appName)
+		}
+	}
+
+	// SSO session validated with RBAC
+	log.Printf("✅ [VALIDATE] Authenticated via SSO session: user_id=%d (app: %s)", session.UserID, appName)
 	utils.AuthDebugLog("SSO session validation successful for host: %s, User: %d", forwardedHost, session.UserID)
 	return c.SendStatus(fiber.StatusOK)
+}
+
+// getUserContextFromSession retrieves CitizenAuth user ID and org ID from local user
+func getUserContextFromSession(ctx context.Context, localUserID int) (string, string, error) {
+	query := `
+		SELECT citizenauth_user_id, organization_id 
+		FROM users 
+		WHERE id = $1
+	`
+	var citizenAuthUserID, orgID string
+	err := database.DB.QueryRow(ctx, query, localUserID).Scan(&citizenAuthUserID, &orgID)
+	if err != nil {
+		return "", "", err
+	}
+	return citizenAuthUserID, orgID, nil
 }
 
 // ValidateSessionEndpoint - API endpoint for SSO session validation (keeping token-validate path for compatibility)
