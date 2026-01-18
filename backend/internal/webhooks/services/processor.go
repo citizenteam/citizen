@@ -99,13 +99,24 @@ func ProcessPermissionEvent(ctx context.Context, payload webhookmodels.Permissio
 		log.WithField("role", payload.Role).Info("Permission granted")
 
 	case "permission.revoked":
+		if payload.OrganizationID == "" {
+			log.Warn("permission.revoked received without organization_id - attempting revoke anyway")
+		}
 		err := permissionService.RevokePermission(ctx, payload.UserID, payload.OrganizationID, payload.AppID)
 		if err != nil {
-			log.WithField("error", err).Error("Failed to revoke permission")
-			// Don't fail - permission might not exist
-		} else {
-			log.Info("Permission revoked")
+			log.WithFields(map[string]interface{}{
+				"error":   err,
+				"user_id": payload.UserID,
+				"org_id":  payload.OrganizationID,
+				"app_id":  payload.AppID,
+			}).Error("Failed to revoke permission")
+			// Return error so CitizenAuth knows the revoke failed
+			return errors.Wrap(err, errors.ErrCodeInternal, "failed to revoke permission in Citizen backend")
 		}
+		log.WithFields(map[string]interface{}{
+			"user_id": payload.UserID,
+			"app_id":  payload.AppID,
+		}).Info("Permission revoked successfully")
 
 	default:
 		return errors.BadRequestf("unknown event type: %s", payload.Event)
