@@ -334,6 +334,67 @@ func (k *K3sAdapter) DeployFromLocalPathWithLogs(appName, localPath, builderType
 	return updateMsg, nil
 }
 
+// DeployFromTarballWithLogs deploys from a tarball file (extracts inside build pod)
+func (k *K3sAdapter) DeployFromTarballWithLogs(appName, tarballPath, builderType, runID string, logCallback LogCallback) (string, error) {
+	log.Printf("[K3S] DeployFromTarballWithLogs ENTRY: appName='%s', tarballPath='%s', builderType='%s'", appName, tarballPath, builderType)
+	if appName == "" {
+		return "", fmt.Errorf("app name is required")
+	}
+	if tarballPath == "" {
+		return "", fmt.Errorf("tarball path is required")
+	}
+
+	namespace := k.appNamespace(appName)
+	if err := k.ensureNamespace(namespace); err != nil {
+		return "", err
+	}
+	if err := k.ensureService(namespace, appName, k.defaultAppPort); err != nil {
+		return "", err
+	}
+
+	if builderType == "" {
+		builderType = k.resolveBuilderType(appName)
+	}
+
+	// Use runID as branch identifier for image tagging
+	imageRef := k.imageReference(appName, "local-"+runID[:8])
+
+	// Submit build job from tarball (extracts inside build pod)
+	jobName, err := k.submitBuildJobFromTarball(appName, tarballPath, imageRef, builderType)
+	if err != nil {
+		return "", err
+	}
+
+	if err := k.waitForJobCompletionWithLogs(k.builderNamespaceOrDefault(), jobName, k.buildTimeout, logCallback); err != nil {
+		logs, logErr := k.getBuildJobLogs(appName)
+		if logErr == nil && logs != "" {
+			return logs, err
+		}
+		return "", err
+	}
+
+	port, err := k.getServicePort(namespace, appName)
+	if err != nil {
+		return "", err
+	}
+	if err := k.ensureDeploymentExists(namespace, appName, port, map[string]string{
+		"PORT": fmt.Sprintf("%d", port),
+	}); err != nil {
+		return "", err
+	}
+
+	updateMsg, err := k.updateDeploymentImage(namespace, appName, imageRef)
+	if err != nil {
+		return "", err
+	}
+
+	logs, _ := k.getBuildJobLogs(appName)
+	if logs != "" {
+		return fmt.Sprintf("%s\n%s", updateMsg, logs), nil
+	}
+	return updateMsg, nil
+}
+
 // GetAppInfo returns deployment, service and pod information
 func (k *K3sAdapter) GetAppInfo(appName string) (map[string]interface{}, error) {
 	return k.getDeploymentInfo(k.appNamespace(appName), appName)

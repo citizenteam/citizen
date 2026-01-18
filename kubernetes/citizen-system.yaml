@@ -193,16 +193,8 @@ spec:
     requests:
       storage: 5Gi
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: user-uploads-pvc
-  namespace: citizen-system
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 10Gi
+# user-uploads-pvc removed - using HostPath instead for cross-namespace access
+# Build jobs in citizen-builder namespace need access to uploaded tarballs
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -436,8 +428,9 @@ spec:
           persistentVolumeClaim:
             claimName: citizen-api-logs-pvc
         - name: user-uploads
-          persistentVolumeClaim:
-            claimName: user-uploads-pvc
+          hostPath:
+            path: /opt/citizen/data/user-uploads
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

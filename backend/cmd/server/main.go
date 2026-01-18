@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -585,30 +584,17 @@ func processQueuedDeploymentJob(ctx context.Context, job *services.DeploymentJob
 	var deployErr error
 
 	if strings.HasPrefix(job.GitURL, "local://") {
-		// Local deployment - extract tar.gz and build from local path
+		// Local deployment - pass tarball to build job (extraction happens inside build pod)
 		tarballPath := strings.TrimPrefix(job.GitURL, "local://")
 		utils.StartupLog("📦 [QUEUE] Local deployment detected, tarball: %s", tarballPath)
 
-		// Create temp directory for extraction
-		tempDir := fmt.Sprintf("/tmp/citizen-deploy-%s", runID)
-		if err := os.MkdirAll(tempDir, 0755); err != nil {
-			return fmt.Errorf("failed to create temp directory: %w", err)
-		}
-		defer os.RemoveAll(tempDir)
-
-		// Extract tar.gz
-		extractLog := fmt.Sprintf("Extracting %s...\n", tarballPath)
+		// Log the tarball deployment start
+		extractLog := fmt.Sprintf("Local deployment from tarball: %s\nTarball will be extracted inside build pod.\n", tarballPath)
 		deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", extractLog)
 		api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", extractLog)
 
-		extractCmd := exec.Command("tar", "-xzf", tarballPath, "-C", tempDir)
-		extractOutput, extractErr := extractCmd.CombinedOutput()
-		if extractErr != nil {
-			return fmt.Errorf("failed to extract tarball: %w (output: %s)", extractErr, string(extractOutput))
-		}
-
-		// Build from local path
-		output, deployErr = k3sAdapter.DeployFromLocalPathWithLogs(appName, tempDir, job.Builder, runID, func(logs string) {
+		// Build from tarball (extraction happens inside the build pod)
+		output, deployErr = k3sAdapter.DeployFromTarballWithLogs(appName, tarballPath, job.Builder, runID, func(logs string) {
 			deploymenthandlers.BroadcastDeploymentLog(runID, "building", "running", logs)
 			api.DeploymentRuns.AppendBuildLogs(ctx, runID, "building", logs)
 		})
