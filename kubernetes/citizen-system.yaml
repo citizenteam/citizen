@@ -193,6 +193,17 @@ spec:
     requests:
       storage: 5Gi
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: user-uploads-pvc
+  namespace: citizen-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -412,6 +423,8 @@ spec:
           volumeMounts:
             - name: api-logs
               mountPath: /app/logs
+            - name: user-uploads
+              mountPath: /opt/citizen/data/user-uploads
           readinessProbe:
             httpGet:
               path: /health
@@ -422,6 +435,9 @@ spec:
         - name: api-logs
           persistentVolumeClaim:
             claimName: citizen-api-logs-pvc
+        - name: user-uploads
+          persistentVolumeClaim:
+            claimName: user-uploads-pvc
 ---
 apiVersion: v1
 kind: Service
